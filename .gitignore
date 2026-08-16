@@ -1,0 +1,28 @@
+# Build output and tool caches from every package
+**/build/
+**/dist/
+**/target/
+**/.gradle/
+**/.cxx/
+**/.externalNativeBuild/
+
+# Reproducible local checkout created by x11-host/scripts/fetch-lorie.sh
+/x11-host/src/lorie/
+
+# Historical empty-directory marker; patches/ now contains real patch files.
+/proot/patches/.gitkeep
+
+# Intermediate native compilation files
+**/*.o
+**/*.a
+**/*.d
+**/*.dSYM/
+
+# Android packages produced while verifying a package
+**/*.apk
+**/*.aab
+
+# IDE and OS state
+**/.idea/
+**/*.iml
+**/.DS_Store

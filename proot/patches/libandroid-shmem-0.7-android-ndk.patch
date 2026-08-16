@@ -1,0 +1,21 @@
+--- a/shmem.c
++++ b/shmem.c
+@@ -3,6 +3,7 @@
+ #include <android/sharedmem.h>
+ #endif
+ #include <errno.h>
++#include <fcntl.h>
+ #include <pthread.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -14,6 +15,10 @@
+ #include <unistd.h>
+ #include <paths.h>
+ 
++#ifndef _PATH_TMP
++#define _PATH_TMP "/tmp/"
++#endif
++
+ #if __ANDROID_API__ < 26
+ #define __u32 uint32_t
+ #include <linux/ashmem.h>

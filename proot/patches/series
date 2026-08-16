@@ -1,0 +1,3 @@
+# source-directory patch-file
+proot proot-a89b3732-android-ndk.patch
+libandroid-shmem libandroid-shmem-0.7-android-ndk.patch

@@ -1,0 +1,25 @@
+[package]
+name = "trierarch-native"
+version = "0.1.0"
+edition = "2024"
+description = "Generic Android PTY host for Trierarch runtimes."
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "trierarch_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0"
+libc = "0.2"
+nix = { version = "0.30", features = ["term", "fs", "process", "signal"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
