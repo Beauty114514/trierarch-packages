@@ -4,8 +4,8 @@
 //! `android/proot/mod.rs`: one PRoot process owns one PTY session.
 
 use anyhow::{Context, Result};
-use nix::pty::{forkpty, ForkptyResult, Winsize};
-use nix::unistd::{dup, execve, Pid};
+use nix::pty::{ForkptyResult, Winsize, forkpty};
+use nix::unistd::{Pid, dup, execve};
 use std::io::Write;
 use std::os::fd::IntoRawFd;
 use std::os::unix::io::{FromRawFd, RawFd};
@@ -20,6 +20,10 @@ pub struct ProotSpec {
     pub shell: PathBuf,
     pub native_library_dir: PathBuf,
     pub cache_dir: PathBuf,
+    /// Empty means terminal-only; otherwise bind this host directory's X0 socket.
+    pub x11_socket_directory: PathBuf,
+    /// Empty starts the configured interactive shell.
+    pub launch_argv: Vec<String>,
 }
 
 pub struct ChildProcess {

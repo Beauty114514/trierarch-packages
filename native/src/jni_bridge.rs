@@ -3,7 +3,10 @@
 //! The PTY model itself lives in `session`; this file only converts JNI values
 //! and marshals native worker-thread events onto the JVM.
 
-use crate::{ChrootSpec, DroidspacesSpec, LaunchSpec, ProotSpec, SessionEvents, SessionId, SessionManager, SessionResult};
+use crate::{
+    ChrootSpec, DroidspacesSpec, LaunchSpec, ProotSpec, SessionEvents, SessionId, SessionManager,
+    SessionResult,
+};
 use jni::objects::{GlobalRef, JByteArray, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jlong};
 use jni::{JNIEnv, JavaVM};
@@ -99,6 +102,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
     shell: JString,
     native_library_directory: JString,
     cache_directory: JString,
+    x11_socket_directory: JString,
+    launch_argv: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -109,6 +114,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
             shell: PathBuf::from(java_string(&mut env, shell)?),
             native_library_dir: PathBuf::from(java_string(&mut env, native_library_directory)?),
             cache_dir: PathBuf::from(java_string(&mut env, cache_directory)?),
+            x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
+            launch_argv: java_string_array(&mut env, launch_argv)?,
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,
@@ -135,6 +142,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
     _: JObject,
     rootfs: JString,
     shell: JString,
+    x11_socket_directory: JString,
+    launch_argv: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -143,6 +152,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
         let spec = ChrootSpec {
             rootfs: PathBuf::from(java_string(&mut env, rootfs)?),
             shell: PathBuf::from(java_string(&mut env, shell)?),
+            x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
+            launch_argv: java_string_array(&mut env, launch_argv)?,
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,
@@ -169,6 +180,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
     _: JObject,
     container: JString,
     user: JString,
+    x11_socket_directory: JString,
+    launch_argv: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -177,6 +190,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
         let spec = DroidspacesSpec {
             container: java_string(&mut env, container)?,
             user: java_string(&mut env, user)?,
+            x11_socket_directory: java_string(&mut env, x11_socket_directory)?,
+            launch_argv: java_string_array(&mut env, launch_argv)?,
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,
@@ -199,6 +214,71 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             throw_illegal_argument(&mut env, &message);
             0
         }
+    }
+}
+
+/// Repairs only Trierarch's private X11 socket directory after an old build
+/// bind-mounted that *directory* into a guest, letting the guest change its
+/// ownership.  New builds bind the X0 socket file only, so this is migration
+/// recovery rather than part of the normal launch path.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_repairX11SocketDirectory(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    app_uid: i32,
+) {
+    let result = (|| {
+        if app_uid < 0 {
+            return Err("invalid application uid".to_owned());
+        }
+        let directory = java_string(&mut env, directory)?;
+        let path = PathBuf::from(&directory);
+        if !path.is_absolute()
+            || path.file_name().and_then(|name| name.to_str()) != Some(".X11-unix")
+        {
+            return Err("invalid X11 socket directory".to_owned());
+        }
+
+        let quoted_directory = crate::privileged::shell_quote(&directory);
+        let command = format!(
+            "mkdir -p {quoted_directory} && chown {app_uid}:{app_uid} {quoted_directory} && chmod 1777 {quoted_directory} && if [ ! -S {quoted_directory}/X0 ]; then rm -f {quoted_directory}/.X0-lock; fi"
+        );
+        crate::privileged::run_as_root(command).map_err(|error| error.to_string())
+    })();
+    if let Err(message) = result {
+        throw_illegal_argument(&mut env, &message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_isDroidspacesRunning(
+    mut env: JNIEnv,
+    _: JObject,
+    container: JString,
+) -> jboolean {
+    match java_string(&mut env, container).and_then(|container| {
+        DroidspacesSpec::is_container_running(&container).map_err(|error| error.to_string())
+    }) {
+        Ok(running) => running as jboolean,
+        Err(message) => {
+            throw_illegal_argument(&mut env, &message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_stopDroidspaces(
+    mut env: JNIEnv,
+    _: JObject,
+    container: JString,
+) {
+    let result = java_string(&mut env, container).and_then(|container| {
+        DroidspacesSpec::stop_container(&container).map_err(|error| error.to_string())
+    });
+    if let Err(message) = result {
+        throw_illegal_argument(&mut env, &message);
     }
 }
 

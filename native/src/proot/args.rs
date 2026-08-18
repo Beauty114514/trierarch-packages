@@ -6,6 +6,7 @@
 use super::ProotSpec;
 use anyhow::{Context, Result};
 use std::ffi::CString;
+use std::os::unix::fs::FileTypeExt;
 
 pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CString>)> {
     let proot = spec.native_library_dir.join("libproot.so");
@@ -13,7 +14,7 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     validate(spec, &proot, &loader)?;
 
     let rootfs = spec.rootfs.display();
-    let argv = strings(&[
+    let mut argv = vec![
         proot.display().to_string(),
         "-r".into(),
         rootfs.to_string(),
@@ -37,12 +38,57 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         format!("--bind={rootfs}/proc/.version:/proc/version"),
         format!("--bind={rootfs}/proc/.vmstat:/proc/vmstat"),
         format!("--bind={rootfs}/proc/.sysctl_entry_cap_last_cap:/proc/sys/kernel/cap_last_cap"),
-        format!("--bind={rootfs}/proc/.sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches"),
+        format!(
+            "--bind={rootfs}/proc/.sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches"
+        ),
         format!("--bind={rootfs}/sys/.empty:/sys/fs/selinux"),
-        spec.shell.display().to_string(),
-        "-i".into(),
-    ])?;
-    let env = strings(&[
+    ];
+    let x11 = !spec.x11_socket_directory.as_os_str().is_empty();
+    if x11 {
+        let host_socket = spec.x11_socket_directory.join("X0");
+        let guest_directory = spec.rootfs.join("tmp/.X11-unix");
+        std::fs::create_dir_all(&guest_directory).with_context(|| {
+            format!("create guest X11 directory: {}", guest_directory.display())
+        })?;
+        let guest_socket = guest_directory.join("X0");
+        if !guest_socket.exists() {
+            std::fs::File::create(&guest_socket).with_context(|| {
+                format!(
+                    "create guest X11 socket mountpoint: {}",
+                    guest_socket.display()
+                )
+            })?;
+        }
+        argv.push(format!(
+            "--bind={}:/tmp/.X11-unix/X0",
+            host_socket.display()
+        ));
+    }
+    if spec.launch_argv.is_empty() {
+        if x11 {
+            argv.extend([
+                "/usr/bin/env".into(),
+                "-u".into(),
+                "WAYLAND_DISPLAY".into(),
+                "DISPLAY=:0".into(),
+                "XDG_SESSION_TYPE=x11".into(),
+            ]);
+        }
+        argv.push(spec.shell.display().to_string());
+        argv.push("-i".into());
+    } else {
+        if x11 {
+            argv.extend([
+                "/usr/bin/env".into(),
+                "-u".into(),
+                "WAYLAND_DISPLAY".into(),
+                "DISPLAY=:0".into(),
+                "XDG_SESSION_TYPE=x11".into(),
+            ]);
+        }
+        argv.extend(spec.launch_argv.iter().cloned());
+    }
+    let mut env = vec![
         format!("PROOT_LOADER={}", loader.display()),
         format!("PROOT_TMP_DIR={}", spec.cache_dir.display()),
         "HOME=/root".into(),
@@ -53,8 +99,12 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         "TMPDIR=/tmp".into(),
         "USER=root".into(),
         "LOGNAME=root".into(),
-    ])?;
-    Ok((argv, env))
+    ];
+    if x11 {
+        env.push("DISPLAY=:0".into());
+        env.push("XDG_SESSION_TYPE=x11".into());
+    }
+    Ok((strings(&argv)?, strings(&env)?))
 }
 
 fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path) -> Result<()> {
@@ -63,6 +113,23 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
         spec.shell.is_absolute(),
         "shell must be an absolute path inside the rootfs"
     );
+    if !spec.x11_socket_directory.as_os_str().is_empty() {
+        anyhow::ensure!(
+            spec.x11_socket_directory.is_absolute() && spec.x11_socket_directory.is_dir(),
+            "X11 socket directory is not accessible: {}",
+            spec.x11_socket_directory.display()
+        );
+        anyhow::ensure!(
+            is_socket(&spec.x11_socket_directory.join("X0")),
+            "Trierarch X11 socket is not ready"
+        );
+    }
+    for value in &spec.launch_argv {
+        anyhow::ensure!(
+            !value.is_empty() && !value.contains('\0'),
+            "launch.argv must not be empty or contain a NUL byte"
+        );
+    }
     let shell_relative = spec
         .shell
         .strip_prefix("/")
@@ -91,8 +158,15 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
     );
     anyhow::ensure!(proot.is_file(), "installed libproot.so is missing");
     anyhow::ensure!(loader.is_file(), "installed libproot_loader.so is missing");
-    anyhow::ensure!(spec.cache_dir.is_dir(), "PRoot cache directory does not exist");
+    anyhow::ensure!(
+        spec.cache_dir.is_dir(),
+        "PRoot cache directory does not exist"
+    );
     Ok(())
+}
+
+fn is_socket(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
 fn strings(values: &[String]) -> Result<Vec<CString>> {

@@ -1,11 +1,11 @@
 //! Launch an already deployed chroot through the device's existing `su` provider.
 //!
-//! This module deliberately does not mount filesystems, install a rootfs, or
-//! manage a persistent service. It only turns an existing rootfs plus guest
-//! shell into one interactive PTY process.
+//! This module does not install a rootfs or manage a persistent service. For
+//! an X11 profile it creates one temporary bind mount for the X11 runtime tmp.
 
 use crate::LaunchSpec;
 use std::io;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +13,10 @@ use std::process::Command;
 pub struct ChrootSpec {
     pub rootfs: PathBuf,
     pub shell: PathBuf,
+    /// Empty means terminal-only; otherwise bind this host directory's X11 tmp.
+    pub x11_socket_directory: PathBuf,
+    /// Empty starts the configured interactive shell.
+    pub launch_argv: Vec<String>,
 }
 
 impl ChrootSpec {
@@ -20,7 +24,10 @@ impl ChrootSpec {
         validate_guest_path(&self.rootfs, "rootfs")?;
         validate_guest_path(&self.shell, "shell")?;
         let su = find_su().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "no supported su executable was found")
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no supported su executable was found",
+            )
         })?;
 
         // `su -c` accepts one shell command. Quote every configuration-derived
@@ -29,13 +36,17 @@ impl ChrootSpec {
         // The environment is deliberately established *inside* the privileged
         // command. Some `su` implementations sanitise their inherited
         // environment, and Android's PATH would otherwise leak into the guest.
+        let x11 = !self.x11_socket_directory.as_os_str().is_empty();
+        if x11 {
+            validate_x11_socket(&self.x11_socket_directory)?;
+        }
+        validate_argv(&self.launch_argv)?;
+        let guest_command = guest_command(self, x11);
         let command = format!(
             "export HOME=/root TERM=xterm-256color LANG=C.UTF-8 USER=root \\
              LOGNAME=root TMP=/tmp TMPDIR=/tmp MAIL=/var/mail/root \\
              PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; \\
-             exec /system/bin/chroot {} {} -i",
-            shell_quote(&self.rootfs),
-            shell_quote(&self.shell),
+             {guest_command}",
         );
         let arguments = su_arguments(&su, command);
         Ok(LaunchSpec {
@@ -50,6 +61,85 @@ impl ChrootSpec {
             ],
         })
     }
+}
+
+fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
+    let command = if spec.launch_argv.is_empty() {
+        format!("{} -i", shell_quote(&spec.shell))
+    } else {
+        shell_words(&spec.launch_argv)
+    };
+    let guest = if x11 {
+        format!(
+            "/usr/bin/env -u WAYLAND_DISPLAY DISPLAY=:0 XDG_SESSION_TYPE=x11 \
+             TMPDIR=/tmp XDG_RUNTIME_DIR=/tmp XKB_CONFIG_ROOT=/usr/share/X11/xkb {command}"
+        )
+    } else {
+        command
+    };
+    if !x11 {
+        return format!(
+            "exec /system/bin/chroot {} {guest}",
+            shell_quote(&spec.rootfs)
+        );
+    }
+
+    let source = spec.x11_socket_directory.join("X0");
+    let source_tmp = spec
+        .x11_socket_directory
+        .parent()
+        .expect("X11 socket directory has a tmp parent");
+    let target = spec.rootfs.join("tmp");
+    format!(
+        "test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
+         mkdir -p {target}; \\
+         /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; \\
+         cleanup() {{ /system/bin/toybox umount {target} >/dev/null 2>&1 || true; }}; \\
+         trap 'cleanup; exit 143' HUP INT TERM; \\
+         /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; exit $status",
+        source = shell_quote(&source),
+        source_tmp = shell_quote(source_tmp),
+        target = shell_quote(&target),
+        rootfs = shell_quote(&spec.rootfs),
+    )
+}
+
+fn validate_x11_socket(directory: &Path) -> io::Result<()> {
+    if !directory.is_absolute() || !directory.is_dir() || !is_socket(&directory.join("X0")) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "X11 socket directory is not accessible: {}",
+                directory.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_argv(argv: &[String]) -> io::Result<()> {
+    if argv
+        .iter()
+        .any(|value| value.is_empty() || value.contains('\0'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "launch.argv must not be empty or contain a NUL byte",
+        ));
+    }
+    Ok(())
+}
+
+fn shell_words(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| shell_quote(Path::new(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_socket(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
 fn find_su() -> Option<PathBuf> {

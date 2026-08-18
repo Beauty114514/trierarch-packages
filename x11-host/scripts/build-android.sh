@@ -25,3 +25,5 @@ if [[ -z "$source_so" ]]; then
 fi
 
 install -Dm755 "$source_so" "$output_dir/libXlorie.so"
+install -Dm644 "$package_dir/runtime-assets/lorie_xkb_bundled.zip" \
+    "$output_dir/assets/lorie_xkb_bundled.zip"

@@ -20,3 +20,22 @@ metadata and is not committed to this repository.
 
 The package does not build or vendor `lorie-app`, `shell-loader`, or a Termux
 companion package.
+
+## Runtime XKB asset
+
+`runtime-assets/lorie_xkb_bundled.zip` is the XKB rules data used by Lorie on
+plain Android. It is installed beside `libXlorie.so` by `build-android.sh` and
+then unpacked into Trierarch's private files directory by the application.
+
+| Field | Value |
+| --- | --- |
+| Data source | X.Org/XKeyboardConfig data from the host `/usr/share/X11/xkb` tree |
+| Archive root | `usr/share/X11/xkb/` |
+| Consumer | `trierarch-app` → `X11Runtime` |
+| Purpose | Supplies keyboard rules to Lorie on Android, where no Linux XKB tree is available |
+| Redistribution | Upstream XKB data; retain the upstream notices and licensing when updating the archive |
+
+The archive is committed because a clean checkout must be able to package the
+same runtime asset without depending on the build host's installed XKB files.
+It is separate from the Git-ignored upstream Lorie source snapshot and is not
+an Android APK or a native library.

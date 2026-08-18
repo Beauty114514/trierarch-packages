@@ -8,6 +8,8 @@ dist/android/arm64-v8a/libXlorie.so
 ```
 
 It does not build an APK, a Termux companion package, or Android UI code.
+The output also contains the XKB rules bundle required for Lorie to start on
+plain Android, where no Linux rootfs has supplied `/usr/share/X11/xkb`.
 
 ## Build
 
@@ -20,8 +22,8 @@ Plugin.
 ./scripts/build-android.sh
 ```
 
-The script invokes only `externalNativeBuildRelease` and copies the resulting
-`libXlorie.so` to `dist/`.
+The script invokes only `externalNativeBuildRelease` and copies both
+`libXlorie.so` and the versioned XKB runtime asset to `dist/`.
 
 The Android application is deliberately not part of this package. It will
 later package this versioned native artifact and provide the Java/JNI display
