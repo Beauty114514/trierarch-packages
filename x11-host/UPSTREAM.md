@@ -13,6 +13,22 @@ This package builds the native Lorie source tree from
 | Required NDK | `29.0.14206865` |
 | Upstream license | GPL-3.0-or-later; see upstream source notices |
 
+## Trierarch patches
+
+The upstream source is intentionally not committed. After fetching the pinned
+revision, apply the checked-in patch series with `scripts/patch.sh`:
+
+```text
+patches/series
+└── 0001-runtime-cursor-visibility.patch
+```
+
+The first patch adds a runtime JNI-controlled visibility switch to the Lorie
+renderer. It suppresses only X11 cursor drawing; pointer movement, buttons,
+scrolling, and cursor updates remain enabled. If a future upstream revision
+does not accept the patch cleanly, update the patch against the new pinned
+commit rather than editing `src/lorie/` directly.
+
 Run `scripts/fetch-lorie.sh` before building. It checks out the pinned commit,
 initializes the required submodules, then copies only `lorie/src/main/cpp/` to
 `src/lorie/`. The resulting local source snapshot contains no nested Git

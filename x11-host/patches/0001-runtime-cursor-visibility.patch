@@ -1,0 +1,70 @@
+diff -ruN /tmp/lorie-baseline/lorie/activity.cpp /tmp/lorie-modified/lorie/activity.cpp
+--- a/lorie/activity.cpp
++++ b/lorie/activity.cpp
+@@ -366,6 +366,11 @@
+                 if (!r || r->destroyed) return;
+                 r->renderer.setViewport(x, y, w, h, ew, eh, hidden);
+             }},
++            {"setCursorVisible", "(JZ)V", (void *) +[](__unused JNIEnv *env, __unused jobject thiz, jlong ptr, jboolean visible) {
++                auto* r = (LorieViewResources*) ptr;
++                if (!r || r->destroyed) return;
++                r->renderer.setCursorVisible(visible == JNI_TRUE);
++            }},
+             {"setRendererZoom", "(JI)V", (void *) +[](__unused JNIEnv *env, __unused jobject thiz, jlong ptr, jint percent) {
+                 auto* r = (LorieViewResources*) ptr;
+                 if (!r || r->destroyed) return;
+diff -ruN /tmp/lorie-baseline/lorie/lorie.h /tmp/lorie-modified/lorie/lorie.h
+--- a/lorie/lorie.h
++++ b/lorie/lorie.h
+@@ -246,6 +246,7 @@
+ #endif
+ 
+ #ifdef __cplusplus
++#include <atomic>
+ #include <EGL/egl.h>
+ #include <GLES2/gl2.h>
+ #include "list.h"
+@@ -258,6 +259,7 @@
+     ANativeWindow *defaultWin = nullptr, *win = nullptr;
+     struct xorg_list addedBuffers, buffers, removedBuffers;
+     volatile jint filtering = GL_NEAREST;
++    std::atomic_bool cursorVisible{true};
+ 
+     pthread_t thread = 0;
+     volatile bool stopping = false;
+@@ -325,6 +327,7 @@
+     void removeAllBuffers();
+     void setWindow(JNIEnv* env, jobject jsfc);
+     void setViewport(int x, int y, int w, int h, int ew, int eh, int hidden);
++    void setCursorVisible(bool visible);
+     void setZoom(int percent);
+     void releaseWinAndSurface(ANativeWindow** anw, EGLSurface* esfc);
+     void refreshContext();
+diff -ruN /tmp/lorie-baseline/lorie/renderer.cpp /tmp/lorie-modified/lorie/renderer.cpp
+--- a/lorie/renderer.cpp
++++ b/lorie/renderer.cpp
+@@ -644,6 +644,15 @@
+     pthread_mutex_unlock(&stateLock);
+ }
+ 
++void Renderer::setCursorVisible(bool visible) {
++    cursorVisible.store(visible, std::memory_order_relaxed);
++    pthread_mutex_lock(&stateLock);
++    if (state)
++        state->cursor.moved = true;
++    pthread_cond_signal(stateCond);
++    pthread_mutex_unlock(&stateLock);
++}
++
+ void Renderer::setZoom(int percent) {
+     pthread_mutex_lock(&stateLock);
+     zoomPercent = percent < 100 ? 100 : (percent > 400 ? 400 : percent);
+@@ -1236,6 +1245,9 @@
+ void Renderer::drawCursor(float displayWidth, float displayHeight, float sourceLeft, float sourceTop) {
+     float x, y, w, h;
+ 
++    if (!cursorVisible.load(std::memory_order_relaxed))
++        return;
++
+     if (!state->cursor.width || !state->cursor.height)
+         return;

@@ -19,12 +19,20 @@ Python 3, Bison, and a Java version supported by the pinned Android Gradle
 Plugin.
 
 ```bash
+./scripts/fetch-lorie.sh
+./scripts/patch.sh
 ./scripts/build-android.sh
 ```
 
-The script invokes only `externalNativeBuildRelease` and copies both
+The fetch step prepares the pinned upstream source, the patch step applies the
+Trierarch-owned changes, and the build step invokes only
+`externalNativeBuildRelease` and copies both
 `libXlorie.so` and the versioned XKB runtime asset to `dist/`.
 
 The Android application is deliberately not part of this package. It will
 later package this versioned native artifact and provide the Java/JNI display
 bridge separately.
+
+`src/lorie/` is a generated, ignored upstream checkout. Do not edit it as the
+source of record; put Trierarch changes in `patches/` and list them in
+`patches/series`.
