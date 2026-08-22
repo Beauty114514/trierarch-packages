@@ -1,0 +1,310 @@
+#include "renderer.h"
+#include "server_internal.h"
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#include <android/log.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define TAG "TrierarchRenderer"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+#ifndef EGL_WAYLAND_BUFFER_WL
+#define EGL_WAYLAND_BUFFER_WL 0x31d5
+#endif
+#ifndef EGL_NATIVE_BUFFER_ANDROID
+#define EGL_NATIVE_BUFFER_ANDROID 0x3140
+#endif
+
+typedef EGLBoolean (*bind_wayland_display_fn)(EGLDisplay, void *);
+typedef EGLBoolean (*query_wayland_buffer_fn)(EGLDisplay, void *, EGLint, EGLint *);
+typedef EGLImageKHR (*create_image_fn)(EGLDisplay, EGLContext, EGLenum, EGLClientBuffer, const EGLint *);
+typedef EGLBoolean (*destroy_image_fn)(EGLDisplay, EGLImageKHR);
+typedef void (*image_target_fn)(GLenum, GLeglImageOES);
+typedef EGLClientBuffer (*native_client_buffer_fn)(void *);
+
+struct renderer_context {
+    EGLDisplay display;
+    EGLSurface surface;
+    EGLContext context;
+    ANativeWindow *window;
+    GLuint background_program;
+    GLuint texture_program;
+    GLuint texture;
+    int width;
+    int height;
+    bool valid;
+    create_image_fn create_image;
+    destroy_image_fn destroy_image;
+    image_target_fn image_target;
+    native_client_buffer_fn native_client_buffer;
+};
+
+static const char *vertex_source =
+        "attribute vec2 position; attribute vec2 texcoord; varying vec2 uv;"
+        "void main(){gl_Position=vec4(position,0.0,1.0);uv=texcoord;}";
+static const char *background_source =
+        "precision mediump float; void main(){gl_FragColor=vec4(0.0,0.0,0.0,1.0);}";
+static const char *texture_source =
+        "precision mediump float; varying vec2 uv; uniform sampler2D tex;"
+        "uniform float swizzle; uniform float opaque;"
+        "void main(){vec4 c=texture2D(tex,uv); vec4 b=vec4(c.b,c.g,c.r,c.a);"
+        "c=mix(c,b,swizzle); c.a=mix(c.a,1.0,opaque); gl_FragColor=c;}";
+
+static GLuint compile_shader(GLenum type, const char *source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, NULL);
+    glCompileShader(shader);
+    GLint ok = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(shader, sizeof(log), NULL, log);
+        LOGE("shader compile failed: %s", log);
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static GLuint make_program(const char *fragment) {
+    GLuint vertex = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    GLuint frag = compile_shader(GL_FRAGMENT_SHADER, fragment);
+    if (!vertex || !frag) {
+        if (vertex) glDeleteShader(vertex);
+        if (frag) glDeleteShader(frag);
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, frag);
+    glBindAttribLocation(program, 0, "position");
+    glBindAttribLocation(program, 1, "texcoord");
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(frag);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
+        struct wayland_server *server) {
+    if (!window) return NULL;
+    struct renderer_context *renderer = calloc(1, sizeof(*renderer));
+    if (!renderer) return NULL;
+    renderer->display = EGL_NO_DISPLAY;
+    renderer->surface = EGL_NO_SURFACE;
+    renderer->context = EGL_NO_CONTEXT;
+    renderer->window = window;
+    renderer->display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (renderer->display == EGL_NO_DISPLAY) goto fail;
+    if (!eglInitialize(renderer->display, NULL, NULL)) goto fail;
+    const EGLint config_attributes[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8, EGL_NONE,
+    };
+    EGLConfig config;
+    EGLint count = 0;
+    if (!eglChooseConfig(renderer->display, config_attributes, &config, 1, &count) || count == 0)
+        goto fail;
+    const EGLint context_attributes[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    renderer->context = eglCreateContext(renderer->display, config, EGL_NO_CONTEXT,
+            context_attributes);
+    if (renderer->context == EGL_NO_CONTEXT) goto fail;
+    renderer->surface = eglCreateWindowSurface(renderer->display, config, window, NULL);
+    if (renderer->surface == EGL_NO_SURFACE) goto fail;
+    if (!eglMakeCurrent(renderer->display, renderer->surface, renderer->surface, renderer->context))
+        goto fail;
+
+    renderer->create_image = (create_image_fn)eglGetProcAddress("eglCreateImageKHR");
+    renderer->destroy_image = (destroy_image_fn)eglGetProcAddress("eglDestroyImageKHR");
+    renderer->image_target = (image_target_fn)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    renderer->native_client_buffer = (native_client_buffer_fn)eglGetProcAddress(
+            "eglGetNativeClientBufferANDROID");
+    bind_wayland_display_fn bind =
+            (bind_wayland_display_fn)eglGetProcAddress("eglBindWaylandDisplayWL");
+    query_wayland_buffer_fn query =
+            (query_wayland_buffer_fn)eglGetProcAddress("eglQueryWaylandBufferWL");
+    if (bind && query && renderer->create_image && renderer->destroy_image &&
+            renderer->image_target && server && bind(renderer->display, server->display)) {
+        server->egl_buffer_supported = true;
+        LOGI("EGL Wayland buffer import enabled");
+    } else {
+        LOGI("EGL Wayland buffer import unavailable; SHM/dmabuf fallback remains active");
+    }
+    eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
+    eglQuerySurface(renderer->display, renderer->surface, EGL_HEIGHT, &renderer->height);
+    renderer->background_program = make_program(background_source);
+    renderer->texture_program = make_program(texture_source);
+    glGenTextures(1, &renderer->texture);
+    renderer->valid = renderer->background_program && renderer->texture_program && renderer->texture;
+    eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (!renderer->valid) goto fail;
+    return renderer;
+
+fail:
+    trierarch_renderer_destroy(renderer);
+    return NULL;
+}
+
+void trierarch_renderer_destroy(struct renderer_context *renderer) {
+    if (!renderer) return;
+    if (renderer->display != EGL_NO_DISPLAY && renderer->surface != EGL_NO_SURFACE &&
+            renderer->context != EGL_NO_CONTEXT) {
+        eglMakeCurrent(renderer->display, renderer->surface, renderer->surface,
+                renderer->context);
+        if (renderer->texture) glDeleteTextures(1, &renderer->texture);
+        if (renderer->background_program) glDeleteProgram(renderer->background_program);
+        if (renderer->texture_program) glDeleteProgram(renderer->texture_program);
+        eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    if (renderer->display != EGL_NO_DISPLAY) {
+        if (renderer->surface != EGL_NO_SURFACE) eglDestroySurface(renderer->display, renderer->surface);
+        if (renderer->context != EGL_NO_CONTEXT) eglDestroyContext(renderer->display, renderer->context);
+        eglTerminate(renderer->display);
+    }
+    free(renderer);
+}
+
+bool trierarch_renderer_valid(const struct renderer_context *renderer) {
+    return renderer && renderer->valid;
+}
+
+static void draw_surface(struct renderer_context *renderer,
+        struct compositor_surface *surface, int x, int y) {
+    struct shm_buffer *buffer = surface->current;
+    if (!buffer) return;
+    int scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
+    int width = surface->viewport_destination_set ? surface->viewport_destination_width : buffer->width / scale;
+    int height = surface->viewport_destination_set ? surface->viewport_destination_height : buffer->height / scale;
+    if (width <= 0 || height <= 0) return;
+    float left = 2.0f * x / renderer->width - 1.0f;
+    float right = 2.0f * (x + width) / renderer->width - 1.0f;
+    float top = 1.0f - 2.0f * y / renderer->height;
+    float bottom = 1.0f - 2.0f * (y + height) / renderer->height;
+    glUseProgram(renderer->texture_program);
+    glBindTexture(GL_TEXTURE_2D, renderer->texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    float swizzle = 1.0f, opaque = 1.0f;
+    EGLImageKHR image = EGL_NO_IMAGE_KHR;
+    if (buffer->android_buffer && buffer->android_hardware_buffer &&
+            renderer->create_image && renderer->image_target && renderer->native_client_buffer) {
+        EGLClientBuffer native_buffer = renderer->native_client_buffer(
+                buffer->android_hardware_buffer);
+        const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+        if (native_buffer) image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes);
+        if (image != EGL_NO_IMAGE_KHR) {
+            renderer->image_target(GL_TEXTURE_2D, image);
+            swizzle = 0.0f;
+            opaque = 0.0f;
+        }
+    }
+    if (image == EGL_NO_IMAGE_KHR && buffer->egl_buffer &&
+            renderer->create_image && renderer->image_target) {
+        image = renderer->create_image(renderer->display, renderer->context,
+                EGL_WAYLAND_BUFFER_WL, (EGLClientBuffer)buffer->egl_resource, NULL);
+        if (image != EGL_NO_IMAGE_KHR) { renderer->image_target(GL_TEXTURE_2D, image); swizzle = 0.0f; opaque = 0.0f; }
+    }
+    if (image == EGL_NO_IMAGE_KHR && buffer->data) {
+        const int packed_stride = buffer->width * 4;
+        const void *pixels = buffer->data;
+        void *packed = NULL;
+        if (buffer->stride != packed_stride) {
+            packed = malloc((size_t)packed_stride * (size_t)buffer->height);
+            if (!packed) return;
+            for (int row = 0; row < buffer->height; ++row) {
+                memcpy((char *)packed + (size_t)row * (size_t)packed_stride,
+                        (const char *)buffer->data + (size_t)row * (size_t)buffer->stride,
+                        (size_t)packed_stride);
+            }
+            pixels = packed;
+        }
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, buffer->width, buffer->height, 0,
+                GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        free(packed);
+        /* This matches the old compositor's compatibility behavior: a number of
+         * desktop clients expose ARGB SHM buffers with alpha left as zero. Until
+         * opaque regions are tracked, draw SHM as RGBX instead of hiding it. */
+        opaque = 1.0f;
+    }
+    glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), swizzle);
+    glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), opaque);
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+    if (surface->viewport_source_set && buffer->width > 0 && buffer->height > 0) {
+        u0 = wl_fixed_to_double(surface->viewport_source_x) / buffer->width;
+        v0 = wl_fixed_to_double(surface->viewport_source_y) / buffer->height;
+        u1 = u0 + wl_fixed_to_double(surface->viewport_source_width) / buffer->width;
+        v1 = v0 + wl_fixed_to_double(surface->viewport_source_height) / buffer->height;
+    }
+    const GLfloat vertices[] = { left,bottom,u0,v1, right,bottom,u1,v1,
+            left,top,u0,v0, right,top,u1,v0 };
+    glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),vertices);
+    glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),vertices+2);
+    glEnableVertexAttribArray(0); glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP,0,4);
+    glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
+    if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image) renderer->destroy_image(renderer->display,image);
+    if (buffer->resource && buffer->busy) { buffer->busy=false; wl_buffer_send_release(buffer->resource); }
+}
+
+static void draw_surface_tree(struct renderer_context *renderer,
+        struct wayland_server *server, struct compositor_surface *surface,
+        int parent_x, int parent_y) {
+    if (!surface || !surface->mapped || !surface->current) return;
+    int own_x = parent_x + (surface->parent ? surface->subsurface_x : 0);
+    int own_y = parent_y + (surface->parent ? surface->subsurface_y : 0);
+    draw_surface(renderer, surface, own_x, own_y);
+    struct compositor_surface *child;
+    wl_list_for_each(child, &server->surfaces, link) {
+        if (child->parent == surface)
+            draw_surface_tree(renderer, server, child, own_x, own_y);
+    }
+}
+
+static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) {
+    if (!surface || !surface->current || !surface->viewport_destination_set) return false;
+    return (int64_t)surface->current->width * surface->current->height <= 256;
+}
+
+bool trierarch_renderer_render(struct renderer_context *renderer,
+        struct wayland_server *server) {
+    if (!trierarch_renderer_valid(renderer) || !server) return false;
+    if (!eglMakeCurrent(renderer->display, renderer->surface, renderer->surface, renderer->context))
+        return false;
+    eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
+    eglQuerySurface(renderer->display, renderer->surface, EGL_HEIGHT, &renderer->height);
+    glViewport(0, 0, renderer->width, renderer->height);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    struct compositor_surface *surface;
+    /* Plasma uses tiny viewport-scaled root buffers during startup. Draw those
+     * first so they cannot cover the actual desktop surface. */
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface->parent && is_tiny_viewport_underlay(surface))
+            draw_surface_tree(renderer, server, surface, 0, 0);
+    }
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface->parent && !is_tiny_viewport_underlay(surface))
+            draw_surface_tree(renderer, server, surface, 0, 0);
+    }
+    glDisable(GL_BLEND);
+    eglSwapBuffers(renderer->display, renderer->surface);
+    trierarch_surface_send_frame_callbacks(server, 0);
+    eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    return true;
+}

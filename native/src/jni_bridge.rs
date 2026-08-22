@@ -103,6 +103,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
     native_library_directory: JString,
     cache_directory: JString,
     x11_socket_directory: JString,
+    wayland_runtime_directory: JString,
     launch_argv: JObjectArray,
     rows: i32,
     columns: i32,
@@ -181,6 +182,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
     container: JString,
     user: JString,
     x11_socket_directory: JString,
+    wayland_runtime_directory: JString,
     launch_argv: JObjectArray,
     rows: i32,
     columns: i32,
@@ -191,6 +193,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             container: java_string(&mut env, container)?,
             user: java_string(&mut env, user)?,
             x11_socket_directory: java_string(&mut env, x11_socket_directory)?,
+            wayland_runtime_directory: java_string(&mut env, wayland_runtime_directory)?,
             launch_argv: java_string_array(&mut env, launch_argv)?,
         };
         let events = Arc::new(JvmEvents {

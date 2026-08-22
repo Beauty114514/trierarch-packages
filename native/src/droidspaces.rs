@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 const DROIDSPACES_BINARY: &str = "/data/local/Droidspaces/bin/droidspaces";
 const GUEST_X11_SOCKET: &str = "/tmp/.X11-unix/X0";
+const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
+const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
+const WAYLAND_SOCKET: &str = "wayland-trierarch";
 
 #[derive(Clone, Debug)]
 pub struct DroidspacesSpec {
@@ -16,6 +19,8 @@ pub struct DroidspacesSpec {
     /// A non-empty value is attached only while starting a stopped container:
     /// DroidSpaces applies bind mounts during `start`, not `run`.
     pub x11_socket_directory: String,
+    /// Host directory containing Trierarch's Wayland socket, if enabled.
+    pub wayland_runtime_directory: String,
     /// Empty keeps DroidSpaces' interactive-shell default.
     pub launch_argv: Vec<String>,
 }
@@ -74,8 +79,11 @@ impl DroidspacesSpec {
 
     fn session_command(&self) -> io::Result<String> {
         let x11_bind = self.x11_bind()?;
-        let start = self.start_command(x11_bind.as_deref());
-        let run = if self.x11_socket_directory.is_empty() {
+        let wayland_bind = self.wayland_bind()?;
+        let start = self.start_command(x11_bind.as_deref(), wayland_bind.as_deref());
+        let run = if !self.wayland_runtime_directory.is_empty() {
+            self.wayland_command()
+        } else if self.x11_socket_directory.is_empty() {
             self.terminal_command()
         } else {
             self.x11_command()
@@ -103,6 +111,11 @@ impl DroidspacesSpec {
             Ok(format!(
                 "export TERM=xterm-256color LANG=C.UTF-8; {wait_for_socket} {running} {start} || exit $?;; *) printf '%s\\n' 'DroidSpaces container is already running without this X11 attachment; stop it, then start this Trierarch profile.' >&2; exit 125;; esac; {run}",
             ))
+        } else if let Some(wayland_bind) = wayland_bind {
+            let _ = wayland_bind;
+            Ok(format!(
+                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; esac; {run}",
+            ))
         } else {
             Ok(format!(
                 "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; esac; {run}",
@@ -110,15 +123,19 @@ impl DroidspacesSpec {
         }
     }
 
-    fn start_command(&self, x11_bind: Option<&str>) -> String {
-        let bind_argument = x11_bind.map_or_else(String::new, |bind| {
-            format!(" --bind={}", privileged::shell_quote(bind))
-        });
+    fn start_command(&self, x11_bind: Option<&str>, wayland_bind: Option<&str>) -> String {
+        let mut bind_arguments = String::new();
+        if let Some(bind) = x11_bind {
+            bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
+        }
+        if let Some(bind) = wayland_bind {
+            bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
+        }
         format!(
             "{} --name={}{} start",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
-            bind_argument,
+            bind_arguments,
         )
     }
 
@@ -143,7 +160,7 @@ impl DroidspacesSpec {
 
     fn x11_command(&self) -> String {
         let prefix = format!(
-            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY DISPLAY=:0 XDG_SESSION_TYPE=x11",
+            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY DISPLAY=:0 XDG_SESSION_TYPE=x11 QT_QUICK_BACKEND=software",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
         );
@@ -153,15 +170,44 @@ impl DroidspacesSpec {
             // select its own configured login shell while preserving only the
             // terminal and X11 variables required by this session.
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,TERM {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,TERM {}",
                 privileged::shell_quote(&self.user),
             )
         } else {
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,TERM {} -c {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,TERM {} -c {}",
                 privileged::shell_quote(&self.user),
                 privileged::shell_quote(shell_words(&self.launch_argv)),
             )
+        }
+    }
+
+    fn wayland_command(&self) -> String {
+        let prefix = format!(
+            "exec {} --name={} --user={} run /usr/bin/env -u DISPLAY XDG_RUNTIME_DIR={} WAYLAND_DISPLAY={} XDG_SESSION_TYPE=wayland QT_QUICK_BACKEND=software",
+            privileged::shell_quote(DROIDSPACES_BINARY),
+            privileged::shell_quote(&self.container),
+            privileged::shell_quote(&self.user),
+            GUEST_WAYLAND_RUNTIME_DIRECTORY,
+            WAYLAND_SOCKET,
+        );
+        let prepare_runtime = format!(
+            "install -d -m 700 {runtime} && ln -sfn {host}/{socket} {runtime}/{socket};",
+            runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
+            host = GUEST_WAYLAND_HOST_DIRECTORY,
+            socket = WAYLAND_SOCKET,
+        );
+        if self.launch_argv.is_empty() {
+            format!("{prefix} /bin/sh -lc {}", privileged::shell_quote(&format!(
+                "{} exec /bin/sh -l",
+                prepare_runtime,
+            )))
+        } else {
+            format!("{prefix} /bin/sh -lc {}", privileged::shell_quote(&format!(
+                "{} exec {}",
+                prepare_runtime,
+                shell_words(&self.launch_argv),
+            )))
         }
     }
 
@@ -182,6 +228,19 @@ impl DroidspacesSpec {
         Ok(Some(format!(
             "{}/X0:{GUEST_X11_SOCKET}",
             socket_directory.display()
+        )))
+    }
+
+    fn wayland_bind(&self) -> io::Result<Option<String>> {
+        if self.wayland_runtime_directory.is_empty() { return Ok(None); }
+        let directory = Path::new(&self.wayland_runtime_directory);
+        if !directory.is_absolute() || !directory.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                format!("Wayland runtime directory is not accessible: {}", directory.display())));
+        }
+        Ok(Some(format!(
+            "{}:{GUEST_WAYLAND_HOST_DIRECTORY}",
+            directory.display()
         )))
     }
 }

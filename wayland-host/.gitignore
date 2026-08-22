@@ -1,0 +1,11 @@
+# Reproducible upstream checkouts created by scripts/fetch.sh
+/sources/wayland/
+/sources/wayland-protocols/
+/sources/libffi/
+
+# Native build and package output
+/build/
+/out/
+/dist/
+/libs/
+/protocol/generated/
