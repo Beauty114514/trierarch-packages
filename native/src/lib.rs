@@ -9,6 +9,7 @@ mod droidspaces;
 mod privileged;
 mod proot;
 mod pty;
+pub mod rootfs;
 mod session;
 
 #[cfg(target_os = "android")]

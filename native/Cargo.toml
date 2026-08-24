@@ -10,10 +10,16 @@ publish = false
 name = "trierarch_native"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "trierarch-rootfs"
+path = "src/rootfs_cli.rs"
+
 [dependencies]
 anyhow = "1.0"
 libc = "0.2"
 nix = { version = "0.30", features = ["term", "fs", "process", "signal"] }
+tar = "0.4"
+xz2 = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
