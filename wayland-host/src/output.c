@@ -70,6 +70,8 @@ void trierarch_output_bind(struct wl_client *client, void *data,
 void trierarch_wayland_set_output_size(wayland_server_t *opaque, int width, int height) {
     struct wayland_server *server = (struct wayland_server *)opaque;
     if (!server) return;
+    if (width <= 0 || height <= 0 ||
+            (server->output_width == width && server->output_height == height)) return;
     server->output_width = width > 0 ? width : server->output_width;
     server->output_height = height > 0 ? height : server->output_height;
 
@@ -77,6 +79,10 @@ void trierarch_wayland_set_output_size(wayland_server_t *opaque, int width, int 
     wl_list_for_each(output, &server->output_resources, link)
         send_output_state(server, output->resource);
     trierarch_xdg_output_notify(server);
+
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link)
+        trierarch_surface_send_configure(surface);
 }
 
 void trierarch_output_enter_surface(struct wayland_server *server,

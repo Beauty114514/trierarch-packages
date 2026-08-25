@@ -15,9 +15,15 @@ static struct renderer_context *renderer;
 
 static void *dispatch_loop(void *argument) {
     (void)argument;
-    while (dispatch_running) {
+    for (;;) {
+        pthread_mutex_lock(&server_mutex);
+        if (!dispatch_running || !server) {
+            pthread_mutex_unlock(&server_mutex);
+            break;
+        }
         trierarch_wayland_dispatch(server);
         if (renderer) trierarch_renderer_render(renderer, server);
+        pthread_mutex_unlock(&server_mutex);
     }
     return NULL;
 }
@@ -58,7 +64,11 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStop(JNIEnv *env, jobject object)
     (void)object;
     pthread_mutex_lock(&server_mutex);
     dispatch_running = 0;
-    if (server) pthread_join(dispatch_thread, NULL);
+    int should_join = server != NULL;
+    pthread_mutex_unlock(&server_mutex);
+    if (should_join) pthread_join(dispatch_thread, NULL);
+
+    pthread_mutex_lock(&server_mutex);
     trierarch_renderer_destroy(renderer);
     renderer = NULL;
     trierarch_wayland_destroy(server);
@@ -67,6 +77,17 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStop(JNIEnv *env, jobject object)
         ANativeWindow_release(native_window);
         native_window = NULL;
     }
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeSetOutputSize(JNIEnv *env, jobject object,
+        jint width, jint height) {
+    (void)env;
+    (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server && width > 0 && height > 0)
+        trierarch_wayland_set_output_size(server, width, height);
     pthread_mutex_unlock(&server_mutex);
 }
 
