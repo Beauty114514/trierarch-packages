@@ -235,10 +235,9 @@ static void draw_surface(struct renderer_context *renderer,
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, buffer->width, buffer->height, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         free(packed);
-        /* This matches the old compositor's compatibility behavior: a number of
-         * desktop clients expose ARGB SHM buffers with alpha left as zero. Until
-         * opaque regions are tracked, draw SHM as RGBX instead of hiding it. */
-        opaque = 1.0f;
+        /* XRGB has no alpha channel. ARGB must retain its alpha: cursor images
+         * rely on transparent pixels around the visible pointer shape. */
+        opaque = buffer->format == WL_SHM_FORMAT_XRGB8888 ? 1.0f : 0.0f;
     }
     glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), swizzle);
     glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), opaque);
