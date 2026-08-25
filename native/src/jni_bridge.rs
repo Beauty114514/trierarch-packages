@@ -103,7 +103,6 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
     native_library_directory: JString,
     cache_directory: JString,
     x11_socket_directory: JString,
-    wayland_runtime_directory: JString,
     launch_argv: JObjectArray,
     rows: i32,
     columns: i32,
