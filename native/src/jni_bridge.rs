@@ -104,6 +104,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
     cache_directory: JString,
     x11_socket_directory: JString,
     launch_argv: JObjectArray,
+    graphics_environment: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -116,6 +117,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
             cache_dir: PathBuf::from(java_string(&mut env, cache_directory)?),
             x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
             launch_argv: java_string_array(&mut env, launch_argv)?,
+            graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,
@@ -144,6 +146,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
     shell: JString,
     x11_socket_directory: JString,
     launch_argv: JObjectArray,
+    graphics_environment: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -154,6 +157,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
             shell: PathBuf::from(java_string(&mut env, shell)?),
             x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
             launch_argv: java_string_array(&mut env, launch_argv)?,
+            graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,
@@ -183,6 +187,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
     x11_socket_directory: JString,
     wayland_runtime_directory: JString,
     launch_argv: JObjectArray,
+    graphics_environment: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -194,6 +199,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             x11_socket_directory: java_string(&mut env, x11_socket_directory)?,
             wayland_runtime_directory: java_string(&mut env, wayland_runtime_directory)?,
             launch_argv: java_string_array(&mut env, launch_argv)?,
+            graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,

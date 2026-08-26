@@ -104,6 +104,8 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         env.push("DISPLAY=:0".into());
         env.push("XDG_SESSION_TYPE=x11".into());
     }
+    validate_environment(&spec.graphics_environment)?;
+    env.extend(spec.graphics_environment.iter().cloned());
     Ok((strings(&argv)?, strings(&env)?))
 }
 
@@ -130,6 +132,7 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
             "launch.argv must not be empty or contain a NUL byte"
         );
     }
+    validate_environment(&spec.graphics_environment)?;
     let shell_relative = spec
         .shell
         .strip_prefix("/")
@@ -162,6 +165,21 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
         spec.cache_dir.is_dir(),
         "PRoot cache directory does not exist"
     );
+    Ok(())
+}
+
+fn validate_environment(values: &[String]) -> Result<()> {
+    for value in values {
+        let Some((name, _)) = value.split_once('=') else {
+            anyhow::bail!("graphics environment entry must be NAME=VALUE");
+        };
+        anyhow::ensure!(
+            !name.is_empty()
+                && name.bytes().all(|byte| byte == b'_' || byte.is_ascii_uppercase())
+                && !value.contains('\0'),
+            "graphics environment entry is invalid"
+        );
+    }
     Ok(())
 }
 

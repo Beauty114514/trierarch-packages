@@ -23,6 +23,8 @@ pub struct DroidspacesSpec {
     pub wayland_runtime_directory: String,
     /// Empty keeps DroidSpaces' interactive-shell default.
     pub launch_argv: Vec<String>,
+    /// Rendering environment resolved from the profile by the Android app.
+    pub graphics_environment: Vec<String>,
 }
 
 impl DroidspacesSpec {
@@ -58,6 +60,7 @@ impl DroidspacesSpec {
         validate_value(&self.container, "container")?;
         validate_value(&self.user, "user")?;
         validate_argv(&self.launch_argv)?;
+        validate_environment(&self.graphics_environment)?;
         let su = privileged::find_su().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -159,8 +162,9 @@ impl DroidspacesSpec {
     }
 
     fn x11_command(&self) -> String {
+        let graphics_environment = shell_words(&self.graphics_environment);
         let prefix = format!(
-            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY DISPLAY=:0 XDG_SESSION_TYPE=x11 QT_QUICK_BACKEND=software",
+            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 {graphics_environment}",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
         );
@@ -170,12 +174,12 @@ impl DroidspacesSpec {
             // select its own configured login shell while preserving only the
             // terminal and X11 variables required by this session.
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,TERM {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {}",
                 privileged::shell_quote(&self.user),
             )
         } else {
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,TERM {} -c {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {} -c {}",
                 privileged::shell_quote(&self.user),
                 privileged::shell_quote(shell_words(&self.launch_argv)),
             )
@@ -183,8 +187,9 @@ impl DroidspacesSpec {
     }
 
     fn wayland_command(&self) -> String {
+        let graphics_environment = shell_words(&self.graphics_environment);
         let prefix = format!(
-            "exec {} --name={} --user={} run /usr/bin/env -u DISPLAY XDG_RUNTIME_DIR={} WAYLAND_DISPLAY={} XDG_SESSION_TYPE=wayland QT_QUICK_BACKEND=software",
+            "exec {} --name={} --user={} run /usr/bin/env -u DISPLAY -u QT_QUICK_BACKEND XDG_RUNTIME_DIR={} WAYLAND_DISPLAY={} XDG_SESSION_TYPE=wayland {graphics_environment}",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
             privileged::shell_quote(&self.user),
@@ -256,6 +261,22 @@ fn shell_words(values: &[String]) -> String {
 fn validate_argv(argv: &[String]) -> io::Result<()> {
     for value in argv {
         validate_value(value, "launch.argv")?;
+    }
+    Ok(())
+}
+
+fn validate_environment(values: &[String]) -> io::Result<()> {
+    for value in values {
+        let Some((name, _)) = value.split_once('=') else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "graphics environment entry must be NAME=VALUE"));
+        };
+        if name.is_empty()
+            || !name.bytes().all(|byte| byte == b'_' || byte.is_ascii_uppercase())
+            || value.contains('\0') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "graphics environment entry is invalid"));
+        }
     }
     Ok(())
 }

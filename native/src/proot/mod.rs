@@ -24,6 +24,8 @@ pub struct ProotSpec {
     pub x11_socket_directory: PathBuf,
     /// Empty starts the configured interactive shell.
     pub launch_argv: Vec<String>,
+    /// Rendering environment resolved from the profile by the Android app.
+    pub graphics_environment: Vec<String>,
 }
 
 pub struct ChildProcess {

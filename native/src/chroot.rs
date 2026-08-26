@@ -17,6 +17,8 @@ pub struct ChrootSpec {
     pub x11_socket_directory: PathBuf,
     /// Empty starts the configured interactive shell.
     pub launch_argv: Vec<String>,
+    /// Rendering environment resolved from the profile by the Android app.
+    pub graphics_environment: Vec<String>,
 }
 
 impl ChrootSpec {
@@ -41,6 +43,7 @@ impl ChrootSpec {
             validate_x11_socket(&self.x11_socket_directory)?;
         }
         validate_argv(&self.launch_argv)?;
+        validate_environment(&self.graphics_environment)?;
         let guest_command = guest_command(self, x11);
         let command = format!(
             "export HOME=/root TERM=xterm-256color LANG=C.UTF-8 USER=root \\
@@ -69,13 +72,14 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
     } else {
         shell_words(&spec.launch_argv)
     };
+    let graphics_environment = shell_words(&spec.graphics_environment);
     let guest = if x11 {
         format!(
-            "/usr/bin/env -u WAYLAND_DISPLAY DISPLAY=:0 XDG_SESSION_TYPE=x11 \
-             TMPDIR=/tmp XDG_RUNTIME_DIR=/tmp XKB_CONFIG_ROOT=/usr/share/X11/xkb {command}"
+            "/usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 \
+             TMPDIR=/tmp XDG_RUNTIME_DIR=/tmp XKB_CONFIG_ROOT=/usr/share/X11/xkb {graphics_environment} {command}"
         )
     } else {
-        command
+        format!("/usr/bin/env -u QT_QUICK_BACKEND {graphics_environment} {command}")
     };
     if !x11 {
         return format!(
@@ -102,6 +106,22 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
         target = shell_quote(&target),
         rootfs = shell_quote(&spec.rootfs),
     )
+}
+
+fn validate_environment(values: &[String]) -> io::Result<()> {
+    for value in values {
+        let Some((name, _)) = value.split_once('=') else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "graphics environment entry must be NAME=VALUE"));
+        };
+        if name.is_empty()
+            || !name.bytes().all(|byte| byte == b'_' || byte.is_ascii_uppercase())
+            || value.contains('\0') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "graphics environment entry is invalid"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_x11_socket(directory: &Path) -> io::Result<()> {
