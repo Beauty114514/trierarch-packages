@@ -133,7 +133,7 @@ void trierarch_pointer_set_button(struct wayland_server *server,
 }
 
 void trierarch_pointer_scroll(struct wayland_server *server,
-        float delta_x, float delta_y, uint32_t time_ms) {
+        float delta_x, float delta_y, uint32_t source, uint32_t time_ms) {
     if (!server) return;
     update_pointer_focus(server);
     if (!server->pointer_focus || !server->pointer_focus->wl_surface) return;
@@ -141,6 +141,8 @@ void trierarch_pointer_scroll(struct wayland_server *server,
     struct pointer_resource *tracked;
     wl_list_for_each(tracked, &server->pointer_resources, link) {
         if (wl_resource_get_client(tracked->resource) != client) continue;
+        if (wl_resource_get_version(tracked->resource) >= 5)
+            wl_pointer_send_axis_source(tracked->resource, source);
         if (delta_y != 0) wl_pointer_send_axis(tracked->resource, time_ms, WL_POINTER_AXIS_VERTICAL_SCROLL,
                 wl_fixed_from_double(delta_y));
         if (delta_x != 0) wl_pointer_send_axis(tracked->resource, time_ms, WL_POINTER_AXIS_HORIZONTAL_SCROLL,

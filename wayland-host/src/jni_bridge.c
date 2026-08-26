@@ -120,10 +120,11 @@ Java_app_trierarch_wayland_WaylandBridge_nativeSetPointerButton(JNIEnv *env, job
 
 JNIEXPORT void JNICALL
 Java_app_trierarch_wayland_WaylandBridge_nativeScrollPointer(JNIEnv *env, jobject object,
-        jfloat delta_x, jfloat delta_y, jint time_ms) {
+        jfloat delta_x, jfloat delta_y, jint source, jint time_ms) {
     (void)env; (void)object;
     pthread_mutex_lock(&server_mutex);
-    if (server) trierarch_pointer_scroll(server, delta_x, delta_y, (uint32_t)time_ms);
+    if (server) trierarch_pointer_scroll(server, delta_x, delta_y,
+            (uint32_t)source, (uint32_t)time_ms);
     pthread_mutex_unlock(&server_mutex);
 }
 

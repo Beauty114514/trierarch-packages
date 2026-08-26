@@ -18,7 +18,7 @@ void trierarch_pointer_move_relative(wayland_server_t *server,
 void trierarch_pointer_set_button(wayland_server_t *server,
         int button, bool pressed, uint32_t time_ms);
 void trierarch_pointer_scroll(wayland_server_t *server,
-        float delta_x, float delta_y, uint32_t time_ms);
+        float delta_x, float delta_y, uint32_t source, uint32_t time_ms);
 void trierarch_pointer_reset(wayland_server_t *server, uint32_t time_ms);
 void trierarch_pointer_set_cursor_visible(wayland_server_t *server, bool visible);
 
