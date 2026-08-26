@@ -6,6 +6,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <android/log.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,6 +20,29 @@
 #ifndef EGL_NATIVE_BUFFER_ANDROID
 #define EGL_NATIVE_BUFFER_ANDROID 0x3140
 #endif
+#ifndef EGL_LINUX_DMA_BUF_EXT
+#define EGL_LINUX_DMA_BUF_EXT 0x3270
+#endif
+#ifndef EGL_LINUX_DRM_FOURCC_EXT
+#define EGL_LINUX_DRM_FOURCC_EXT 0x3271
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_FD_EXT
+#define EGL_DMA_BUF_PLANE0_FD_EXT 0x3272
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_OFFSET_EXT
+#define EGL_DMA_BUF_PLANE0_OFFSET_EXT 0x3273
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_PITCH_EXT
+#define EGL_DMA_BUF_PLANE0_PITCH_EXT 0x3274
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT
+#define EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT 0x3443
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT
+#define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT 0x3444
+#endif
+
+#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 
 typedef EGLBoolean (*bind_wayland_display_fn)(EGLDisplay, void *);
 typedef EGLBoolean (*query_wayland_buffer_fn)(EGLDisplay, void *, EGLint, EGLint *);
@@ -42,6 +66,7 @@ struct renderer_context {
     destroy_image_fn destroy_image;
     image_target_fn image_target;
     native_client_buffer_fn native_client_buffer;
+    bool dmabuf_import_supported;
 };
 
 static const char *vertex_source =
@@ -132,6 +157,10 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
     renderer->image_target = (image_target_fn)eglGetProcAddress("glEGLImageTargetTexture2DOES");
     renderer->native_client_buffer = (native_client_buffer_fn)eglGetProcAddress(
             "eglGetNativeClientBufferANDROID");
+    const char *extensions = eglQueryString(renderer->display, EGL_EXTENSIONS);
+    renderer->dmabuf_import_supported = extensions &&
+            strstr(extensions, "EGL_EXT_image_dma_buf_import") &&
+            renderer->create_image && renderer->destroy_image && renderer->image_target;
     bind_wayland_display_fn bind =
             (bind_wayland_display_fn)eglGetProcAddress("eglBindWaylandDisplayWL");
     query_wayland_buffer_fn query =
@@ -143,6 +172,7 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
     } else {
         LOGI("EGL Wayland buffer import unavailable; SHM/dmabuf fallback remains active");
     }
+    LOGI("EGL dma-buf import %s", renderer->dmabuf_import_supported ? "available" : "unavailable");
     eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
     eglQuerySurface(renderer->display, renderer->surface, EGL_HEIGHT, &renderer->height);
     renderer->background_program = make_program(background_source);
@@ -218,6 +248,61 @@ static void draw_surface(struct renderer_context *renderer,
                 EGL_WAYLAND_BUFFER_WL, (EGLClientBuffer)buffer->egl_resource, NULL);
         if (image != EGL_NO_IMAGE_KHR) { renderer->image_target(GL_TEXTURE_2D, image); swizzle = 0.0f; opaque = 0.0f; }
     }
+    if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && buffer->dmabuf_fd >= 0 &&
+            renderer->dmabuf_import_supported) {
+        int fd = dup(buffer->dmabuf_fd);
+        if (fd >= 0) {
+            const EGLint basic_attributes[] = {
+                EGL_WIDTH, buffer->width,
+                EGL_HEIGHT, buffer->height,
+                EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer->format,
+                EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+                EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)buffer->dmabuf_offset,
+                EGL_DMA_BUF_PLANE0_PITCH_EXT, buffer->stride,
+                EGL_NONE,
+            };
+            image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                    EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
+            close(fd);
+        }
+        if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf_modifier != DRM_FORMAT_MOD_INVALID) {
+            int fd = dup(buffer->dmabuf_fd);
+            if (fd >= 0) {
+                const EGLint modifier_attributes[] = {
+                    EGL_WIDTH, buffer->width,
+                    EGL_HEIGHT, buffer->height,
+                    EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer->format,
+                    EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+                    EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)buffer->dmabuf_offset,
+                    EGL_DMA_BUF_PLANE0_PITCH_EXT, buffer->stride,
+                    EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(uint32_t)buffer->dmabuf_modifier,
+                    EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(uint32_t)(buffer->dmabuf_modifier >> 32),
+                    EGL_NONE,
+                };
+                image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                        EGL_LINUX_DMA_BUF_EXT, NULL, modifier_attributes);
+                close(fd);
+            }
+        }
+        if (image != EGL_NO_IMAGE_KHR) {
+            glBindTexture(GL_TEXTURE_2D, renderer->texture);
+            renderer->image_target(GL_TEXTURE_2D, image);
+            if (glGetError() == GL_NO_ERROR) {
+                swizzle = 0.0f;
+                opaque = buffer->format == 0x34325258u || buffer->format == 0x34324258u ? 1.0f : 0.0f;
+                LOGI("dma-buf EGL import: %dx%d fmt=0x%x modifier=0x%llx",
+                        buffer->width, buffer->height, buffer->format,
+                        (unsigned long long)buffer->dmabuf_modifier);
+            } else {
+                renderer->destroy_image(renderer->display, image);
+                image = EGL_NO_IMAGE_KHR;
+            }
+        } else {
+            LOGI("dma-buf EGL import failed: %dx%d fmt=0x%x modifier=0x%llx; using CPU fallback",
+                    buffer->width, buffer->height, buffer->format,
+                    (unsigned long long)buffer->dmabuf_modifier);
+        }
+    }
     if (image == EGL_NO_IMAGE_KHR && buffer->data) {
         const int packed_stride = buffer->width * 4;
         const void *pixels = buffer->data;
@@ -238,6 +323,14 @@ static void draw_surface(struct renderer_context *renderer,
         /* XRGB has no alpha channel. ARGB must retain its alpha: cursor images
          * rely on transparent pixels around the visible pointer shape. */
         opaque = buffer->format == WL_SHM_FORMAT_XRGB8888 ? 1.0f : 0.0f;
+    }
+    if (image == EGL_NO_IMAGE_KHR && !buffer->data) {
+        static unsigned int unavailable_buffer_count;
+        if (unavailable_buffer_count++ < 3) {
+            LOGE("skipping dma-buf without an EGL import or CPU mapping: %dx%d fmt=0x%x",
+                    buffer->width, buffer->height, buffer->format);
+        }
+        return;
     }
     glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), swizzle);
     glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), opaque);

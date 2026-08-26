@@ -38,6 +38,7 @@ struct shm_buffer {
     int dmabuf_fd;
     void *dmabuf_mapping;
     size_t dmabuf_mapping_size;
+    uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
     struct wl_list pool_link;
 };

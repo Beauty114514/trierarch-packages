@@ -75,38 +75,41 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     if (mapping == MAP_FAILED) {
         LOGW("dmabuf CPU fallback mmap failed: fd=%d size=%zu errno=%d",
                 params->fd, end, errno);
-        return NULL;
+        mapping = NULL;
     }
     struct shm_buffer *buffer = calloc(1, sizeof(*buffer));
     if (!buffer) {
-        munmap(mapping, end);
+        if (mapping) munmap(mapping, end);
+        close(params->fd);
+        params->fd = -1;
         return NULL;
     }
     buffer->dmabuf = true;
     buffer->dmabuf_fd = params->fd;
     buffer->dmabuf_mapping = mapping;
-    buffer->dmabuf_mapping_size = end;
-    buffer->data = (char *)mapping + params->offset;
+    buffer->dmabuf_mapping_size = mapping ? end : 0;
+    buffer->data = mapping ? (char *)mapping + params->offset : NULL;
     buffer->size = (size_t)params->stride * (size_t)height;
     buffer->width = width;
     buffer->height = height;
     buffer->stride = (int32_t)params->stride;
     buffer->format = format;
     buffer->dmabuf_modifier = params->modifier;
+    buffer->dmabuf_offset = params->offset;
     buffer->dmabuf_fd = params->fd;
     params->fd = -1;
     buffer->resource = wl_resource_create(client, &wl_buffer_interface, 1, id);
     if (!buffer->resource) {
-        munmap(mapping, end);
+        if (mapping) munmap(mapping, end);
         close(buffer->dmabuf_fd);
         free(buffer);
         return NULL;
     }
     wl_resource_set_implementation(buffer->resource, &dmabuf_buffer_impl,
             buffer, dmabuf_buffer_destroy);
-    LOGI("dmabuf CPU fallback accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx",
+    LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx cpu-fallback=%s",
             width, height, format, params->stride,
-            (unsigned long long)params->modifier);
+            (unsigned long long)params->modifier, mapping ? "ready" : "unavailable");
     return buffer;
 }
 
@@ -157,7 +160,7 @@ static void params_create_immed(struct wl_client *client, struct wl_resource *re
     params->used = true;
     if (!buffer)
         wl_resource_post_error(resource,
-                ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "CPU dmabuf mapping failed");
+                ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "unsupported dmabuf parameters");
 }
 
 static void params_resource_destroy(struct wl_resource *resource) {
@@ -310,7 +313,7 @@ void trierarch_dmabuf_bind(struct wl_client *client, void *data,
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ABGR8888,
                 (uint32_t)(DRM_FORMAT_MOD_INVALID >> 32), (uint32_t)DRM_FORMAT_MOD_INVALID);
     }
-    LOGI("linux-dmabuf bound at version %u (CPU fallback)", version);
+    LOGI("linux-dmabuf bound at version %u", version);
 }
 
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource) {
