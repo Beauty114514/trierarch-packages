@@ -61,6 +61,7 @@ struct compositor_surface {
     int32_t height;
     bool configured;
     bool mapped;
+    bool is_cursor;
     bool damaged;
     bool viewport_source_set;
     wl_fixed_t viewport_source_x;
@@ -78,12 +79,27 @@ struct surface_frame_callback {
     struct wl_resource *resource;
 };
 
+struct pointer_resource {
+    struct wl_list link;
+    struct wl_listener destroy_listener;
+    struct wl_resource *resource;
+};
+
 struct wayland_server {
     struct wl_display *display;
     struct wl_event_loop *event_loop;
     struct wl_list surfaces;
     struct wl_list output_resources;
     struct wl_list xdg_output_resources;
+    struct wl_list pointer_resources;
+    struct compositor_surface *pointer_focus;
+    struct compositor_surface *cursor_surface;
+    wl_fixed_t pointer_x;
+    wl_fixed_t pointer_y;
+    int32_t cursor_hotspot_x;
+    int32_t cursor_hotspot_y;
+    uint32_t pointer_buttons;
+    bool cursor_visible;
     char *runtime_dir;
     int32_t output_width;
     int32_t output_height;

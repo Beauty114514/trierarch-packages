@@ -92,6 +92,60 @@ Java_app_trierarch_wayland_WaylandBridge_nativeSetOutputSize(JNIEnv *env, jobjec
 }
 
 JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeMovePointerAbsolute(JNIEnv *env, jobject object,
+        jfloat x, jfloat y, jint time_ms) {
+    (void)env; (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server) trierarch_pointer_move_absolute(server, x, y, (uint32_t)time_ms);
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeMovePointerRelative(JNIEnv *env, jobject object,
+        jfloat delta_x, jfloat delta_y, jint time_ms) {
+    (void)env; (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server) trierarch_pointer_move_relative(server, delta_x, delta_y, (uint32_t)time_ms);
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeSetPointerButton(JNIEnv *env, jobject object,
+        jint button, jboolean pressed, jint time_ms) {
+    (void)env; (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server) trierarch_pointer_set_button(server, button, pressed == JNI_TRUE, (uint32_t)time_ms);
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeScrollPointer(JNIEnv *env, jobject object,
+        jfloat delta_x, jfloat delta_y, jint time_ms) {
+    (void)env; (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server) trierarch_pointer_scroll(server, delta_x, delta_y, (uint32_t)time_ms);
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeResetPointer(JNIEnv *env, jobject object,
+        jint time_ms) {
+    (void)env; (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server) trierarch_pointer_reset(server, (uint32_t)time_ms);
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeSetCursorVisible(JNIEnv *env, jobject object,
+        jboolean visible) {
+    (void)env; (void)object;
+    pthread_mutex_lock(&server_mutex);
+    if (server) trierarch_pointer_set_cursor_visible(server, visible == JNI_TRUE);
+    pthread_mutex_unlock(&server_mutex);
+}
+
+JNIEXPORT void JNICALL
 Java_app_trierarch_wayland_WaylandBridge_nativeAttachSurface(JNIEnv *env, jobject object,
         jobject surface) {
     (void)object;

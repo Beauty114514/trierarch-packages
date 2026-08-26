@@ -262,7 +262,8 @@ static void draw_surface(struct renderer_context *renderer,
 static void draw_surface_tree(struct renderer_context *renderer,
         struct wayland_server *server, struct compositor_surface *surface,
         int parent_x, int parent_y) {
-    if (!surface || !surface->mapped || !surface->current) return;
+    if (!surface || surface == server->cursor_surface || !surface->mapped || !surface->current)
+        return;
     int own_x = parent_x + (surface->parent ? surface->subsurface_x : 0);
     int own_y = parent_y + (surface->parent ? surface->subsurface_y : 0);
     draw_surface(renderer, surface, own_x, own_y);
@@ -294,12 +295,18 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     /* Plasma uses tiny viewport-scaled root buffers during startup. Draw those
      * first so they cannot cover the actual desktop surface. */
     wl_list_for_each(surface, &server->surfaces, link) {
-        if (!surface->parent && is_tiny_viewport_underlay(surface))
+        if (!surface->parent && surface != server->cursor_surface && is_tiny_viewport_underlay(surface))
             draw_surface_tree(renderer, server, surface, 0, 0);
     }
     wl_list_for_each(surface, &server->surfaces, link) {
-        if (!surface->parent && !is_tiny_viewport_underlay(surface))
+        if (!surface->parent && surface != server->cursor_surface && !is_tiny_viewport_underlay(surface))
             draw_surface_tree(renderer, server, surface, 0, 0);
+    }
+    if (server->cursor_visible && server->cursor_surface && server->cursor_surface->mapped &&
+            server->cursor_surface->current) {
+        int cursor_x = (int)wl_fixed_to_int(server->pointer_x) - server->cursor_hotspot_x;
+        int cursor_y = (int)wl_fixed_to_int(server->pointer_y) - server->cursor_hotspot_y;
+        draw_surface(renderer, server->cursor_surface, cursor_x, cursor_y);
     }
     glDisable(GL_BLEND);
     eglSwapBuffers(renderer->display, renderer->surface);

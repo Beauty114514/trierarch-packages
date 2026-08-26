@@ -5,6 +5,164 @@
 #include <string.h>
 #include <unistd.h>
 
+#define BTN_LEFT 0x110
+#define BTN_MIDDLE 0x112
+#define BTN_RIGHT 0x111
+
+static void pointer_resource_destroy(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct pointer_resource *tracked = wl_container_of(listener, tracked, destroy_listener);
+    wl_list_remove(&tracked->link);
+    wl_list_remove(&tracked->destroy_listener.link);
+    free(tracked);
+}
+
+static void track_pointer_resource(struct wayland_server *server, struct wl_resource *resource) {
+    if (!server || !resource) return;
+    struct pointer_resource *tracked = calloc(1, sizeof(*tracked));
+    if (!tracked) return;
+    tracked->resource = resource;
+    tracked->destroy_listener.notify = pointer_resource_destroy;
+    wl_resource_add_destroy_listener(resource, &tracked->destroy_listener);
+    wl_list_insert(&server->pointer_resources, &tracked->link);
+}
+
+static struct compositor_surface *find_pointer_target(struct wayland_server *server) {
+    struct compositor_surface *best = NULL;
+    int64_t best_area = -1;
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (surface->parent || !surface->xdg_toplevel || !surface->mapped || !surface->current)
+            continue;
+        int64_t area = (int64_t)surface->width * (int64_t)surface->height;
+        if (area > best_area) {
+            best = surface;
+            best_area = area;
+        }
+    }
+    return best;
+}
+
+static void send_pointer_enter(struct wayland_server *server, struct compositor_surface *surface) {
+    if (!surface || !surface->wl_surface) return;
+    struct wl_client *client = wl_resource_get_client(surface->wl_surface);
+    uint32_t serial = wl_display_next_serial(server->display);
+    struct pointer_resource *tracked;
+    wl_list_for_each(tracked, &server->pointer_resources, link) {
+        if (wl_resource_get_client(tracked->resource) == client)
+            wl_pointer_send_enter(tracked->resource, serial, surface->wl_surface,
+                    server->pointer_x, server->pointer_y);
+    }
+}
+
+static void send_pointer_leave(struct wayland_server *server, struct compositor_surface *surface) {
+    if (!surface || !surface->wl_surface) return;
+    struct wl_client *client = wl_resource_get_client(surface->wl_surface);
+    uint32_t serial = wl_display_next_serial(server->display);
+    struct pointer_resource *tracked;
+    wl_list_for_each(tracked, &server->pointer_resources, link) {
+        if (wl_resource_get_client(tracked->resource) == client)
+            wl_pointer_send_leave(tracked->resource, serial, surface->wl_surface);
+    }
+}
+
+static void update_pointer_focus(struct wayland_server *server) {
+    struct compositor_surface *target = find_pointer_target(server);
+    if (target == server->pointer_focus) return;
+    send_pointer_leave(server, server->pointer_focus);
+    server->pointer_focus = target;
+    send_pointer_enter(server, target);
+}
+
+static void send_pointer_motion(struct wayland_server *server, uint32_t time_ms) {
+    update_pointer_focus(server);
+    if (!server->pointer_focus || !server->pointer_focus->wl_surface) return;
+    struct wl_client *client = wl_resource_get_client(server->pointer_focus->wl_surface);
+    struct pointer_resource *tracked;
+    wl_list_for_each(tracked, &server->pointer_resources, link) {
+        if (wl_resource_get_client(tracked->resource) == client) {
+            wl_pointer_send_motion(tracked->resource, time_ms, server->pointer_x, server->pointer_y);
+            if (wl_resource_get_version(tracked->resource) >= 5)
+                wl_pointer_send_frame(tracked->resource);
+        }
+    }
+}
+
+void trierarch_pointer_move_absolute(struct wayland_server *server,
+        float x, float y, uint32_t time_ms) {
+    if (!server) return;
+    if (server->output_width > 0) x = x < 0 ? 0 : (x > server->output_width ? server->output_width : x);
+    if (server->output_height > 0) y = y < 0 ? 0 : (y > server->output_height ? server->output_height : y);
+    server->pointer_x = wl_fixed_from_double(x);
+    server->pointer_y = wl_fixed_from_double(y);
+    send_pointer_motion(server, time_ms);
+}
+
+void trierarch_pointer_move_relative(struct wayland_server *server,
+        float delta_x, float delta_y, uint32_t time_ms) {
+    if (!server) return;
+    trierarch_pointer_move_absolute(server,
+            (float)wl_fixed_to_double(server->pointer_x) + delta_x,
+            (float)wl_fixed_to_double(server->pointer_y) + delta_y, time_ms);
+}
+
+void trierarch_pointer_set_button(struct wayland_server *server,
+        int button, bool pressed, uint32_t time_ms) {
+    if (!server) return;
+    uint32_t bit = button >= 1 && button <= 3 ? 1u << (button - 1) : 0;
+    if (!bit || (!!(server->pointer_buttons & bit) == pressed)) return;
+    update_pointer_focus(server);
+    if (!server->pointer_focus || !server->pointer_focus->wl_surface) {
+        if (!pressed) server->pointer_buttons &= ~bit;
+        return;
+    }
+    uint32_t linux_button = button == 2 ? BTN_MIDDLE : button == 3 ? BTN_RIGHT : BTN_LEFT;
+    struct wl_client *client = wl_resource_get_client(server->pointer_focus->wl_surface);
+    uint32_t serial = wl_display_next_serial(server->display);
+    struct pointer_resource *tracked;
+    wl_list_for_each(tracked, &server->pointer_resources, link) {
+        if (wl_resource_get_client(tracked->resource) == client) {
+            wl_pointer_send_button(tracked->resource, serial, time_ms, linux_button,
+                    pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+            if (wl_resource_get_version(tracked->resource) >= 5)
+                wl_pointer_send_frame(tracked->resource);
+        }
+    }
+    if (pressed) server->pointer_buttons |= bit;
+    else server->pointer_buttons &= ~bit;
+}
+
+void trierarch_pointer_scroll(struct wayland_server *server,
+        float delta_x, float delta_y, uint32_t time_ms) {
+    if (!server) return;
+    update_pointer_focus(server);
+    if (!server->pointer_focus || !server->pointer_focus->wl_surface) return;
+    struct wl_client *client = wl_resource_get_client(server->pointer_focus->wl_surface);
+    struct pointer_resource *tracked;
+    wl_list_for_each(tracked, &server->pointer_resources, link) {
+        if (wl_resource_get_client(tracked->resource) != client) continue;
+        if (delta_y != 0) wl_pointer_send_axis(tracked->resource, time_ms, WL_POINTER_AXIS_VERTICAL_SCROLL,
+                wl_fixed_from_double(delta_y));
+        if (delta_x != 0) wl_pointer_send_axis(tracked->resource, time_ms, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+                wl_fixed_from_double(delta_x));
+        if (wl_resource_get_version(tracked->resource) >= 5)
+            wl_pointer_send_frame(tracked->resource);
+    }
+}
+
+void trierarch_pointer_reset(struct wayland_server *server, uint32_t time_ms) {
+    if (!server) return;
+    for (int button = 1; button <= 3; button++) {
+        if (server->pointer_buttons & (1u << (button - 1)))
+            trierarch_pointer_set_button(server, button, false, time_ms);
+    }
+}
+
+void trierarch_pointer_set_cursor_visible(wayland_server_t *opaque, bool visible) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    if (server) server->cursor_visible = visible;
+}
+
 static void seat_release(struct wl_client *client, struct wl_resource *resource) {
     (void)client;
     wl_resource_destroy(resource);
@@ -13,12 +171,21 @@ static void seat_release(struct wl_client *client, struct wl_resource *resource)
 static void pointer_set_cursor(struct wl_client *client, struct wl_resource *resource,
         uint32_t serial, struct wl_resource *surface, int32_t hotspot_x,
         int32_t hotspot_y) {
-    (void)client;
-    (void)resource;
     (void)serial;
-    (void)surface;
-    (void)hotspot_x;
-    (void)hotspot_y;
+    struct wayland_server *server = wl_resource_get_user_data(resource);
+    if (!server) return;
+    if (server->cursor_surface) server->cursor_surface->is_cursor = false;
+    server->cursor_surface = NULL;
+    server->cursor_hotspot_x = 0;
+    server->cursor_hotspot_y = 0;
+    if (!surface) return;
+    if (wl_resource_get_client(surface) != client) return;
+    struct compositor_surface *cursor = trierarch_surface_from_resource(surface);
+    if (!cursor || cursor->server != server) return;
+    cursor->is_cursor = true;
+    server->cursor_surface = cursor;
+    server->cursor_hotspot_x = hotspot_x;
+    server->cursor_hotspot_y = hotspot_y;
 }
 
 static const struct wl_pointer_interface pointer_impl = {
@@ -66,7 +233,9 @@ static void seat_get_pointer(struct wl_client *client, struct wl_resource *seat,
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &pointer_impl, NULL, NULL);
+    struct wayland_server *server = wl_resource_get_user_data(seat);
+    wl_resource_set_implementation(resource, &pointer_impl, server, NULL);
+    track_pointer_resource(server, resource);
 }
 
 static void seat_get_keyboard(struct wl_client *client, struct wl_resource *seat,

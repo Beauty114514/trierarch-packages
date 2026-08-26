@@ -168,6 +168,13 @@ static const struct wl_surface_interface surface_impl = {
 static void surface_resource_destroy(struct wl_resource *resource) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     if (!surface) return;
+    if (surface->server && surface->server->pointer_focus == surface)
+        surface->server->pointer_focus = NULL;
+    if (surface->server && surface->server->cursor_surface == surface) {
+        surface->server->cursor_surface = NULL;
+        surface->server->cursor_hotspot_x = 0;
+        surface->server->cursor_hotspot_y = 0;
+    }
     if (surface->current) {
         struct shm_buffer *current = surface->current;
         trierarch_shm_buffer_release(current);

@@ -31,11 +31,15 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     }
     server->output_width = 1080;
     server->output_height = 1920;
+    server->pointer_x = wl_fixed_from_int(server->output_width / 2);
+    server->pointer_y = wl_fixed_from_int(server->output_height / 2);
+    server->cursor_visible = true;
     server->next_serial = 1;
     server->egl_buffer_supported = false;
     wl_list_init(&server->surfaces);
     wl_list_init(&server->output_resources);
     wl_list_init(&server->xdg_output_resources);
+    wl_list_init(&server->pointer_resources);
     if (!server->display || !server->runtime_dir ||
             wl_display_add_socket(server->display, "wayland-trierarch") < 0) {
         trierarch_wayland_destroy(server);
