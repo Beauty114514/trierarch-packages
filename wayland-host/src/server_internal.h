@@ -53,6 +53,10 @@ struct compositor_surface {
     struct wl_resource *viewport;
     struct wl_resource *fractional_scale;
     struct compositor_surface *parent;
+    /* A subsurface is linked into its parent's children list.  The list order
+     * is the client-defined stacking order from wl_subsurface.place_*(). */
+    struct wl_list children;
+    struct wl_list subsurface_link;
     int32_t subsurface_x;
     int32_t subsurface_y;
     int32_t buffer_scale;

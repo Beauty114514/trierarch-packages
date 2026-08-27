@@ -365,10 +365,8 @@ static void draw_surface_tree(struct renderer_context *renderer,
     int own_y = parent_y + (surface->parent ? surface->subsurface_y : 0);
     draw_surface(renderer, surface, own_x, own_y);
     struct compositor_surface *child;
-    wl_list_for_each(child, &server->surfaces, link) {
-        if (child->parent == surface)
-            draw_surface_tree(renderer, server, child, own_x, own_y);
-    }
+    wl_list_for_each(child, &surface->children, subsurface_link)
+        draw_surface_tree(renderer, server, child, own_x, own_y);
 }
 
 static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) {

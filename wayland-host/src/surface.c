@@ -168,6 +168,20 @@ static const struct wl_surface_interface surface_impl = {
 static void surface_resource_destroy(struct wl_resource *resource) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     if (!surface) return;
+    if (surface->parent) {
+        wl_list_remove(&surface->subsurface_link);
+        wl_list_init(&surface->subsurface_link);
+        surface->parent = NULL;
+    }
+    /* Do not leave a live child pointing at a freed parent surface.  Its
+     * wl_subsurface object remains owned by the client and will be destroyed
+     * through the normal protocol path. */
+    struct compositor_surface *child, *next_child;
+    wl_list_for_each_safe(child, next_child, &surface->children, subsurface_link) {
+        wl_list_remove(&child->subsurface_link);
+        wl_list_init(&child->subsurface_link);
+        child->parent = NULL;
+    }
     if (surface->server && surface->server->pointer_focus == surface)
         surface->server->pointer_focus = NULL;
     if (surface->server && surface->server->cursor_surface == surface) {
@@ -196,6 +210,8 @@ static void compositor_create_surface(struct wl_client *client,
     }
     surface->server = server;
     surface->buffer_scale = 1;
+    wl_list_init(&surface->children);
+    wl_list_init(&surface->subsurface_link);
     wl_list_init(&surface->frame_callbacks);
     surface->wl_surface = wl_resource_create(
             client, &wl_surface_interface, wl_resource_get_version(resource), id);

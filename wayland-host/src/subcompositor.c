@@ -20,12 +20,34 @@ static void subsurface_set_position(struct wl_client *client,
 
 static void subsurface_place_above(struct wl_client *client,
         struct wl_resource *resource, struct wl_resource *sibling) {
-    (void)client; (void)resource; (void)sibling;
+    (void)client;
+    struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    struct compositor_surface *sibling_surface =
+            trierarch_surface_from_resource(sibling);
+    if (!surface || !sibling_surface || !surface->parent ||
+            surface->parent != sibling_surface->parent) {
+        wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+                "surface and sibling must share a parent");
+        return;
+    }
+    wl_list_remove(&surface->subsurface_link);
+    wl_list_insert(sibling_surface->subsurface_link.next, &surface->subsurface_link);
 }
 
 static void subsurface_place_below(struct wl_client *client,
         struct wl_resource *resource, struct wl_resource *sibling) {
-    (void)client; (void)resource; (void)sibling;
+    (void)client;
+    struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    struct compositor_surface *sibling_surface =
+            trierarch_surface_from_resource(sibling);
+    if (!surface || !sibling_surface || !surface->parent ||
+            surface->parent != sibling_surface->parent) {
+        wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+                "surface and sibling must share a parent");
+        return;
+    }
+    wl_list_remove(&surface->subsurface_link);
+    wl_list_insert(&sibling_surface->subsurface_link, &surface->subsurface_link);
 }
 
 static void subsurface_set_sync(struct wl_client *client,
@@ -51,6 +73,10 @@ static void subsurface_resource_destroy(struct wl_resource *resource) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     if (surface && surface->subsurface == resource) {
         surface->subsurface = NULL;
+        if (surface->parent) {
+            wl_list_remove(&surface->subsurface_link);
+            wl_list_init(&surface->subsurface_link);
+        }
         surface->parent = NULL;
     }
 }
@@ -83,6 +109,7 @@ static void subcompositor_get_subsurface(struct wl_client *client,
     }
     surface->subsurface = subsurface;
     surface->parent = parent;
+    wl_list_insert(&parent->children, &surface->subsurface_link);
     wl_resource_set_implementation(subsurface, &subsurface_impl, surface,
             subsurface_resource_destroy);
 }
