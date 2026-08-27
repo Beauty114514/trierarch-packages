@@ -57,14 +57,11 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             trierarch_subcompositor_bind);
     wl_global_create(server->display, &wl_shm_interface, 1, server,
             trierarch_shm_bind);
-    if (!wl_global_create(server->display, &zwp_linux_dmabuf_v1_interface, 4, server,
-            trierarch_dmabuf_bind)) {
-        __android_log_print(ANDROID_LOG_ERROR, TRIERARCH_TAG,
-                "failed to register linux-dmabuf global");
-    } else {
-        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                "registered linux-dmabuf global v4");
-    }
+    /* Do not advertise linux-dmabuf until the Android renderer can import a
+     * dma-buf with EGL_EXT_image_dma_buf_import.  Advertising it now makes
+     * Qt/Mesa select an EGL dma-buf path although this host logs that import
+     * as unavailable; a wl_shm fallback is then more reliable.  Keep the
+     * implementation in linux_dmabuf.c for the later GPU-sharing milestone. */
     wl_global_create(server->display, &wp_single_pixel_buffer_manager_v1_interface, 1,
             server, trierarch_single_pixel_bind);
     wl_global_create(server->display, &wp_viewporter_interface, 1,

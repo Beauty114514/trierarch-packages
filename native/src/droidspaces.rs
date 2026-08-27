@@ -169,7 +169,7 @@ impl DroidspacesSpec {
         // leaving the desktop with only DISPLAY and D-Bus.
         let xdg_runtime_directory = format!("/tmp/runtime-{}", self.user);
         let prefix = format!(
-            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR={} {graphics_environment}",
+            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR={} {graphics_environment}",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
             privileged::shell_quote(&xdg_runtime_directory),
@@ -180,12 +180,12 @@ impl DroidspacesSpec {
             // select its own configured login shell while preserving only the
             // terminal and X11 variables required by this session.
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,TERM {}",
                 privileged::shell_quote(&self.user),
             )
         } else {
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {} -c {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,TERM {} -c {}",
                 privileged::shell_quote(&self.user),
                 privileged::shell_quote(shell_words(&self.launch_argv)),
             )
@@ -195,7 +195,7 @@ impl DroidspacesSpec {
     fn wayland_command(&self) -> String {
         let graphics_environment = shell_words(&self.graphics_environment);
         let prefix = format!(
-            "exec {} --name={} --user={} run /usr/bin/env -u DISPLAY -u QT_QUICK_BACKEND XDG_RUNTIME_DIR={} WAYLAND_DISPLAY={} XDG_SESSION_TYPE=wayland {graphics_environment}",
+            "exec {} --name={} --user={} run /usr/bin/env -u DISPLAY -u QT_QPA_PLATFORM -u QT_QUICK_BACKEND XDG_RUNTIME_DIR={} WAYLAND_DISPLAY={} XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland {graphics_environment}",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
             privileged::shell_quote(&self.user),
