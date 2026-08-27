@@ -163,10 +163,16 @@ impl DroidspacesSpec {
 
     fn x11_command(&self) -> String {
         let graphics_environment = shell_words(&self.graphics_environment);
+        // DroidSpaces creates this per-user runtime directory as part of its
+        // systemd container session.  Plasma/KWin uses it even in an X11
+        // session, so preserve it across the login `su` below rather than
+        // leaving the desktop with only DISPLAY and D-Bus.
+        let xdg_runtime_directory = format!("/tmp/runtime-{}", self.user);
         let prefix = format!(
-            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 {graphics_environment}",
+            "exec {} --name={} run /usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR={} {graphics_environment}",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
+            privileged::shell_quote(&xdg_runtime_directory),
         );
 
         if self.launch_argv.is_empty() {
@@ -174,12 +180,12 @@ impl DroidspacesSpec {
             // select its own configured login shell while preserving only the
             // terminal and X11 variables required by this session.
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {}",
                 privileged::shell_quote(&self.user),
             )
         } else {
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {} -c {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,TERM {} -c {}",
                 privileged::shell_quote(&self.user),
                 privileged::shell_quote(shell_words(&self.launch_argv)),
             )
