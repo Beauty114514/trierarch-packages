@@ -349,7 +349,11 @@ static void draw_surface(struct renderer_context *renderer,
     glDrawArrays(GL_TRIANGLE_STRIP,0,4);
     glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
     if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image) renderer->destroy_image(renderer->display,image);
-    if (buffer->resource && buffer->busy) { buffer->busy=false; wl_buffer_send_release(buffer->resource); }
+    /* `surface->current` remains the source for later redraws until a new
+     * wl_surface.commit replaces it.  Releasing here would let the client
+     * destroy or reuse the wl_buffer while this surface still points at it.
+     * surface_commit()/surface_resource_destroy() release it at the point
+     * where the compositor actually stops using it. */
 }
 
 static void draw_surface_tree(struct renderer_context *renderer,
