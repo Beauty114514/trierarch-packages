@@ -1,0 +1,10 @@
+--- a/src/mesa/util/detect_os.h
++++ b/src/mesa/util/detect_os.h
+@@ -24,7 +24,7 @@
+  * Android defines __linux__, so DETECT_OS_LINUX and DETECT_OS_UNIX will
+  * also be defined.
+  */
+-#if defined(__ANDROID__)
++#if 0
+ #define DETECT_OS_ANDROID 1
+ #endif

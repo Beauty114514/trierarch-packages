@@ -9,6 +9,8 @@ const GUEST_X11_SOCKET: &str = "/tmp/.X11-unix/X0";
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
+const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
+const VIRGL_SOCKET: &str = "vtest.sock";
 
 #[derive(Clone, Debug)]
 pub struct DroidspacesSpec {
@@ -21,6 +23,8 @@ pub struct DroidspacesSpec {
     pub x11_socket_directory: String,
     /// Host directory containing Trierarch's Wayland socket, if enabled.
     pub wayland_runtime_directory: String,
+    /// Host directory containing Trierarch's VirGL vtest socket, if enabled.
+    pub virgl_runtime_directory: String,
     /// Empty keeps DroidSpaces' interactive-shell default.
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.
@@ -83,7 +87,12 @@ impl DroidspacesSpec {
     fn session_command(&self) -> io::Result<String> {
         let x11_bind = self.x11_bind()?;
         let wayland_bind = self.wayland_bind()?;
-        let start = self.start_command(x11_bind.as_deref(), wayland_bind.as_deref());
+        let virgl_bind = self.virgl_bind()?;
+        let start = self.start_command(
+            x11_bind.as_deref(),
+            wayland_bind.as_deref(),
+            virgl_bind.as_deref(),
+        );
         let run = if !self.wayland_runtime_directory.is_empty() {
             self.wayland_command()
         } else if self.x11_socket_directory.is_empty() {
@@ -114,10 +123,9 @@ impl DroidspacesSpec {
             Ok(format!(
                 "export TERM=xterm-256color LANG=C.UTF-8; {wait_for_socket} {running} {start} || exit $?;; *) printf '%s\\n' 'DroidSpaces container is already running without this X11 attachment; stop it, then start this Trierarch profile.' >&2; exit 125;; esac; {run}",
             ))
-        } else if let Some(wayland_bind) = wayland_bind {
-            let _ = wayland_bind;
+        } else if wayland_bind.is_some() || virgl_bind.is_some() {
             Ok(format!(
-                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; esac; {run}",
+                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; *) printf '%s\\n' 'DroidSpaces container is already running without this Trierarch graphical attachment; stop it, then start this profile.' >&2; exit 125;; esac; {run}",
             ))
         } else {
             Ok(format!(
@@ -126,12 +134,20 @@ impl DroidspacesSpec {
         }
     }
 
-    fn start_command(&self, x11_bind: Option<&str>, wayland_bind: Option<&str>) -> String {
+    fn start_command(
+        &self,
+        x11_bind: Option<&str>,
+        wayland_bind: Option<&str>,
+        virgl_bind: Option<&str>,
+    ) -> String {
         let mut bind_arguments = String::new();
         if let Some(bind) = x11_bind {
             bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
         }
         if let Some(bind) = wayland_bind {
+            bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
+        }
+        if let Some(bind) = virgl_bind {
             bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
         }
         format!(
@@ -162,7 +178,7 @@ impl DroidspacesSpec {
     }
 
     fn x11_command(&self) -> String {
-        let graphics_environment = shell_words(&self.graphics_environment);
+        let graphics_environment = shell_words(&self.guest_graphics_environment());
         // DroidSpaces creates this per-user runtime directory as part of its
         // systemd container session.  Plasma/KWin uses it even in an X11
         // session, so preserve it across the login `su` below rather than
@@ -180,12 +196,12 @@ impl DroidspacesSpec {
             // select its own configured login shell while preserving only the
             // terminal and X11 variables required by this session.
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,TERM {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,VTEST_SOCKET_NAME,VTEST_RENDERER_SOCKET_NAME,TERM {}",
                 privileged::shell_quote(&self.user),
             )
         } else {
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,TERM {} -c {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,VTEST_SOCKET_NAME,VTEST_RENDERER_SOCKET_NAME,TERM {} -c {}",
                 privileged::shell_quote(&self.user),
                 privileged::shell_quote(shell_words(&self.launch_argv)),
             )
@@ -193,7 +209,7 @@ impl DroidspacesSpec {
     }
 
     fn wayland_command(&self) -> String {
-        let graphics_environment = shell_words(&self.graphics_environment);
+        let graphics_environment = shell_words(&self.guest_graphics_environment());
         let prefix = format!(
             "exec {} --name={} --user={} run /usr/bin/env -u DISPLAY -u QT_QPA_PLATFORM -u QT_QUICK_BACKEND XDG_RUNTIME_DIR={} WAYLAND_DISPLAY={} XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland {graphics_environment}",
             privileged::shell_quote(DROIDSPACES_BINARY),
@@ -254,6 +270,33 @@ impl DroidspacesSpec {
             directory.display()
         )))
     }
+
+    fn virgl_bind(&self) -> io::Result<Option<String>> {
+        if self.virgl_runtime_directory.is_empty() { return Ok(None); }
+        let directory = Path::new(&self.virgl_runtime_directory);
+        if !directory.is_absolute() || !directory.is_dir() || !is_socket(&directory.join(VIRGL_SOCKET)) {
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                format!("VirGL runtime socket is not accessible: {}", directory.join(VIRGL_SOCKET).display())));
+        }
+        Ok(Some(format!("{}:{GUEST_VIRGL_RUNTIME_DIRECTORY}", directory.display())))
+    }
+
+    fn guest_graphics_environment(&self) -> Vec<String> {
+        let mut environment = self.graphics_environment.clone();
+        if !self.virgl_runtime_directory.is_empty() {
+            let socket = format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}");
+            environment.push(format!("VTEST_SOCKET_NAME={socket}"));
+            environment.push(format!("VTEST_RENDERER_SOCKET_NAME={socket}"));
+        }
+        environment
+    }
+}
+
+fn is_socket(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    path.symlink_metadata()
+        .map(|metadata| metadata.file_type().is_socket())
+        .unwrap_or(false)
 }
 
 fn shell_words(values: &[String]) -> String {

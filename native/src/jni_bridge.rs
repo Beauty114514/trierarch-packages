@@ -186,6 +186,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
     user: JString,
     x11_socket_directory: JString,
     wayland_runtime_directory: JString,
+    virgl_runtime_directory: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
     rows: i32,
@@ -198,6 +199,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             user: java_string(&mut env, user)?,
             x11_socket_directory: java_string(&mut env, x11_socket_directory)?,
             wayland_runtime_directory: java_string(&mut env, wayland_runtime_directory)?,
+            virgl_runtime_directory: java_string(&mut env, virgl_runtime_directory)?,
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
@@ -223,6 +225,35 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_startVirglHost(
+    mut env: JNIEnv,
+    _: JObject,
+    runtime_directory: JString,
+    payload_directory: JString,
+    native_library_directory: JString,
+) {
+    let result = (|| {
+        crate::virgl::start(
+            &PathBuf::from(java_string(&mut env, runtime_directory)?),
+            &PathBuf::from(java_string(&mut env, payload_directory)?),
+            &PathBuf::from(java_string(&mut env, native_library_directory)?),
+        )
+        .map_err(|error| error.to_string())
+    })();
+    if let Err(message) = result {
+        throw_illegal_argument(&mut env, &message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_stopVirglHost(
+    _: JNIEnv,
+    _: JObject,
+) {
+    crate::virgl::stop();
 }
 
 /// Repairs only Trierarch's private X11 socket directory after an old build

@@ -1,0 +1,32 @@
+--- a/src/proxy/proxy_server.c
++++ b/src/proxy/proxy_server.c
+@@ -68,13 +68,28 @@
+ 
+       /* for devenv without installing server */
+       char *const server_path = getenv("RENDER_SERVER_EXEC_PATH");
++      char *const binary = server_path ? server_path : RENDER_SERVER_EXEC_PATH;
++#if defined(__ANDROID__)
++      /* Android /data is mounted noexec; bootstrap through the system linker. */
++      char *const linker = sizeof(void*) == 8
++         ? "/system/bin/linker64" : "/system/bin/linker";
+       char *const argv[] = {
+-         server_path ? server_path : RENDER_SERVER_EXEC_PATH,
++         linker,
++         binary,
++         "--socket-fd",
++         fd_str,
++         NULL,
++      };
++      execv(linker, argv);
++#else
++      char *const argv[] = {
++         binary,
+          "--socket-fd",
+          fd_str,
+          NULL,
+       };
+       execv(argv[0], argv);
++#endif
+ 
+       proxy_log("failed to exec %s: %s", argv[0], strerror(errno));
+       close(remote_fd);

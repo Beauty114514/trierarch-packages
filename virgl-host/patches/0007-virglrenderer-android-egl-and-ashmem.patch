@@ -1,0 +1,97 @@
+--- a/src/vrend/vrend_winsys.c
++++ b/src/vrend/vrend_winsys.c
+@@ -76,6 +76,13 @@
+       }
+ 
+       use_context = CONTEXT_EGL;
++#elif defined(__ANDROID__)
++      (void)preferred_fd;
++      egl = virgl_egl_init(NULL, flags & VIRGL_RENDERER_USE_SURFACELESS,
++                           flags & VIRGL_RENDERER_USE_GLES);
++      if (!egl)
++         return -1;
++      use_context = CONTEXT_EGL;
+ #else
+       (void)preferred_fd;
+       virgl_error("EGL is not supported on this platform\n");
+@@ -98,6 +105,13 @@
+ 
+ void vrend_winsys_cleanup(void)
+ {
++#ifdef __ANDROID__
++   if (use_context == CONTEXT_EGL) {
++      virgl_egl_destroy(egl);
++      egl = NULL;
++      use_context = CONTEXT_NONE;
++   }
++#endif
+ #ifdef ENABLE_GBM
+    if (use_context == CONTEXT_EGL) {
+       virgl_egl_destroy(egl);
+--- a/src/vrend/vrend_winsys_egl.c
++++ b/src/vrend/vrend_winsys_egl.c
+@@ -357,6 +357,8 @@
+       if (surfaceless) {
+          egl->egl_display = egl->funcs.eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
+                                                              (void *)EGL_DEFAULT_DISPLAY, NULL);
++         if (!egl->egl_display || egl->egl_display == EGL_NO_DISPLAY)
++            egl->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+       }
+ #ifdef ENABLE_GBM
+       else
+--- a/vtest/vtest_shm.c
++++ b/vtest/vtest_shm.c
+@@ -44,6 +44,30 @@
+ #endif
+ }
+ 
++#ifdef __ANDROID__
++#include <sys/ioctl.h>
++static int vtest_new_android_ashm(size_t size)
++{
++   int fd, ret;
++   long flags;
++   fd = open("/dev/ashmem", O_RDWR | O_CLOEXEC);
++   if (fd < 0)
++      return fd;
++   ret = ioctl(fd, /* ASHMEM_SET_SIZE */ _IOW(0x77, 3, size_t), size);
++   if (ret < 0)
++      goto err;
++   flags = fcntl(fd, F_GETFD);
++   if (flags == -1)
++      goto err;
++   if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1)
++      goto err;
++   return fd;
++err:
++   close(fd);
++   return -1;
++}
++#endif
++
+ int vtest_new_shm(uint32_t handle, size_t size)
+ {
+    int fd, ret;
+@@ -54,6 +78,11 @@
+    fd = memfd_create(str, MFD_ALLOW_SEALING);
+    free(str);
+    if (fd < 0) {
++#ifdef __ANDROID__
++      fd = vtest_new_android_ashm(size);
++      if (fd >= 0)
++         return fd;
++#endif
+       return report_failed_call("memfd_create", -errno);
+    }
+ 
+@@ -68,6 +97,10 @@
+ 
+ int vtest_shm_check(void)
+ {
++#ifdef __ANDROID__
++   return 1;
++#endif
++
+     int mfd = memfd_create("test", MFD_ALLOW_SEALING);
+ 
+     if (mfd >= 0) {

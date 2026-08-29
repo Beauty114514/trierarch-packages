@@ -1,0 +1,6 @@
+# Reproducible upstream sources created by scripts/fetch.sh.
+/sources/
+
+# Native build and packaged Android artifacts.
+/build/
+/dist/

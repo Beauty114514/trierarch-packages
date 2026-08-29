@@ -1,0 +1,5 @@
+--- a/meson.build
++++ b/meson.build
+@@ -244 +244 @@
+-foreach f : ['memfd_create', 'strtok_r', 'timespec_get']
++foreach f : ['strtok_r']

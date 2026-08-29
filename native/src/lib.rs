@@ -11,6 +11,7 @@ mod proot;
 mod pty;
 pub mod rootfs;
 mod session;
+mod virgl;
 
 #[cfg(target_os = "android")]
 mod jni_bridge;

@@ -1,0 +1,10 @@
+# Source tree        Patch file
+libepoxy             0001-libepoxy-select-angle-libraries.patch
+virglrenderer        0002-virglrenderer-disable-android-os-detection.patch
+virglrenderer        0003-virglrenderer-disable-android-pthread-barriers.patch
+virglrenderer        0004-virglrenderer-enable-egl-without-gbm.patch
+virglrenderer        0005-virglrenderer-accept-ndk-offsetof-warnings.patch
+virglrenderer        0006-virglrenderer-disable-android-memfd-probes.patch
+virglrenderer        0007-virglrenderer-android-egl-and-ashmem.patch
+virglrenderer        0008-virglrenderer-disable-dual-source-blend.patch
+virglrenderer        0009-virglrenderer-run-venus-through-linker.patch
