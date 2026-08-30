@@ -8,6 +8,11 @@ use anyhow::{Context, Result};
 use std::ffi::CString;
 use std::os::unix::fs::FileTypeExt;
 
+const WAYLAND_SOCKET: &str = "wayland-trierarch";
+const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
+const VIRGL_SOCKET: &str = "vtest.sock";
+const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
+
 pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CString>)> {
     let proot = spec.native_library_dir.join("libproot.so");
     let loader = spec.native_library_dir.join("libproot_loader.so");
@@ -44,6 +49,8 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         format!("--bind={rootfs}/sys/.empty:/sys/fs/selinux"),
     ];
     let x11 = !spec.x11_socket_directory.as_os_str().is_empty();
+    let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
+    let virgl = !spec.virgl_runtime_directory.as_os_str().is_empty();
     if x11 {
         let host_socket = spec.x11_socket_directory.join("X0");
         let guest_directory = spec.rootfs.join("tmp/.X11-unix");
@@ -63,6 +70,26 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             "--bind={}:/tmp/.X11-unix/X0",
             host_socket.display()
         ));
+    }
+    if wayland {
+        bind_socket(
+            &mut argv,
+            &spec.rootfs,
+            &spec.wayland_runtime_directory.join(WAYLAND_SOCKET),
+            GUEST_WAYLAND_RUNTIME_DIRECTORY,
+            WAYLAND_SOCKET,
+            "Wayland",
+        )?;
+    }
+    if virgl {
+        bind_socket(
+            &mut argv,
+            &spec.rootfs,
+            &spec.virgl_runtime_directory.join(VIRGL_SOCKET),
+            GUEST_VIRGL_RUNTIME_DIRECTORY,
+            VIRGL_SOCKET,
+            "VirGL",
+        )?;
     }
     if spec.launch_argv.is_empty() {
         if x11 {
@@ -104,6 +131,16 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         env.push("DISPLAY=:0".into());
         env.push("XDG_SESSION_TYPE=x11".into());
     }
+    if wayland {
+        env.push(format!("XDG_RUNTIME_DIR={GUEST_WAYLAND_RUNTIME_DIRECTORY}"));
+        env.push(format!("WAYLAND_DISPLAY={WAYLAND_SOCKET}"));
+        env.push("XDG_SESSION_TYPE=wayland".into());
+    }
+    if virgl {
+        let socket = format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}");
+        env.push(format!("VTEST_SOCKET_NAME={socket}"));
+        env.push(format!("VTEST_RENDERER_SOCKET_NAME={socket}"));
+    }
     validate_environment(&spec.graphics_environment)?;
     env.extend(spec.graphics_environment.iter().cloned());
     Ok((strings(&argv)?, strings(&env)?))
@@ -125,6 +162,23 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
             is_socket(&spec.x11_socket_directory.join("X0")),
             "Trierarch X11 socket is not ready"
         );
+    }
+    let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
+    anyhow::ensure!(
+        !(wayland && !spec.x11_socket_directory.as_os_str().is_empty()),
+        "X11 and Wayland cannot be selected for the same PRoot session"
+    );
+    if wayland {
+        validate_socket(
+            &spec.wayland_runtime_directory.join(WAYLAND_SOCKET),
+            "Wayland runtime socket",
+        )?;
+    }
+    if !spec.virgl_runtime_directory.as_os_str().is_empty() {
+        validate_socket(
+            &spec.virgl_runtime_directory.join(VIRGL_SOCKET),
+            "VirGL runtime socket",
+        )?;
     }
     for value in &spec.launch_argv {
         anyhow::ensure!(
@@ -175,7 +229,9 @@ fn validate_environment(values: &[String]) -> Result<()> {
         };
         anyhow::ensure!(
             !name.is_empty()
-                && name.bytes().all(|byte| byte == b'_' || byte.is_ascii_uppercase())
+                && name
+                    .bytes()
+                    .all(|byte| byte == b'_' || byte.is_ascii_uppercase())
                 && !value.contains('\0'),
             "graphics environment entry is invalid"
         );
@@ -185,6 +241,51 @@ fn validate_environment(values: &[String]) -> Result<()> {
 
 fn is_socket(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
+fn validate_socket(path: &std::path::Path, label: &str) -> Result<()> {
+    anyhow::ensure!(
+        path.is_absolute() && is_socket(path),
+        "{label} is not accessible: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn bind_socket(
+    argv: &mut Vec<String>,
+    rootfs: &std::path::Path,
+    host_socket: &std::path::Path,
+    guest_directory: &str,
+    socket_name: &str,
+    label: &str,
+) -> Result<()> {
+    validate_socket(host_socket, &format!("{label} socket"))?;
+    let guest_directory = rootfs.join(guest_directory.trim_start_matches('/'));
+    std::fs::create_dir_all(&guest_directory).with_context(|| {
+        format!(
+            "create guest {label} directory: {}",
+            guest_directory.display()
+        )
+    })?;
+    let guest_socket = guest_directory.join(socket_name);
+    if !guest_socket.exists() {
+        std::fs::File::create(&guest_socket).with_context(|| {
+            format!(
+                "create guest {label} socket mountpoint: {}",
+                guest_socket.display()
+            )
+        })?;
+    }
+    argv.push(format!(
+        "--bind={}:/{}",
+        host_socket.display(),
+        guest_socket
+            .strip_prefix(rootfs)
+            .expect("guest socket is below rootfs")
+            .display()
+    ));
+    Ok(())
 }
 
 fn strings(values: &[String]) -> Result<Vec<CString>> {

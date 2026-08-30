@@ -103,6 +103,8 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
     native_library_directory: JString,
     cache_directory: JString,
     x11_socket_directory: JString,
+    wayland_runtime_directory: JString,
+    virgl_runtime_directory: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
     rows: i32,
@@ -116,6 +118,11 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
             native_library_dir: PathBuf::from(java_string(&mut env, native_library_directory)?),
             cache_dir: PathBuf::from(java_string(&mut env, cache_directory)?),
             x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
+            wayland_runtime_directory: PathBuf::from(java_string(
+                &mut env,
+                wayland_runtime_directory,
+            )?),
+            virgl_runtime_directory: PathBuf::from(java_string(&mut env, virgl_runtime_directory)?),
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
