@@ -6,12 +6,14 @@
 use super::ProotSpec;
 use anyhow::{Context, Result};
 use std::ffi::CString;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
+const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
+const GUEST_KWIN_WRAPPER: &str = "/opt/trierarch/compat/kwin-wayland-wrapper";
 
 pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CString>)> {
     let proot = spec.native_library_dir.join("libproot.so");
@@ -51,6 +53,7 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     let x11 = !spec.x11_socket_directory.as_os_str().is_empty();
     let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
     let virgl = !spec.virgl_runtime_directory.as_os_str().is_empty();
+    let udev_compatibility = prepare_udev_compatibility_library(spec)?;
     if x11 {
         let host_socket = spec.x11_socket_directory.join("X0");
         let guest_directory = spec.rootfs.join("tmp/.X11-unix");
@@ -143,7 +146,44 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     }
     validate_environment(&spec.graphics_environment)?;
     env.extend(spec.graphics_environment.iter().cloned());
+    if wayland && udev_compatibility {
+        env.push(format!("KDEWM={GUEST_KWIN_WRAPPER}"));
+    }
     Ok((strings(&argv)?, strings(&env)?))
+}
+
+fn prepare_udev_compatibility_library(spec: &ProotSpec) -> Result<bool> {
+    if spec.udev_compatibility_library.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        spec.udev_compatibility_library.is_file(),
+        "guest compatibility library is missing: {}",
+        spec.udev_compatibility_library.display(),
+    );
+    let destination = spec.rootfs.join(GUEST_UDEV_COMPATIBILITY_LIBRARY.trim_start_matches('/'));
+    let parent = destination.parent().expect("compatibility library has a parent");
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create guest compatibility directory: {}", parent.display()))?;
+    let temporary = destination.with_extension("so.tmp");
+    std::fs::copy(&spec.udev_compatibility_library, &temporary).with_context(|| {
+        format!("copy guest compatibility library to {}", temporary.display())
+    })?;
+    std::fs::rename(&temporary, &destination).with_context(|| {
+        format!("install guest compatibility library at {}", destination.display())
+    })?;
+    let wrapper = destination.with_file_name("kwin-wayland-wrapper");
+    std::fs::write(&wrapper, kwin_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY))
+        .with_context(|| format!("write KWin compatibility wrapper: {}", wrapper.display()))?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("mark KWin compatibility wrapper executable: {}", wrapper.display()))?;
+    Ok(true)
+}
+
+fn kwin_wrapper_script(library: &str) -> String {
+    format!(
+        "#!/bin/sh\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland \"$@\"\n"
+    )
 }
 
 fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path) -> Result<()> {

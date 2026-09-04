@@ -19,6 +19,8 @@ pub struct ChrootSpec {
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.
     pub graphics_environment: Vec<String>,
+    /// App-private source copied into the rootfs by the privileged launcher.
+    pub udev_compatibility_library: PathBuf,
 }
 
 impl ChrootSpec {
@@ -72,7 +74,29 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
     } else {
         shell_words(&spec.launch_argv)
     };
-    let graphics_environment = shell_words(&spec.graphics_environment);
+    let mut environment = spec.graphics_environment.clone();
+    let install_compatibility = if spec.udev_compatibility_library.as_os_str().is_empty() {
+        String::new()
+    } else {
+        let destination = spec.rootfs.join("opt/trierarch/compat/libtrierarch-udev-compat.so");
+        let parent = destination.parent().expect("compatibility library has a parent");
+        let wrapper = parent.join("kwin-wayland-wrapper");
+        let wrapper_script = kwin_wrapper_script("/opt/trierarch/compat/libtrierarch-udev-compat.so");
+        // `LD_PRELOAD` must not be exported by the desktop-session parent.
+        // Plasma reads KDEWM and starts this wrapper only for KWin.
+        if !x11 {
+            environment.push("KDEWM=/opt/trierarch/compat/kwin-wayland-wrapper".into());
+        }
+        format!(
+            "test -f {source} || {{ printf '%s\\n' 'Trierarch guest compatibility library is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} && printf '%s' {wrapper_script} > {wrapper} && /system/bin/toybox chmod 755 {wrapper} || exit $?; ",
+            source = shell_quote(&spec.udev_compatibility_library),
+            parent = shell_quote(parent),
+            destination = shell_quote(&destination),
+            wrapper_script = shell_quote(Path::new(&wrapper_script)),
+            wrapper = shell_quote(&wrapper),
+        )
+    };
+    let graphics_environment = shell_words(&environment);
     let guest = if x11 {
         format!(
             "/usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 \
@@ -83,8 +107,8 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
     };
     if !x11 {
         return format!(
-            "exec /system/bin/chroot {} {guest}",
-            shell_quote(&spec.rootfs)
+            "{install_compatibility} exec /system/bin/chroot {} {guest}",
+            shell_quote(&spec.rootfs),
         );
     }
 
@@ -95,7 +119,7 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
         .expect("X11 socket directory has a tmp parent");
     let target = spec.rootfs.join("tmp");
     format!(
-        "test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
+        "{install_compatibility} test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
          mkdir -p {target}; \\
          /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; \\
          cleanup() {{ /system/bin/toybox umount {target} >/dev/null 2>&1 || true; }}; \\
@@ -105,6 +129,13 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
         source_tmp = shell_quote(source_tmp),
         target = shell_quote(&target),
         rootfs = shell_quote(&spec.rootfs),
+        install_compatibility = install_compatibility,
+    )
+}
+
+fn kwin_wrapper_script(library: &str) -> String {
+    format!(
+        "#!/bin/sh\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland \"$@\"\n"
     )
 }
 

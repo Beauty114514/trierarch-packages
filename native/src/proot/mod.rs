@@ -26,6 +26,8 @@ pub struct ProotSpec {
     pub wayland_runtime_directory: PathBuf,
     /// Empty unless this PRoot session uses the Trierarch VirGL vtest host.
     pub virgl_runtime_directory: PathBuf,
+    /// Optional app-private Linux guest compatibility library.
+    pub udev_compatibility_library: PathBuf,
     /// Empty starts the configured interactive shell.
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.

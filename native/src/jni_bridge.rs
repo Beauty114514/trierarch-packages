@@ -105,6 +105,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
     x11_socket_directory: JString,
     wayland_runtime_directory: JString,
     virgl_runtime_directory: JString,
+    udev_compatibility_library: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
     rows: i32,
@@ -123,6 +124,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProot
                 wayland_runtime_directory,
             )?),
             virgl_runtime_directory: PathBuf::from(java_string(&mut env, virgl_runtime_directory)?),
+            udev_compatibility_library: PathBuf::from(java_string(&mut env, udev_compatibility_library)?),
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
@@ -154,6 +156,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
     x11_socket_directory: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
+    udev_compatibility_library: JString,
     rows: i32,
     columns: i32,
     callback: JObject,
@@ -165,6 +168,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
             x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
+            udev_compatibility_library: PathBuf::from(java_string(&mut env, udev_compatibility_library)?),
         };
         let events = Arc::new(JvmEvents {
             vm: env.get_java_vm().map_err(|error| error.to_string())?,
@@ -194,6 +198,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
     x11_socket_directory: JString,
     wayland_runtime_directory: JString,
     virgl_runtime_directory: JString,
+    udev_compatibility_library: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
     rows: i32,
@@ -207,6 +212,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             x11_socket_directory: java_string(&mut env, x11_socket_directory)?,
             wayland_runtime_directory: java_string(&mut env, wayland_runtime_directory)?,
             virgl_runtime_directory: java_string(&mut env, virgl_runtime_directory)?,
+            udev_compatibility_library: java_string(&mut env, udev_compatibility_library)?,
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
         };
