@@ -111,6 +111,23 @@ struct wayland_server {
     uint32_t next_serial;
     bool valid;
     bool egl_buffer_supported;
+    /* One-second host-side frame-pipeline counters.  These are deliberately
+     * observational: the first performance pass must not alter scheduling. */
+    uint64_t perf_last_report_ns;
+    uint64_t perf_dispatch_count;
+    uint64_t perf_dispatch_wait_ns;
+    uint64_t perf_dispatch_wait_max_ns;
+    uint64_t perf_surface_commits;
+    uint64_t perf_surface_damage;
+    uint64_t perf_surface_commit_generation;
+    uint64_t perf_surface_damage_generation;
+    uint64_t perf_frame_callbacks;
+    uint64_t perf_render_count;
+    uint64_t perf_render_without_surface_update;
+    uint64_t perf_render_ns;
+    uint64_t perf_render_max_ns;
+    uint64_t perf_swap_ns;
+    uint64_t perf_swap_max_ns;
 };
 
 void trierarch_surface_bind(struct wl_client *, void *, uint32_t, uint32_t);

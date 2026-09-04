@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define TAG "TrierarchRenderer"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -67,7 +68,63 @@ struct renderer_context {
     image_target_fn image_target;
     native_client_buffer_fn native_client_buffer;
     bool dmabuf_import_supported;
+    uint64_t observed_surface_commits;
+    uint64_t observed_surface_damage;
 };
+
+static uint64_t monotonic_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void record_max(uint64_t value, uint64_t *maximum) {
+    if (value > *maximum) *maximum = value;
+}
+
+static void report_performance(struct wayland_server *server, uint64_t now_ns) {
+    if (!server->perf_last_report_ns) {
+        server->perf_last_report_ns = now_ns;
+        return;
+    }
+    uint64_t interval_ns = now_ns - server->perf_last_report_ns;
+    if (interval_ns < 1000000000ULL) return;
+    uint64_t dispatch_average_us = server->perf_dispatch_count
+            ? server->perf_dispatch_wait_ns / server->perf_dispatch_count / 1000ULL : 0;
+    uint64_t render_average_us = server->perf_render_count
+            ? server->perf_render_ns / server->perf_render_count / 1000ULL : 0;
+    uint64_t swap_average_us = server->perf_render_count
+            ? server->perf_swap_ns / server->perf_render_count / 1000ULL : 0;
+    LOGI("perf %.2fs dispatch=%llu avg/max=%llu/%lluus commits=%llu damage=%llu "
+            "renders=%llu no-surface-update=%llu render-us avg/max=%llu/%llu "
+            "swap-us avg/max=%llu/%llu callbacks=%llu",
+            (double)interval_ns / 1000000000.0,
+            (unsigned long long)server->perf_dispatch_count,
+            (unsigned long long)dispatch_average_us,
+            (unsigned long long)(server->perf_dispatch_wait_max_ns / 1000ULL),
+            (unsigned long long)server->perf_surface_commits,
+            (unsigned long long)server->perf_surface_damage,
+            (unsigned long long)server->perf_render_count,
+            (unsigned long long)server->perf_render_without_surface_update,
+            (unsigned long long)render_average_us,
+            (unsigned long long)(server->perf_render_max_ns / 1000ULL),
+            (unsigned long long)swap_average_us,
+            (unsigned long long)(server->perf_swap_max_ns / 1000ULL),
+            (unsigned long long)server->perf_frame_callbacks);
+    server->perf_last_report_ns = now_ns;
+    server->perf_dispatch_count = 0;
+    server->perf_dispatch_wait_ns = 0;
+    server->perf_dispatch_wait_max_ns = 0;
+    server->perf_surface_commits = 0;
+    server->perf_surface_damage = 0;
+    server->perf_frame_callbacks = 0;
+    server->perf_render_count = 0;
+    server->perf_render_without_surface_update = 0;
+    server->perf_render_ns = 0;
+    server->perf_render_max_ns = 0;
+    server->perf_swap_ns = 0;
+    server->perf_swap_max_ns = 0;
+}
 
 static const char *vertex_source =
         "attribute vec2 position; attribute vec2 texcoord; varying vec2 uv;"
@@ -377,6 +434,11 @@ static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) 
 bool trierarch_renderer_render(struct renderer_context *renderer,
         struct wayland_server *server) {
     if (!trierarch_renderer_valid(renderer) || !server) return false;
+    uint64_t render_started_ns = monotonic_ns();
+    bool surface_updated = renderer->observed_surface_commits != server->perf_surface_commit_generation
+            || renderer->observed_surface_damage != server->perf_surface_damage_generation;
+    renderer->observed_surface_commits = server->perf_surface_commit_generation;
+    renderer->observed_surface_damage = server->perf_surface_damage_generation;
     if (!eglMakeCurrent(renderer->display, renderer->surface, renderer->surface, renderer->context))
         return false;
     eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
@@ -404,8 +466,17 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         draw_surface(renderer, server->cursor_surface, cursor_x, cursor_y);
     }
     glDisable(GL_BLEND);
+    uint64_t swap_started_ns = monotonic_ns();
     eglSwapBuffers(renderer->display, renderer->surface);
+    uint64_t render_finished_ns = monotonic_ns();
     trierarch_surface_send_frame_callbacks(server, 0);
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    server->perf_render_count++;
+    if (!surface_updated) server->perf_render_without_surface_update++;
+    server->perf_render_ns += render_finished_ns - render_started_ns;
+    server->perf_swap_ns += render_finished_ns - swap_started_ns;
+    record_max(render_finished_ns - render_started_ns, &server->perf_render_max_ns);
+    record_max(render_finished_ns - swap_started_ns, &server->perf_swap_max_ns);
+    report_performance(server, render_finished_ns);
     return true;
 }
