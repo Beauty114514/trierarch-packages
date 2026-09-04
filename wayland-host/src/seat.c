@@ -96,6 +96,7 @@ void trierarch_pointer_move_absolute(struct wayland_server *server,
     server->pointer_x = wl_fixed_from_double(x);
     server->pointer_y = wl_fixed_from_double(y);
     send_pointer_motion(server, time_ms);
+    trierarch_wayland_request_render(server);
 }
 
 void trierarch_pointer_move_relative(struct wayland_server *server,
@@ -162,7 +163,10 @@ void trierarch_pointer_reset(struct wayland_server *server, uint32_t time_ms) {
 
 void trierarch_pointer_set_cursor_visible(wayland_server_t *opaque, bool visible) {
     struct wayland_server *server = (struct wayland_server *)opaque;
-    if (server) server->cursor_visible = visible;
+    if (server && server->cursor_visible != visible) {
+        server->cursor_visible = visible;
+        trierarch_wayland_request_render(server);
+    }
 }
 
 static void seat_release(struct wl_client *client, struct wl_resource *resource) {
@@ -180,6 +184,7 @@ static void pointer_set_cursor(struct wl_client *client, struct wl_resource *res
     server->cursor_surface = NULL;
     server->cursor_hotspot_x = 0;
     server->cursor_hotspot_y = 0;
+    trierarch_wayland_request_render(server);
     if (!surface) return;
     if (wl_resource_get_client(surface) != client) return;
     struct compositor_surface *cursor = trierarch_surface_from_resource(surface);

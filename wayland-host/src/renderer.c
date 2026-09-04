@@ -82,7 +82,9 @@ static void record_max(uint64_t value, uint64_t *maximum) {
     if (value > *maximum) *maximum = value;
 }
 
-static void report_performance(struct wayland_server *server, uint64_t now_ns) {
+void trierarch_renderer_report_performance(struct wayland_server *server) {
+    if (!server) return;
+    uint64_t now_ns = monotonic_ns();
     if (!server->perf_last_report_ns) {
         server->perf_last_report_ns = now_ns;
         return;
@@ -467,9 +469,13 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     }
     glDisable(GL_BLEND);
     uint64_t swap_started_ns = monotonic_ns();
-    eglSwapBuffers(renderer->display, renderer->surface);
+    EGLBoolean swapped = eglSwapBuffers(renderer->display, renderer->surface);
     uint64_t render_finished_ns = monotonic_ns();
-    trierarch_surface_send_frame_callbacks(server, 0);
+    if (!swapped) {
+        eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        return false;
+    }
+    trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     server->perf_render_count++;
     if (!surface_updated) server->perf_render_without_surface_update++;
@@ -477,6 +483,5 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     server->perf_swap_ns += render_finished_ns - swap_started_ns;
     record_max(render_finished_ns - render_started_ns, &server->perf_render_max_ns);
     record_max(render_finished_ns - swap_started_ns, &server->perf_swap_max_ns);
-    report_performance(server, render_finished_ns);
     return true;
 }

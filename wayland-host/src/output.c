@@ -83,6 +83,7 @@ void trierarch_wayland_set_output_size(wayland_server_t *opaque, int width, int 
     struct compositor_surface *surface;
     wl_list_for_each(surface, &server->surfaces, link)
         trierarch_surface_send_configure(surface);
+    trierarch_wayland_request_render(server);
 }
 
 void trierarch_output_enter_surface(struct wayland_server *server,

@@ -111,6 +111,10 @@ struct wayland_server {
     uint32_t next_serial;
     bool valid;
     bool egl_buffer_supported;
+    /* A frame is only composed after a client or host-side state change makes
+     * the Android surface stale.  The current first pass keeps the existing
+     * timed dispatch loop; it merely avoids re-uploading unchanged buffers. */
+    bool render_requested;
     /* One-second host-side frame-pipeline counters.  These are deliberately
      * observational: the first performance pass must not alter scheduling. */
     uint64_t perf_last_report_ns;
@@ -153,6 +157,7 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 void trierarch_surface_commit(struct compositor_surface *surface);
 void trierarch_surface_send_configure(struct compositor_surface *surface);
 void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint32_t time_ms);
+void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t time_ms);
 
 struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resource);
 void trierarch_shm_buffer_release(struct shm_buffer *buffer);

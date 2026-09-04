@@ -22,7 +22,11 @@ static void *dispatch_loop(void *argument) {
             break;
         }
         trierarch_wayland_dispatch(server);
-        if (renderer) trierarch_renderer_render(renderer, server);
+        if (renderer && trierarch_wayland_needs_render(server)) {
+            if (!trierarch_renderer_render(renderer, server))
+                trierarch_wayland_request_render(server);
+        }
+        trierarch_renderer_report_performance(server);
         pthread_mutex_unlock(&server_mutex);
     }
     return NULL;
@@ -43,6 +47,7 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object
              * server is NULL, so create the renderer here as well. */
             if (native_window)
                 renderer = trierarch_renderer_create(native_window, server);
+            if (renderer) trierarch_wayland_request_render(server);
             dispatch_running = 1;
             if (pthread_create(&dispatch_thread, NULL, dispatch_loop, NULL) != 0) {
                 dispatch_running = 0;
@@ -158,5 +163,6 @@ Java_app_trierarch_wayland_WaylandBridge_nativeAttachSurface(JNIEnv *env, jobjec
     native_window = window;
     if (native_window && server)
         renderer = trierarch_renderer_create(native_window, server);
+    if (renderer) trierarch_wayland_request_render(server);
     pthread_mutex_unlock(&server_mutex);
 }

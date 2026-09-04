@@ -62,7 +62,7 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
     wl_list_insert(surface->frame_callbacks.prev, &callback->link);
     wl_resource_set_implementation(callback->resource, NULL, callback,
             frame_callback_destroy);
-    /* The callback is removed by the compositor immediately after it fires. */
+    trierarch_wayland_request_render(surface->server);
 }
 
 static void surface_attach(struct wl_client *client, struct wl_resource *resource,
@@ -107,6 +107,7 @@ static void surface_damage(struct wl_client *client, struct wl_resource *resourc
         surface->damaged = true;
         surface->server->perf_surface_damage++;
         surface->server->perf_surface_damage_generation++;
+        trierarch_wayland_request_render(surface->server);
     }
 }
 
@@ -193,6 +194,7 @@ static void surface_resource_destroy(struct wl_resource *resource) {
         surface->server->cursor_hotspot_x = 0;
         surface->server->cursor_hotspot_y = 0;
     }
+    trierarch_wayland_request_render(surface->server);
     if (surface->current) {
         struct shm_buffer *current = surface->current;
         trierarch_shm_buffer_release(current);
@@ -278,6 +280,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     }
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
+    trierarch_wayland_request_render(surface->server);
 }
 
 void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint32_t time_ms) {

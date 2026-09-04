@@ -116,6 +116,25 @@ void trierarch_wayland_dispatch(wayland_server_t *server) {
     wl_display_flush_clients(server->display);
 }
 
+bool trierarch_wayland_needs_render(wayland_server_t *opaque) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    return server && server->render_requested;
+}
+
+void trierarch_wayland_request_render(wayland_server_t *opaque) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    if (server) server->render_requested = true;
+}
+
+void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t time_ms) {
+    if (!server) return;
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link)
+        surface->damaged = false;
+    trierarch_surface_send_frame_callbacks(server, time_ms);
+    server->render_requested = false;
+}
+
 bool trierarch_wayland_has_surface(wayland_server_t *server) {
     struct compositor_surface *surface;
     if (!server) return false;
