@@ -14,6 +14,7 @@
 #include <android/log.h>
 
 #define TRIERARCH_TAG "TrierarchWayland"
+#define OUTPUT_REPAINT_INTERVAL_NS 16666667L
 
 static int drain_counter_fd(int fd, uint32_t mask, void *data) {
     (void)mask;
@@ -23,11 +24,37 @@ static int drain_counter_fd(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
+static void schedule_repaint(struct wayland_server *server) {
+    if (!server || server->repaint_scheduled || server->repaint_ready ||
+            server->repaint_rendering) return;
+    const struct itimerspec delay = {
+        .it_value = { .tv_sec = 0, .tv_nsec = OUTPUT_REPAINT_INTERVAL_NS },
+    };
+    if (server->repaint_fd >= 0 && timerfd_settime(server->repaint_fd, 0, &delay, NULL) == 0) {
+        server->repaint_scheduled = true;
+        return;
+    }
+    /* A timer failure must not leave the Android output stale. */
+    __android_log_print(ANDROID_LOG_WARN, TRIERARCH_TAG,
+            "unable to schedule output repaint: %s", strerror(errno));
+    server->repaint_ready = true;
+}
+
+static int repaint_timer_fired(int fd, uint32_t mask, void *data) {
+    struct wayland_server *server = data;
+    drain_counter_fd(fd, mask, data);
+    server->repaint_scheduled = false;
+    if (server->repaint_needed && !server->repaint_rendering)
+        server->repaint_ready = true;
+    return 0;
+}
+
 wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     struct wayland_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
     server->wake_fd = -1;
     server->telemetry_fd = -1;
+    server->repaint_fd = -1;
     server->display = wl_display_create();
     server->event_loop = server->display ? wl_display_get_event_loop(server->display) : NULL;
     if (!server->display || !server->event_loop) {
@@ -59,6 +86,7 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     wl_list_init(&server->pointer_resources);
     server->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     server->telemetry_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    server->repaint_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (server->wake_fd >= 0) {
         server->wake_source = wl_event_loop_add_fd(server->event_loop, server->wake_fd,
                 WL_EVENT_READABLE, drain_counter_fd, server);
@@ -73,8 +101,12 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
                     server->telemetry_fd, WL_EVENT_READABLE, drain_counter_fd, server);
         }
     }
+    if (server->repaint_fd >= 0) {
+        server->repaint_source = wl_event_loop_add_fd(server->event_loop, server->repaint_fd,
+                WL_EVENT_READABLE, repaint_timer_fired, server);
+    }
     if (!server->display || !server->runtime_dir ||
-            !server->wake_source || !server->telemetry_source ||
+            !server->wake_source || !server->telemetry_source || !server->repaint_source ||
             wl_display_add_socket(server->display, "wayland-trierarch") < 0) {
         trierarch_wayland_destroy(server);
         return NULL;
@@ -131,6 +163,7 @@ void trierarch_wayland_destroy(wayland_server_t *server) {
     if (server->display) wl_display_destroy(server->display);
     if (server->wake_fd >= 0) close(server->wake_fd);
     if (server->telemetry_fd >= 0) close(server->telemetry_fd);
+    if (server->repaint_fd >= 0) close(server->repaint_fd);
     free(server->runtime_dir);
     free(server);
 }
@@ -158,14 +191,32 @@ void trierarch_wayland_wake(wayland_server_t *opaque) {
     (void)write(server->wake_fd, &one, sizeof(one));
 }
 
-bool trierarch_wayland_needs_render(wayland_server_t *opaque) {
+bool trierarch_wayland_begin_repaint(wayland_server_t *opaque) {
     struct wayland_server *server = (struct wayland_server *)opaque;
-    return server && server->render_requested;
+    if (!server || !server->repaint_needed || !server->repaint_ready ||
+            server->repaint_rendering) return false;
+    server->repaint_ready = false;
+    server->repaint_rendering = true;
+    server->perf_repaint_started++;
+    return true;
 }
 
 void trierarch_wayland_request_render(wayland_server_t *opaque) {
     struct wayland_server *server = (struct wayland_server *)opaque;
-    if (server) server->render_requested = true;
+    if (!server) return;
+    server->perf_repaint_requests++;
+    if (server->repaint_scheduled || server->repaint_ready || server->repaint_rendering)
+        server->perf_repaint_coalesced++;
+    server->repaint_needed = true;
+    schedule_repaint(server);
+}
+
+void trierarch_wayland_repaint_failed(wayland_server_t *opaque) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    if (!server) return;
+    server->repaint_rendering = false;
+    server->repaint_ready = false;
+    schedule_repaint(server);
 }
 
 void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t time_ms) {
@@ -174,7 +225,9 @@ void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t t
     wl_list_for_each(surface, &server->surfaces, link)
         surface->damaged = false;
     trierarch_surface_send_frame_callbacks(server, time_ms);
-    server->render_requested = false;
+    server->repaint_rendering = false;
+    server->repaint_ready = false;
+    server->repaint_needed = false;
 }
 
 bool trierarch_wayland_has_surface(wayland_server_t *server) {

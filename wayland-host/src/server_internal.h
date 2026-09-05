@@ -100,8 +100,10 @@ struct wayland_server {
     struct wl_event_loop *event_loop;
     struct wl_event_source *wake_source;
     struct wl_event_source *telemetry_source;
+    struct wl_event_source *repaint_source;
     int wake_fd;
     int telemetry_fd;
+    int repaint_fd;
     struct wl_list surfaces;
     struct wl_list output_resources;
     struct wl_list xdg_output_resources;
@@ -120,12 +122,13 @@ struct wayland_server {
     uint32_t next_serial;
     bool valid;
     bool egl_buffer_supported;
-    /* A frame is only composed after a client or host-side state change makes
-     * the Android surface stale.  The current first pass keeps the existing
-     * timed dispatch loop; it merely avoids re-uploading unchanged buffers. */
-    bool render_requested;
-    /* One-second host-side frame-pipeline counters.  These are deliberately
-     * observational: the first performance pass must not alter scheduling. */
+    /* Output repaint state. Requests are coalesced until the next output tick,
+     * so a burst of commits produces at most one composition. */
+    bool repaint_needed;
+    bool repaint_scheduled;
+    bool repaint_ready;
+    bool repaint_rendering;
+    /* One-second host-side frame-pipeline counters. */
     uint64_t perf_last_report_ns;
     uint64_t perf_dispatch_count;
     uint64_t perf_dispatch_wait_ns;
@@ -141,6 +144,9 @@ struct wayland_server {
     uint64_t perf_render_max_ns;
     uint64_t perf_swap_ns;
     uint64_t perf_swap_max_ns;
+    uint64_t perf_repaint_requests;
+    uint64_t perf_repaint_coalesced;
+    uint64_t perf_repaint_started;
 };
 
 void trierarch_surface_bind(struct wl_client *, void *, uint32_t, uint32_t);

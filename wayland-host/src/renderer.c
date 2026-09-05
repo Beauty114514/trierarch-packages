@@ -122,13 +122,17 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
             ? server->perf_render_ns / server->perf_render_count / 1000ULL : 0;
     uint64_t swap_average_us = server->perf_render_count
             ? server->perf_swap_ns / server->perf_render_count / 1000ULL : 0;
-    LOGI("perf %.2fs dispatch=%llu avg/max=%llu/%lluus commits=%llu damage=%llu "
+    LOGI("perf %.2fs dispatch=%llu avg/max=%llu/%lluus repaint=%llu/%llu/%llu "
+            "commits=%llu damage=%llu "
             "renders=%llu no-surface-update=%llu render-us avg/max=%llu/%llu "
             "swap-us avg/max=%llu/%llu callbacks=%llu",
             (double)interval_ns / 1000000000.0,
             (unsigned long long)server->perf_dispatch_count,
             (unsigned long long)dispatch_average_us,
             (unsigned long long)(server->perf_dispatch_wait_max_ns / 1000ULL),
+            (unsigned long long)server->perf_repaint_requests,
+            (unsigned long long)server->perf_repaint_coalesced,
+            (unsigned long long)server->perf_repaint_started,
             (unsigned long long)server->perf_surface_commits,
             (unsigned long long)server->perf_surface_damage,
             (unsigned long long)server->perf_render_count,
@@ -143,6 +147,9 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
     server->perf_dispatch_count = 0;
     server->perf_dispatch_wait_ns = 0;
     server->perf_dispatch_wait_max_ns = 0;
+    server->perf_repaint_requests = 0;
+    server->perf_repaint_coalesced = 0;
+    server->perf_repaint_started = 0;
     server->perf_surface_commits = 0;
     server->perf_surface_damage = 0;
     server->perf_frame_callbacks = 0;

@@ -140,9 +140,9 @@ static void *dispatch_loop(void *argument) {
     for (;;) {
         trierarch_wayland_dispatch(active_server);
         process_commands(active_server);
-        if (renderer && trierarch_wayland_needs_render(active_server)) {
+        if (renderer && trierarch_wayland_begin_repaint(active_server)) {
             if (!trierarch_renderer_render(renderer, active_server))
-                trierarch_wayland_request_render(active_server);
+                trierarch_wayland_repaint_failed(active_server);
         }
         trierarch_renderer_report_performance(active_server);
 
