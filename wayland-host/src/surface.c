@@ -59,7 +59,7 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
         wl_client_post_no_memory(client);
         return;
     }
-    wl_list_insert(surface->frame_callbacks.prev, &callback->link);
+    wl_list_insert(surface->pending_frame_callbacks.prev, &callback->link);
     wl_resource_set_implementation(callback->resource, NULL, callback,
             frame_callback_destroy);
 }
@@ -218,7 +218,8 @@ static void compositor_create_surface(struct wl_client *client,
     surface->buffer_scale = 1;
     wl_list_init(&surface->children);
     wl_list_init(&surface->subsurface_link);
-    wl_list_init(&surface->frame_callbacks);
+    wl_list_init(&surface->pending_frame_callbacks);
+    wl_list_init(&surface->committed_frame_callbacks);
     surface->wl_surface = wl_resource_create(
             client, &wl_surface_interface, wl_resource_get_version(resource), id);
     if (!surface->wl_surface) {
@@ -262,6 +263,11 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     surface->perf_commits++;
     surface->server->perf_surface_commits++;
     surface->server->perf_surface_commit_generation++;
+    if (!wl_list_empty(&surface->pending_frame_callbacks)) {
+        wl_list_insert_list(surface->committed_frame_callbacks.prev,
+                &surface->pending_frame_callbacks);
+        wl_list_init(&surface->pending_frame_callbacks);
+    }
     if (surface->pending) {
         if (surface->pending != surface->current)
             surface->perf_buffer_replacements++;
@@ -290,7 +296,7 @@ void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint3
     struct compositor_surface *surface;
     wl_list_for_each(surface, &server->surfaces, link) {
         struct surface_frame_callback *callback, *tmp;
-        wl_list_for_each_safe(callback, tmp, &surface->frame_callbacks, link) {
+        wl_list_for_each_safe(callback, tmp, &surface->committed_frame_callbacks, link) {
             wl_callback_send_done(callback->resource, time_ms);
             surface->perf_frame_callbacks++;
             server->perf_frame_callbacks++;

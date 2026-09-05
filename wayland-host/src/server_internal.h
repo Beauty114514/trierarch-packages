@@ -76,7 +76,11 @@ struct compositor_surface {
     bool viewport_destination_set;
     int32_t viewport_destination_width;
     int32_t viewport_destination_height;
-    struct wl_list frame_callbacks;
+    /* wl_surface.frame requests belong to the next surface commit, not to an
+     * arbitrary host repaint that happens before that commit. */
+    struct wl_list pending_frame_callbacks;
+    /* Callbacks associated with committed state and awaiting presentation. */
+    struct wl_list committed_frame_callbacks;
     /* One-second attribution counters for compositor performance diagnosis. */
     uint64_t perf_commits;
     uint64_t perf_damage;
