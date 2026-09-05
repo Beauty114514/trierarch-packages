@@ -60,6 +60,8 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
         return;
     }
     wl_list_insert(surface->pending_frame_callbacks.prev, &callback->link);
+    surface->perf_frame_callbacks_requested++;
+    surface->server->perf_frame_callbacks_requested++;
     wl_resource_set_implementation(callback->resource, NULL, callback,
             frame_callback_destroy);
 }
@@ -220,6 +222,7 @@ static void compositor_create_surface(struct wl_client *client,
     wl_list_init(&surface->subsurface_link);
     wl_list_init(&surface->pending_frame_callbacks);
     wl_list_init(&surface->committed_frame_callbacks);
+    wl_list_init(&surface->presented_frame_callbacks);
     surface->wl_surface = wl_resource_create(
             client, &wl_surface_interface, wl_resource_get_version(resource), id);
     if (!surface->wl_surface) {
@@ -264,6 +267,9 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     surface->server->perf_surface_commits++;
     surface->server->perf_surface_commit_generation++;
     if (!wl_list_empty(&surface->pending_frame_callbacks)) {
+        uint64_t callbacks = (uint64_t)wl_list_length(&surface->pending_frame_callbacks);
+        surface->perf_frame_callbacks_committed += callbacks;
+        surface->server->perf_frame_callbacks_committed += callbacks;
         wl_list_insert_list(surface->committed_frame_callbacks.prev,
                 &surface->pending_frame_callbacks);
         wl_list_init(&surface->pending_frame_callbacks);
@@ -292,14 +298,51 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     trierarch_wayland_request_render(surface->server);
 }
 
+static bool surface_participates_in_output(const struct wayland_server *server,
+        const struct compositor_surface *surface) {
+    if (!surface->mapped || !surface->current) return false;
+    if (surface == server->cursor_surface) return server->cursor_visible;
+    for (const struct compositor_surface *parent = surface->parent; parent;
+            parent = parent->parent) {
+        if (!parent->mapped || !parent->current || parent == server->cursor_surface)
+            return false;
+    }
+    return true;
+}
+
+void trierarch_surface_latch_frame_callbacks(struct wayland_server *server) {
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface_participates_in_output(server, surface) ||
+                wl_list_empty(&surface->committed_frame_callbacks))
+            continue;
+        uint64_t callbacks = (uint64_t)wl_list_length(&surface->committed_frame_callbacks);
+        surface->perf_frame_callbacks_captured += callbacks;
+        server->perf_frame_callbacks_captured += callbacks;
+        wl_list_insert_list(surface->presented_frame_callbacks.prev,
+                &surface->committed_frame_callbacks);
+        wl_list_init(&surface->committed_frame_callbacks);
+    }
+}
+
+void trierarch_surface_requeue_frame_callbacks(struct wayland_server *server) {
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (wl_list_empty(&surface->presented_frame_callbacks)) continue;
+        wl_list_insert_list(surface->committed_frame_callbacks.prev,
+                &surface->presented_frame_callbacks);
+        wl_list_init(&surface->presented_frame_callbacks);
+    }
+}
+
 void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint32_t time_ms) {
     struct compositor_surface *surface;
     wl_list_for_each(surface, &server->surfaces, link) {
         struct surface_frame_callback *callback, *tmp;
-        wl_list_for_each_safe(callback, tmp, &surface->committed_frame_callbacks, link) {
+        wl_list_for_each_safe(callback, tmp, &surface->presented_frame_callbacks, link) {
             wl_callback_send_done(callback->resource, time_ms);
-            surface->perf_frame_callbacks++;
-            server->perf_frame_callbacks++;
+            surface->perf_frame_callbacks_completed++;
+            server->perf_frame_callbacks_completed++;
             wl_resource_destroy(callback->resource);
         }
     }

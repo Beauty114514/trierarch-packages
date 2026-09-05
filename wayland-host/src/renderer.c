@@ -86,24 +86,33 @@ static void report_surface_activity(struct wayland_server *server) {
     struct compositor_surface *surface;
     wl_list_for_each(surface, &server->surfaces, link) {
         if (!surface->perf_commits && !surface->perf_damage &&
-                !surface->perf_buffer_replacements && !surface->perf_frame_callbacks)
+                !surface->perf_buffer_replacements && !surface->perf_frame_callbacks_requested &&
+                !surface->perf_frame_callbacks_committed &&
+                !surface->perf_frame_callbacks_captured && !surface->perf_frame_callbacks_completed)
             continue;
         const char *role = surface->is_cursor ? "cursor" :
                 surface->parent ? "subsurface" : "root";
         struct wl_client *client = surface->wl_surface
                 ? wl_resource_get_client(surface->wl_surface) : NULL;
         LOGI("perf-surface surface=%p client=%p role=%s parent=%p mapped=%d "
-                "buffer=%dx%d commits=%llu damage=%llu replacements=%llu callbacks=%llu",
+                "buffer=%dx%d commits=%llu damage=%llu replacements=%llu "
+                "callbacks=req/commit/capture/done=%llu/%llu/%llu/%llu",
                 (void *)surface, (void *)client, role, (void *)surface->parent,
                 surface->mapped, surface->width, surface->height,
                 (unsigned long long)surface->perf_commits,
                 (unsigned long long)surface->perf_damage,
                 (unsigned long long)surface->perf_buffer_replacements,
-                (unsigned long long)surface->perf_frame_callbacks);
+                (unsigned long long)surface->perf_frame_callbacks_requested,
+                (unsigned long long)surface->perf_frame_callbacks_committed,
+                (unsigned long long)surface->perf_frame_callbacks_captured,
+                (unsigned long long)surface->perf_frame_callbacks_completed);
         surface->perf_commits = 0;
         surface->perf_damage = 0;
         surface->perf_buffer_replacements = 0;
-        surface->perf_frame_callbacks = 0;
+        surface->perf_frame_callbacks_requested = 0;
+        surface->perf_frame_callbacks_committed = 0;
+        surface->perf_frame_callbacks_captured = 0;
+        surface->perf_frame_callbacks_completed = 0;
     }
 }
 
@@ -125,7 +134,7 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
     LOGI("perf %.2fs dispatch=%llu avg/max=%llu/%lluus repaint=%llu/%llu/%llu "
             "commits=%llu damage=%llu "
             "renders=%llu no-surface-update=%llu render-us avg/max=%llu/%llu "
-            "swap-us avg/max=%llu/%llu callbacks=%llu",
+            "swap-us avg/max=%llu/%llu callbacks=req/commit/capture/done=%llu/%llu/%llu/%llu",
             (double)interval_ns / 1000000000.0,
             (unsigned long long)server->perf_dispatch_count,
             (unsigned long long)dispatch_average_us,
@@ -141,7 +150,10 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
             (unsigned long long)(server->perf_render_max_ns / 1000ULL),
             (unsigned long long)swap_average_us,
             (unsigned long long)(server->perf_swap_max_ns / 1000ULL),
-            (unsigned long long)server->perf_frame_callbacks);
+            (unsigned long long)server->perf_frame_callbacks_requested,
+            (unsigned long long)server->perf_frame_callbacks_committed,
+            (unsigned long long)server->perf_frame_callbacks_captured,
+            (unsigned long long)server->perf_frame_callbacks_completed);
     report_surface_activity(server);
     server->perf_last_report_ns = now_ns;
     server->perf_dispatch_count = 0;
@@ -152,7 +164,10 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
     server->perf_repaint_started = 0;
     server->perf_surface_commits = 0;
     server->perf_surface_damage = 0;
-    server->perf_frame_callbacks = 0;
+    server->perf_frame_callbacks_requested = 0;
+    server->perf_frame_callbacks_committed = 0;
+    server->perf_frame_callbacks_captured = 0;
+    server->perf_frame_callbacks_completed = 0;
     server->perf_render_count = 0;
     server->perf_render_without_surface_update = 0;
     server->perf_render_ns = 0;
@@ -501,10 +516,14 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         draw_surface(renderer, server->cursor_surface, cursor_x, cursor_y);
     }
     glDisable(GL_BLEND);
+    /* Snapshot only callbacks for surfaces that participated in this output
+     * composition.  A later commit cannot be completed by this swap. */
+    trierarch_surface_latch_frame_callbacks(server);
     uint64_t swap_started_ns = monotonic_ns();
     EGLBoolean swapped = eglSwapBuffers(renderer->display, renderer->surface);
     uint64_t render_finished_ns = monotonic_ns();
     if (!swapped) {
+        trierarch_surface_requeue_frame_callbacks(server);
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
     }

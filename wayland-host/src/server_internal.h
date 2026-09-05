@@ -81,11 +81,16 @@ struct compositor_surface {
     struct wl_list pending_frame_callbacks;
     /* Callbacks associated with committed state and awaiting presentation. */
     struct wl_list committed_frame_callbacks;
+    /* The committed callbacks captured by the output composition in flight. */
+    struct wl_list presented_frame_callbacks;
     /* One-second attribution counters for compositor performance diagnosis. */
     uint64_t perf_commits;
     uint64_t perf_damage;
     uint64_t perf_buffer_replacements;
-    uint64_t perf_frame_callbacks;
+    uint64_t perf_frame_callbacks_requested;
+    uint64_t perf_frame_callbacks_committed;
+    uint64_t perf_frame_callbacks_captured;
+    uint64_t perf_frame_callbacks_completed;
 };
 
 struct surface_frame_callback {
@@ -141,7 +146,10 @@ struct wayland_server {
     uint64_t perf_surface_damage;
     uint64_t perf_surface_commit_generation;
     uint64_t perf_surface_damage_generation;
-    uint64_t perf_frame_callbacks;
+    uint64_t perf_frame_callbacks_requested;
+    uint64_t perf_frame_callbacks_committed;
+    uint64_t perf_frame_callbacks_captured;
+    uint64_t perf_frame_callbacks_completed;
     uint64_t perf_render_count;
     uint64_t perf_render_without_surface_update;
     uint64_t perf_render_ns;
@@ -175,6 +183,8 @@ void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
 void trierarch_surface_send_configure(struct compositor_surface *surface);
+void trierarch_surface_latch_frame_callbacks(struct wayland_server *server);
+void trierarch_surface_requeue_frame_callbacks(struct wayland_server *server);
 void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint32_t time_ms);
 void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t time_ms);
 
