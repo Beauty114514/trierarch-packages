@@ -77,6 +77,11 @@ struct compositor_surface {
     int32_t viewport_destination_width;
     int32_t viewport_destination_height;
     struct wl_list frame_callbacks;
+    /* One-second attribution counters for compositor performance diagnosis. */
+    uint64_t perf_commits;
+    uint64_t perf_damage;
+    uint64_t perf_buffer_replacements;
+    uint64_t perf_frame_callbacks;
 };
 
 struct surface_frame_callback {

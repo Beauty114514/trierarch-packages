@@ -82,6 +82,31 @@ static void record_max(uint64_t value, uint64_t *maximum) {
     if (value > *maximum) *maximum = value;
 }
 
+static void report_surface_activity(struct wayland_server *server) {
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface->perf_commits && !surface->perf_damage &&
+                !surface->perf_buffer_replacements && !surface->perf_frame_callbacks)
+            continue;
+        const char *role = surface->is_cursor ? "cursor" :
+                surface->parent ? "subsurface" : "root";
+        struct wl_client *client = surface->wl_surface
+                ? wl_resource_get_client(surface->wl_surface) : NULL;
+        LOGI("perf-surface surface=%p client=%p role=%s parent=%p mapped=%d "
+                "buffer=%dx%d commits=%llu damage=%llu replacements=%llu callbacks=%llu",
+                (void *)surface, (void *)client, role, (void *)surface->parent,
+                surface->mapped, surface->width, surface->height,
+                (unsigned long long)surface->perf_commits,
+                (unsigned long long)surface->perf_damage,
+                (unsigned long long)surface->perf_buffer_replacements,
+                (unsigned long long)surface->perf_frame_callbacks);
+        surface->perf_commits = 0;
+        surface->perf_damage = 0;
+        surface->perf_buffer_replacements = 0;
+        surface->perf_frame_callbacks = 0;
+    }
+}
+
 void trierarch_renderer_report_performance(struct wayland_server *server) {
     if (!server) return;
     uint64_t now_ns = monotonic_ns();
@@ -113,6 +138,7 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
             (unsigned long long)swap_average_us,
             (unsigned long long)(server->perf_swap_max_ns / 1000ULL),
             (unsigned long long)server->perf_frame_callbacks);
+    report_surface_activity(server);
     server->perf_last_report_ns = now_ns;
     server->perf_dispatch_count = 0;
     server->perf_dispatch_wait_ns = 0;

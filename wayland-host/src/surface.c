@@ -104,6 +104,7 @@ static void surface_damage(struct wl_client *client, struct wl_resource *resourc
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     if (surface) {
         surface->damaged = true;
+        surface->perf_damage++;
         surface->server->perf_surface_damage++;
         surface->server->perf_surface_damage_generation++;
         trierarch_wayland_request_render(surface->server);
@@ -258,9 +259,12 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 
 void trierarch_surface_commit(struct compositor_surface *surface) {
     if (!surface) return;
+    surface->perf_commits++;
     surface->server->perf_surface_commits++;
     surface->server->perf_surface_commit_generation++;
     if (surface->pending) {
+        if (surface->pending != surface->current)
+            surface->perf_buffer_replacements++;
         if (surface->current) {
             struct shm_buffer *current = surface->current;
             trierarch_shm_buffer_release(current);
@@ -288,6 +292,7 @@ void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint3
         struct surface_frame_callback *callback, *tmp;
         wl_list_for_each_safe(callback, tmp, &surface->frame_callbacks, link) {
             wl_callback_send_done(callback->resource, time_ms);
+            surface->perf_frame_callbacks++;
             server->perf_frame_callbacks++;
             wl_resource_destroy(callback->resource);
         }
