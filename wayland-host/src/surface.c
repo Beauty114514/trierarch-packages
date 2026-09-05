@@ -62,7 +62,6 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
     wl_list_insert(surface->frame_callbacks.prev, &callback->link);
     wl_resource_set_implementation(callback->resource, NULL, callback,
             frame_callback_destroy);
-    trierarch_wayland_request_render(surface->server);
 }
 
 static void surface_attach(struct wl_client *client, struct wl_resource *resource,

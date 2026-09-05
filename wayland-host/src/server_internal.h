@@ -93,6 +93,10 @@ struct pointer_resource {
 struct wayland_server {
     struct wl_display *display;
     struct wl_event_loop *event_loop;
+    struct wl_event_source *wake_source;
+    struct wl_event_source *telemetry_source;
+    int wake_fd;
+    int telemetry_fd;
     struct wl_list surfaces;
     struct wl_list output_resources;
     struct wl_list xdg_output_resources;

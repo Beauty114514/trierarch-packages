@@ -7,17 +7,33 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
 #include <android/log.h>
 
 #define TRIERARCH_TAG "TrierarchWayland"
 
+static int drain_counter_fd(int fd, uint32_t mask, void *data) {
+    (void)mask;
+    (void)data;
+    uint64_t value;
+    while (read(fd, &value, sizeof(value)) == sizeof(value)) {}
+    return 0;
+}
+
 wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     struct wayland_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
+    server->wake_fd = -1;
+    server->telemetry_fd = -1;
     server->display = wl_display_create();
     server->event_loop = server->display ? wl_display_get_event_loop(server->display) : NULL;
+    if (!server->display || !server->event_loop) {
+        trierarch_wayland_destroy(server);
+        return NULL;
+    }
     if (runtime_dir) {
         size_t length = strlen(runtime_dir) + 1;
         server->runtime_dir = malloc(length);
@@ -41,7 +57,24 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     wl_list_init(&server->output_resources);
     wl_list_init(&server->xdg_output_resources);
     wl_list_init(&server->pointer_resources);
+    server->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    server->telemetry_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (server->wake_fd >= 0) {
+        server->wake_source = wl_event_loop_add_fd(server->event_loop, server->wake_fd,
+                WL_EVENT_READABLE, drain_counter_fd, server);
+    }
+    if (server->telemetry_fd >= 0) {
+        const struct itimerspec interval = {
+            .it_interval = { .tv_sec = 1, .tv_nsec = 0 },
+            .it_value = { .tv_sec = 1, .tv_nsec = 0 },
+        };
+        if (timerfd_settime(server->telemetry_fd, 0, &interval, NULL) == 0) {
+            server->telemetry_source = wl_event_loop_add_fd(server->event_loop,
+                    server->telemetry_fd, WL_EVENT_READABLE, drain_counter_fd, server);
+        }
+    }
     if (!server->display || !server->runtime_dir ||
+            !server->wake_source || !server->telemetry_source ||
             wl_display_add_socket(server->display, "wayland-trierarch") < 0) {
         trierarch_wayland_destroy(server);
         return NULL;
@@ -96,6 +129,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
 void trierarch_wayland_destroy(wayland_server_t *server) {
     if (!server) return;
     if (server->display) wl_display_destroy(server->display);
+    if (server->wake_fd >= 0) close(server->wake_fd);
+    if (server->telemetry_fd >= 0) close(server->telemetry_fd);
     free(server->runtime_dir);
     free(server);
 }
@@ -105,7 +140,7 @@ void trierarch_wayland_dispatch(wayland_server_t *server) {
     wl_display_flush_clients(server->display);
     struct timespec before, after;
     clock_gettime(CLOCK_MONOTONIC, &before);
-    wl_event_loop_dispatch(server->event_loop, 10);
+    wl_event_loop_dispatch(server->event_loop, -1);
     clock_gettime(CLOCK_MONOTONIC, &after);
     uint64_t elapsed_ns = (uint64_t)(after.tv_sec - before.tv_sec) * 1000000000ULL
             + (uint64_t)(after.tv_nsec - before.tv_nsec);
@@ -114,6 +149,13 @@ void trierarch_wayland_dispatch(wayland_server_t *server) {
     if (elapsed_ns > server->perf_dispatch_wait_max_ns)
         server->perf_dispatch_wait_max_ns = elapsed_ns;
     wl_display_flush_clients(server->display);
+}
+
+void trierarch_wayland_wake(wayland_server_t *opaque) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    if (!server || server->wake_fd < 0) return;
+    const uint64_t one = 1;
+    (void)write(server->wake_fd, &one, sizeof(one));
 }
 
 bool trierarch_wayland_needs_render(wayland_server_t *opaque) {

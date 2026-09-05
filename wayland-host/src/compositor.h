@@ -9,6 +9,7 @@ typedef struct wayland_server wayland_server_t;
 wayland_server_t *trierarch_wayland_create(const char *runtime_dir);
 void trierarch_wayland_destroy(wayland_server_t *server);
 void trierarch_wayland_dispatch(wayland_server_t *server);
+void trierarch_wayland_wake(wayland_server_t *server);
 bool trierarch_wayland_needs_render(wayland_server_t *server);
 void trierarch_wayland_request_render(wayland_server_t *server);
 void trierarch_wayland_set_output_size(wayland_server_t *server, int width, int height);
