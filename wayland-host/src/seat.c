@@ -201,12 +201,16 @@ static const struct wl_pointer_interface pointer_impl = {
 };
 
 static void send_keymap(struct wl_resource *resource) {
+    /* This is a real XKB description, resolved by xkbcommon in the guest. The
+     * guest already needs xkeyboard-config to run a desktop; bundling a fixed,
+     * pre-expanded US keymap is deliberately deferred until layout profiles. */
     static const char keymap[] =
         "xkb_keymap {\n"
-        " xkb_keycodes { minimum = 8; maximum = 255; };\n"
-        " xkb_types { };\n"
-        " xkb_compatibility { };\n"
-        " xkb_symbols { };\n"
+        " xkb_keycodes { include \"evdev+aliases(qwerty)\" };\n"
+        " xkb_types { include \"complete\" };\n"
+        " xkb_compatibility { include \"complete\" };\n"
+        " xkb_symbols { include \"pc+us+inet(evdev)\" };\n"
+        " xkb_geometry { include \"pc(pc105)\" };\n"
         "};\n";
     char path[] = "/tmp/trierarch-keymap-XXXXXX";
     int fd = mkstemp(path);
@@ -221,6 +225,112 @@ static void send_keymap(struct wl_resource *resource) {
     wl_keyboard_send_keymap(resource, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
             fd, (uint32_t)length);
     close(fd);
+}
+
+static void keyboard_resource_destroy(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct keyboard_resource *tracked = wl_container_of(listener, tracked, destroy_listener);
+    wl_list_remove(&tracked->link);
+    wl_list_remove(&tracked->destroy_listener.link);
+    free(tracked);
+}
+
+static void track_keyboard_resource(struct wayland_server *server, struct wl_resource *resource) {
+    if (!server || !resource) return;
+    struct keyboard_resource *tracked = calloc(1, sizeof(*tracked));
+    if (!tracked) return;
+    tracked->resource = resource;
+    tracked->destroy_listener.notify = keyboard_resource_destroy;
+    wl_resource_add_destroy_listener(resource, &tracked->destroy_listener);
+    wl_list_insert(&server->keyboard_resources, &tracked->link);
+}
+
+static void send_keyboard_enter(struct wayland_server *server,
+        struct compositor_surface *surface) {
+    if (!surface || !surface->wl_surface) return;
+    struct wl_client *client = wl_resource_get_client(surface->wl_surface);
+    struct wl_array keys;
+    wl_array_init(&keys);
+    struct keyboard_resource *tracked;
+    wl_list_for_each(tracked, &server->keyboard_resources, link) {
+        if (wl_resource_get_client(tracked->resource) != client) continue;
+        wl_keyboard_send_enter(tracked->resource, wl_display_next_serial(server->display),
+                surface->wl_surface, &keys);
+        wl_keyboard_send_modifiers(tracked->resource, wl_display_next_serial(server->display),
+                server->keyboard_mods_depressed, 0, server->keyboard_mods_locked, 0);
+    }
+    wl_array_release(&keys);
+}
+
+static void send_keyboard_leave(struct wayland_server *server,
+        struct compositor_surface *surface) {
+    if (!surface || !surface->wl_surface) return;
+    struct wl_client *client = wl_resource_get_client(surface->wl_surface);
+    struct keyboard_resource *tracked;
+    wl_list_for_each(tracked, &server->keyboard_resources, link) {
+        if (wl_resource_get_client(tracked->resource) == client)
+            wl_keyboard_send_leave(tracked->resource, wl_display_next_serial(server->display),
+                    surface->wl_surface);
+    }
+}
+
+static void update_keyboard_focus(struct wayland_server *server) {
+    struct compositor_surface *target = find_pointer_target(server);
+    if (target == server->keyboard_focus) return;
+    send_keyboard_leave(server, server->keyboard_focus);
+    server->keyboard_focus = target;
+    send_keyboard_enter(server, target);
+}
+
+static void update_keyboard_modifiers(struct wayland_server *server, uint32_t key, bool pressed) {
+    uint32_t bit = 0;
+    switch (key) {
+    case 42: case 54: bit = 1u << 0; break;  /* Shift */
+    case 29: case 97: bit = 1u << 2; break;  /* Control */
+    case 56: case 100: bit = 1u << 3; break; /* Mod1 / Alt */
+    case 125: case 126: bit = 1u << 6; break; /* Mod4 / Super */
+    case 58:
+        if (pressed && !server->keyboard_caps_lock_down)
+            server->keyboard_caps_lock = !server->keyboard_caps_lock;
+        server->keyboard_caps_lock_down = pressed;
+        break;
+    case 69:
+        if (pressed && !server->keyboard_num_lock_down)
+            server->keyboard_num_lock = !server->keyboard_num_lock;
+        server->keyboard_num_lock_down = pressed;
+        break;
+    case 70:
+        if (pressed && !server->keyboard_scroll_lock_down)
+            server->keyboard_scroll_lock = !server->keyboard_scroll_lock;
+        break;
+    default: return;
+    }
+    if (bit) {
+        if (pressed) server->keyboard_mods_depressed |= bit;
+        else server->keyboard_mods_depressed &= ~bit;
+    }
+    server->keyboard_mods_locked =
+            (server->keyboard_caps_lock ? 1u << 1 : 0) |
+            (server->keyboard_num_lock ? 1u << 4 : 0) |
+            (server->keyboard_scroll_lock ? 1u << 5 : 0);
+}
+
+void trierarch_keyboard_set_key(wayland_server_t *opaque, uint32_t key,
+        bool pressed, uint32_t time_ms) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    if (!server || key == 0) return;
+    update_keyboard_focus(server);
+    if (!server->keyboard_focus || !server->keyboard_focus->wl_surface) return;
+    update_keyboard_modifiers(server, key, pressed);
+    struct wl_client *client = wl_resource_get_client(server->keyboard_focus->wl_surface);
+    struct keyboard_resource *tracked;
+    wl_list_for_each(tracked, &server->keyboard_resources, link) {
+        if (wl_resource_get_client(tracked->resource) != client) continue;
+        wl_keyboard_send_modifiers(tracked->resource, wl_display_next_serial(server->display),
+                server->keyboard_mods_depressed, 0, server->keyboard_mods_locked, 0);
+        wl_keyboard_send_key(tracked->resource, wl_display_next_serial(server->display), time_ms, key,
+                pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+    }
 }
 
 static const struct wl_keyboard_interface keyboard_impl = {
@@ -254,7 +364,13 @@ static void seat_get_keyboard(struct wl_client *client, struct wl_resource *seat
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &keyboard_impl, NULL, NULL);
+    struct wayland_server *server = wl_resource_get_user_data(seat);
+    wl_resource_set_implementation(resource, &keyboard_impl, server, NULL);
+    track_keyboard_resource(server, resource);
+    send_keymap(resource);
+    if (wl_resource_get_version(resource) >= 4)
+        wl_keyboard_send_repeat_info(resource, 25, 600);
+    update_keyboard_focus(server);
 }
 
 static void seat_get_touch(struct wl_client *client, struct wl_resource *seat,

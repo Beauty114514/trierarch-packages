@@ -104,6 +104,12 @@ struct pointer_resource {
     struct wl_resource *resource;
 };
 
+struct keyboard_resource {
+    struct wl_list link;
+    struct wl_listener destroy_listener;
+    struct wl_resource *resource;
+};
+
 struct wayland_server {
     struct wl_display *display;
     struct wl_event_loop *event_loop;
@@ -117,13 +123,24 @@ struct wayland_server {
     struct wl_list output_resources;
     struct wl_list xdg_output_resources;
     struct wl_list pointer_resources;
+    struct wl_list keyboard_resources;
     struct compositor_surface *pointer_focus;
+    struct compositor_surface *keyboard_focus;
     struct compositor_surface *cursor_surface;
     wl_fixed_t pointer_x;
     wl_fixed_t pointer_y;
     int32_t cursor_hotspot_x;
     int32_t cursor_hotspot_y;
     uint32_t pointer_buttons;
+    uint32_t keyboard_mods_depressed;
+    uint32_t keyboard_mods_locked;
+    uint32_t keyboard_pressed;
+    bool keyboard_caps_lock;
+    bool keyboard_num_lock;
+    bool keyboard_scroll_lock;
+    bool keyboard_caps_lock_down;
+    bool keyboard_num_lock_down;
+    bool keyboard_scroll_lock_down;
     bool cursor_visible;
     char *runtime_dir;
     int32_t output_width;

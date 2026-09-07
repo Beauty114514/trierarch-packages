@@ -84,6 +84,7 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     wl_list_init(&server->output_resources);
     wl_list_init(&server->xdg_output_resources);
     wl_list_init(&server->pointer_resources);
+    wl_list_init(&server->keyboard_resources);
     server->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     server->telemetry_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     server->repaint_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);

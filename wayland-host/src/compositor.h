@@ -25,5 +25,7 @@ void trierarch_pointer_scroll(wayland_server_t *server,
         float delta_x, float delta_y, uint32_t source, uint32_t time_ms);
 void trierarch_pointer_reset(wayland_server_t *server, uint32_t time_ms);
 void trierarch_pointer_set_cursor_visible(wayland_server_t *server, bool visible);
+void trierarch_keyboard_set_key(wayland_server_t *server, uint32_t key,
+        bool pressed, uint32_t time_ms);
 
 #endif

@@ -1,4 +1,5 @@
 #include "compositor.h"
+#include "keycode_map.h"
 #include "renderer.h"
 
 #include <jni.h>
@@ -27,6 +28,7 @@ enum host_command_type {
     HOST_COMMAND_POINTER_SCROLL,
     HOST_COMMAND_POINTER_RESET,
     HOST_COMMAND_CURSOR_VISIBLE,
+    HOST_COMMAND_KEYBOARD_KEY,
 };
 
 struct host_command {
@@ -40,6 +42,7 @@ struct host_command {
         struct { float x, y; uint32_t source, time_ms; } pointer_scroll;
         struct { uint32_t time_ms; } pointer_reset;
         struct { bool visible; } cursor_visible;
+        struct { uint32_t key, time_ms; bool pressed; } keyboard_key;
     } data;
 };
 
@@ -128,6 +131,10 @@ static void process_commands(wayland_server_t *active_server) {
         case HOST_COMMAND_CURSOR_VISIBLE:
             trierarch_pointer_set_cursor_visible(active_server,
                     command->data.cursor_visible.visible);
+            break;
+        case HOST_COMMAND_KEYBOARD_KEY:
+            trierarch_keyboard_set_key(active_server, command->data.keyboard_key.key,
+                    command->data.keyboard_key.pressed, command->data.keyboard_key.time_ms);
             break;
         }
         free(command);
@@ -311,6 +318,24 @@ Java_app_trierarch_wayland_WaylandBridge_nativeSetCursorVisible(JNIEnv *env, job
     bool queued = enqueue_command_locked(command);
     pthread_mutex_unlock(&server_mutex);
     if (!queued) free(command);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeSetKeyboardKey(JNIEnv *env, jobject object,
+        jint key_code, jint scan_code, jboolean pressed, jint time_ms) {
+    (void)env; (void)object; (void)scan_code;
+    uint32_t key = trierarch_android_keycode_to_evdev(key_code);
+    if (!key) return JNI_FALSE;
+    struct host_command *command = new_command(HOST_COMMAND_KEYBOARD_KEY);
+    if (!command) return JNI_FALSE;
+    command->data.keyboard_key.key = key;
+    command->data.keyboard_key.pressed = pressed == JNI_TRUE;
+    command->data.keyboard_key.time_ms = (uint32_t)time_ms;
+    pthread_mutex_lock(&server_mutex);
+    bool queued = enqueue_command_locked(command);
+    pthread_mutex_unlock(&server_mutex);
+    if (!queued) free(command);
+    return queued ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
