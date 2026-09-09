@@ -1,13 +1,12 @@
-# Trierarch Wayland IME bridge: first protocol milestone
+# Trierarch Wayland IME bridge
 
-This is a deliberately one-shot guest validation client. It connects to a
-nested compositor's `zwp_input_method_v1`, waits until a text input is active,
-and sends one UTF-8 `commit_string` before exiting.
+The bridge is a guest client of the nested compositor's
+`zwp_input_method_v1`. It accepts complete UTF-8 text commits from a local Unix
+stream socket and submits them with `commit_string` when KWin supplies a valid
+text-input state serial.
 
-It is **not** the eventual Android bridge: it has no Android socket, no
-preedit support, no key forwarding, and no lifecycle integration. Its only
-purpose is to prove that KWin accepts a real text commit from the protocol path
-that Trierarch will later use.
+It deliberately supports committed text only: it has no preedit support, key
+forwarding, Android lifecycle integration, or socket authentication yet.
 
 Build inside the guest:
 
@@ -26,3 +25,16 @@ dist/trierarch-wayland-ime-bridge --commit 'hello from Trierarch'
 The process reports the `commit_state` serial and exits after submitting the
 text. Stop `input-method-probe` first: KWin permits one input-method client at
 a time.
+
+For the persistent bridge, pass `--socket`. Each message is one four-byte
+network-order byte length followed by that many non-NUL UTF-8 bytes. The bridge
+does not replace an existing socket path, and removes its own socket on normal
+exit.
+
+```sh
+XDG_RUNTIME_DIR=/tmp/trierarch-wayland-user \
+WAYLAND_DISPLAY=wayland-0 \
+dist/trierarch-wayland-ime-bridge --socket /tmp/trierarch-wayland-user/trierarch-ime.sock
+```
+
+The Android-side lifecycle owner and client connection belong to the next step.
