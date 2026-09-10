@@ -9,6 +9,9 @@ use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
+const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+
 #[derive(Clone, Debug)]
 pub struct ChrootSpec {
     pub rootfs: PathBuf,
@@ -57,7 +60,12 @@ impl ChrootSpec {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 "Wayland IME bridge requires a Wayland runtime"));
         }
-        let guest_command = guest_command(self, x11);
+        let wayland = !self.wayland_runtime_directory.as_os_str().is_empty();
+        if wayland && (!self.wayland_runtime_directory.is_absolute() || !self.wayland_runtime_directory.is_dir()) {
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                format!("Wayland runtime directory is not accessible: {}", self.wayland_runtime_directory.display())));
+        }
+        let guest_command = guest_command(self, x11, wayland);
         let command = format!(
             "export HOME=/root TERM=xterm-256color LANG=C.UTF-8 USER=root \\
              LOGNAME=root TMP=/tmp TMPDIR=/tmp MAIL=/var/mail/root \\
@@ -79,7 +87,7 @@ impl ChrootSpec {
     }
 }
 
-fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
+fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     let command = if spec.launch_argv.is_empty() {
         format!("{} -i", shell_quote(&spec.shell))
     } else {
@@ -108,6 +116,18 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
         )
     };
     let graphics_environment = shell_words(&environment);
+    let install_ime_bridge = if spec.wayland_ime_bridge.as_os_str().is_empty() {
+        String::new()
+    } else {
+        let destination = spec.rootfs.join(GUEST_WAYLAND_IME_BRIDGE.trim_start_matches('/'));
+        let parent = destination.parent().expect("IME bridge has a parent");
+        format!(
+            "test -f {source} || {{ printf '%s\\n' 'Trierarch Wayland IME bridge is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
+            source = shell_quote(&spec.wayland_ime_bridge),
+            parent = shell_quote(parent),
+            destination = shell_quote(&destination),
+        )
+    };
     let guest = if x11 {
         format!(
             "/usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 \
@@ -116,10 +136,24 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
     } else {
         format!("/usr/bin/env -u QT_QUICK_BACKEND {graphics_environment} {command}")
     };
-    if !x11 {
+    if !x11 && !wayland {
         return format!(
-            "{install_compatibility} exec /system/bin/chroot {} {guest}",
+            "{install_compatibility}{install_ime_bridge} exec /system/bin/chroot {} {guest}",
             shell_quote(&spec.rootfs),
+        );
+    }
+
+    if !x11 {
+        let target = spec.rootfs.join(GUEST_WAYLAND_HOST_DIRECTORY.trim_start_matches('/'));
+        return format!(
+            "{install_compatibility}{install_ime_bridge} mkdir -p {target}; /system/bin/toybox mount --bind {source} {target} || exit $?; \\
+             cleanup() {{ /system/bin/toybox umount {target} >/dev/null 2>&1 || true; }}; \\
+             trap 'cleanup; exit 143' HUP INT TERM; /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; exit $status",
+            source = shell_quote(&spec.wayland_runtime_directory),
+            target = shell_quote(&target),
+            rootfs = shell_quote(&spec.rootfs),
+            install_compatibility = install_compatibility,
+            install_ime_bridge = install_ime_bridge,
         );
     }
 
@@ -130,7 +164,7 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
         .expect("X11 socket directory has a tmp parent");
     let target = spec.rootfs.join("tmp");
     format!(
-        "{install_compatibility} test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
+        "{install_compatibility}{install_ime_bridge} test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
          mkdir -p {target}; \\
          /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; \\
          cleanup() {{ /system/bin/toybox umount {target} >/dev/null 2>&1 || true; }}; \\
@@ -141,6 +175,7 @@ fn guest_command(spec: &ChrootSpec, x11: bool) -> String {
         target = shell_quote(&target),
         rootfs = shell_quote(&spec.rootfs),
         install_compatibility = install_compatibility,
+        install_ime_bridge = install_ime_bridge,
     )
 }
 
