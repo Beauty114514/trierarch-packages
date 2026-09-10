@@ -15,6 +15,10 @@ pub struct ChrootSpec {
     pub shell: PathBuf,
     /// Empty means terminal-only; otherwise bind this host directory's X11 tmp.
     pub x11_socket_directory: PathBuf,
+    /// Host directory containing Trierarch's Wayland runtime, if enabled.
+    pub wayland_runtime_directory: PathBuf,
+    /// Optional app-provided guest Wayland IME bridge executable.
+    pub wayland_ime_bridge: PathBuf,
     /// Empty starts the configured interactive shell.
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.
@@ -46,6 +50,13 @@ impl ChrootSpec {
         }
         validate_argv(&self.launch_argv)?;
         validate_environment(&self.graphics_environment)?;
+        validate_optional_file(&self.wayland_ime_bridge, "Wayland IME bridge")?;
+        if !self.wayland_ime_bridge.as_os_str().is_empty()
+            && self.wayland_runtime_directory.as_os_str().is_empty()
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "Wayland IME bridge requires a Wayland runtime"));
+        }
         let guest_command = guest_command(self, x11);
         let command = format!(
             "export HOME=/root TERM=xterm-256color LANG=C.UTF-8 USER=root \\
@@ -257,6 +268,17 @@ fn validate_guest_path(path: &Path, name: &str) -> io::Result<()> {
             io::ErrorKind::InvalidInput,
             format!("{name} must not contain a NUL byte"),
         ));
+    }
+    Ok(())
+}
+
+fn validate_optional_file(path: &Path, name: &str) -> io::Result<()> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    if !path.is_absolute() || !path.is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound,
+            format!("{name} is not accessible: {}", path.display())));
     }
     Ok(())
 }

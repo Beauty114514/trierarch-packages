@@ -27,6 +27,8 @@ pub struct DroidspacesSpec {
     pub x11_socket_directory: String,
     /// Host directory containing Trierarch's Wayland socket, if enabled.
     pub wayland_runtime_directory: String,
+    /// Optional app-provided guest Wayland IME bridge executable.
+    pub wayland_ime_bridge: String,
     /// Host directory containing Trierarch's VirGL vtest socket, if enabled.
     pub virgl_runtime_directory: String,
     /// App-private guest-glibc library, bind-mounted only while starting.
@@ -71,6 +73,7 @@ impl DroidspacesSpec {
         validate_value(&self.user, "user")?;
         validate_argv(&self.launch_argv)?;
         validate_environment(&self.graphics_environment)?;
+        validate_optional_file(&self.wayland_ime_bridge, "Wayland IME bridge")?;
         let su = privileged::find_su().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -413,6 +416,18 @@ fn validate_value(value: &str, name: &str) -> io::Result<()> {
             io::ErrorKind::InvalidInput,
             format!("{name} must not be empty or contain a NUL byte"),
         ));
+    }
+    Ok(())
+}
+
+fn validate_optional_file(value: &str, name: &str) -> io::Result<()> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(value);
+    if !path.is_absolute() || !path.is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound,
+            format!("{name} is not accessible: {}", path.display())));
     }
     Ok(())
 }

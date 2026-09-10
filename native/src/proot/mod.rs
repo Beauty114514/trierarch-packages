@@ -24,6 +24,8 @@ pub struct ProotSpec {
     pub x11_socket_directory: PathBuf,
     /// Empty unless this PRoot session uses the Trierarch Wayland host.
     pub wayland_runtime_directory: PathBuf,
+    /// Optional app-provided guest Wayland IME bridge executable.
+    pub wayland_ime_bridge: PathBuf,
     /// Empty unless this PRoot session uses the Trierarch VirGL vtest host.
     pub virgl_runtime_directory: PathBuf,
     /// Optional app-private Linux guest compatibility library.

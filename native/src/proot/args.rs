@@ -204,6 +204,14 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
         );
     }
     let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
+    if !spec.wayland_ime_bridge.as_os_str().is_empty() {
+        anyhow::ensure!(
+            spec.wayland_ime_bridge.is_absolute() && spec.wayland_ime_bridge.is_file(),
+            "Wayland IME bridge is not accessible: {}",
+            spec.wayland_ime_bridge.display(),
+        );
+        anyhow::ensure!(wayland, "Wayland IME bridge requires a Wayland runtime");
+    }
     anyhow::ensure!(
         !(wayland && !spec.x11_socket_directory.as_os_str().is_empty()),
         "X11 and Wayland cannot be selected for the same PRoot session"
