@@ -10,6 +10,8 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
+const GUEST_WAYLAND_IME_DIRECTORY: &str = "/tmp/trierarch-wayland-ime-host";
+const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
@@ -54,6 +56,7 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
     let virgl = !spec.virgl_runtime_directory.as_os_str().is_empty();
     let udev_compatibility = prepare_udev_compatibility_library(spec)?;
+    let wayland_ime_bridge = prepare_wayland_ime_bridge(spec)?;
     if x11 {
         let host_socket = spec.x11_socket_directory.join("X0");
         let guest_directory = spec.rootfs.join("tmp/.X11-unix");
@@ -82,6 +85,15 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             GUEST_WAYLAND_RUNTIME_DIRECTORY,
             WAYLAND_SOCKET,
             "Wayland",
+        )?;
+    }
+    if wayland_ime_bridge {
+        bind_directory(
+            &mut argv,
+            &spec.rootfs,
+            &spec.wayland_runtime_directory.join("ime"),
+            GUEST_WAYLAND_IME_DIRECTORY,
+            "Wayland IME",
         )?;
     }
     if virgl {
@@ -177,6 +189,26 @@ fn prepare_udev_compatibility_library(spec: &ProotSpec) -> Result<bool> {
         .with_context(|| format!("write KWin compatibility wrapper: {}", wrapper.display()))?;
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
         .with_context(|| format!("mark KWin compatibility wrapper executable: {}", wrapper.display()))?;
+    Ok(true)
+}
+
+fn prepare_wayland_ime_bridge(spec: &ProotSpec) -> Result<bool> {
+    if spec.wayland_ime_bridge.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    let destination = spec.rootfs.join(GUEST_WAYLAND_IME_BRIDGE.trim_start_matches('/'));
+    let parent = destination.parent().expect("IME bridge has a parent");
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create guest IME bridge directory: {}", parent.display()))?;
+    let temporary = destination.with_extension("tmp");
+    std::fs::copy(&spec.wayland_ime_bridge, &temporary).with_context(|| {
+        format!("copy guest IME bridge to {}", temporary.display())
+    })?;
+    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("mark guest IME bridge executable: {}", temporary.display()))?;
+    std::fs::rename(&temporary, &destination).with_context(|| {
+        format!("install guest IME bridge at {}", destination.display())
+    })?;
     Ok(true)
 }
 
@@ -332,6 +364,33 @@ fn bind_socket(
             .strip_prefix(rootfs)
             .expect("guest socket is below rootfs")
             .display()
+    ));
+    Ok(())
+}
+
+fn bind_directory(
+    argv: &mut Vec<String>,
+    rootfs: &std::path::Path,
+    host_directory: &std::path::Path,
+    guest_directory: &str,
+    label: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        host_directory.is_absolute() && host_directory.is_dir(),
+        "{label} directory is not accessible: {}",
+        host_directory.display(),
+    );
+    let guest_directory = rootfs.join(guest_directory.trim_start_matches('/'));
+    std::fs::create_dir_all(&guest_directory).with_context(|| {
+        format!("create guest {label} directory: {}", guest_directory.display())
+    })?;
+    argv.push(format!(
+        "--bind={}:/{}",
+        host_directory.display(),
+        guest_directory
+            .strip_prefix(rootfs)
+            .expect("guest directory is below rootfs")
+            .display(),
     ));
     Ok(())
 }
