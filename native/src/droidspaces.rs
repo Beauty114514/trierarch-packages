@@ -256,11 +256,12 @@ impl DroidspacesSpec {
             String::new()
         } else {
             format!(
-                "( ime_wait=0; while [ ! -S {runtime}/{nested} ] && [ \"$ime_wait\" -lt 200 ]; do sleep 0.05; ime_wait=$((ime_wait + 1)); done; [ -S {runtime}/{nested} ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; exec /usr/bin/env WAYLAND_DISPLAY={nested} {bridge} --socket {socket} ) & ime_bridge=$!; trap 'kill $ime_bridge >/dev/null 2>&1 || true' EXIT HUP INT TERM; ",
+                "( ime_wait=0; while [ ! -S {runtime}/{nested} ] && [ \"$ime_wait\" -lt 200 ]; do sleep 0.05; ime_wait=$((ime_wait + 1)); done; [ -S {runtime}/{nested} ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; exec /usr/bin/env WAYLAND_DISPLAY={nested} TRIERARCH_IME_LOG={log} {bridge} --socket {socket} ) & ime_bridge=$!; trap 'kill $ime_bridge >/dev/null 2>&1 || true' EXIT HUP INT TERM; ",
                 runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
                 nested = NESTED_WAYLAND_SOCKET,
                 bridge = GUEST_WAYLAND_IME_BRIDGE,
                 socket = GUEST_WAYLAND_IME_SOCKET,
+                log = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log",
             )
         };
         let launch = if self.launch_argv.is_empty() {

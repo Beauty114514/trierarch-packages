@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +34,22 @@ struct bridge {
 };
 
 static volatile sig_atomic_t running = 1;
+static FILE *diagnostic_log;
 static void stop(int signal_number) { (void)signal_number; running = 0; }
+
+static void trace(const char *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    vprintf(format, arguments);
+    va_end(arguments);
+    if (diagnostic_log) {
+        va_start(arguments, format);
+        vfprintf(diagnostic_log, format, arguments);
+        va_end(arguments);
+        fflush(diagnostic_log);
+    }
+    fflush(stdout);
+}
 
 static bool enqueue(struct bridge *bridge, char *text) {
     if (bridge->queued_messages == MAX_QUEUED_MESSAGES) {
@@ -45,6 +61,7 @@ static bool enqueue(struct bridge *bridge, char *text) {
     if (bridge->tail) bridge->tail->next = message; else bridge->head = message;
     bridge->tail = message;
     bridge->queued_messages++;
+    trace("queued %zu UTF-8 bytes; queue=%u\n", strlen(text), bridge->queued_messages);
     return true;
 }
 
@@ -57,12 +74,12 @@ static void try_commit(struct bridge *bridge) {
     zwp_input_method_context_v1_commit_string(bridge->context, bridge->serial, message->text);
     bridge->have_serial = false;
     bridge->sent = true;
-    printf("committed %zu UTF-8 bytes with serial=%u\n", strlen(message->text), bridge->serial);
+    trace("committed %zu UTF-8 bytes with serial=%u; queue=%u\n",
+            strlen(message->text), bridge->serial, bridge->queued_messages);
     free(message->text); free(message);
     if (wl_display_flush(bridge->display) < 0 && errno != EAGAIN) {
         perror("unable to flush Wayland text commit"); running = 0;
     }
-    fflush(stdout);
 }
 
 static void context_surrounding_text(void *data, struct zwp_input_method_context_v1 *context,
@@ -70,7 +87,10 @@ static void context_surrounding_text(void *data, struct zwp_input_method_context
     (void)data; (void)context; (void)text; (void)cursor; (void)anchor;
 }
 static void context_reset(void *data, struct zwp_input_method_context_v1 *context) {
-    (void)context; ((struct bridge *)data)->have_serial = false;
+    (void)context;
+    struct bridge *bridge = data;
+    bridge->have_serial = false;
+    trace("text input reset; queue=%u\n", bridge->queued_messages);
 }
 static void context_content_type(void *data, struct zwp_input_method_context_v1 *context,
         uint32_t hint, uint32_t purpose) { (void)data; (void)context; (void)hint; (void)purpose; }
@@ -81,7 +101,7 @@ static void context_commit_state(void *data, struct zwp_input_method_context_v1 
     (void)context;
     struct bridge *bridge = data;
     bridge->serial = serial; bridge->have_serial = true;
-    printf("text input state serial=%u\n", serial);
+    trace("text input state serial=%u; queue=%u\n", serial, bridge->queued_messages);
     try_commit(bridge);
 }
 static void context_preferred_language(void *data, struct zwp_input_method_context_v1 *context,
@@ -106,6 +126,8 @@ static void input_method_deactivate(void *data, struct zwp_input_method_v1 *inpu
     (void)input_method;
     struct bridge *bridge = data;
     if (bridge->context == context) { bridge->context = NULL; bridge->have_serial = false; }
+    printf("text input deactivated; queue=%u\n", bridge->queued_messages);
+    fflush(stdout);
     zwp_input_method_context_v1_destroy(context);
 }
 static const struct zwp_input_method_v1_listener input_method_listener = {
@@ -221,6 +243,8 @@ int main(int argc, char **argv) {
     bool socket_mode = argc == 3 && !strcmp(argv[1], "--socket");
     bool one_shot = argc == 3 && !strcmp(argv[1], "--commit");
     if (!socket_mode && !one_shot) { usage(argv[0]); return EXIT_FAILURE; }
+    const char *log_path = getenv("TRIERARCH_IME_LOG");
+    if (log_path && *log_path) diagnostic_log = fopen(log_path, "a");
     struct bridge bridge = {0};
     if (one_shot) {
         if (!argv[2][0]) { fputs("commit text may not be empty\n", stderr); return EXIT_FAILURE; }
@@ -260,5 +284,6 @@ int main(int argc, char **argv) {
     if (bridge.context) zwp_input_method_context_v1_destroy(bridge.context);
     while (bridge.head) { struct message *message = bridge.head; bridge.head = message->next; free(message->text); free(message); }
     wl_display_disconnect(bridge.display);
+    if (diagnostic_log) fclose(diagnostic_log);
     return result;
 }
