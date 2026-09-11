@@ -14,6 +14,14 @@ Build inside the guest:
 bash scripts/build-linux.sh
 ```
 
+For an arm64 cross-build on the development machine, fetch the pinned Debian
+Wayland client sysroot first:
+
+```sh
+bash scripts/fetch-debian-arm64-sysroot.sh
+CC=aarch64-linux-gnu-gcc bash scripts/build-linux.sh
+```
+
 Focus a native Wayland text field, then run in the same nested KWin session:
 
 ```sh
