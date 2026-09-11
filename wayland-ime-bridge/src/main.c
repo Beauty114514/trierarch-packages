@@ -67,19 +67,25 @@ static bool enqueue(struct bridge *bridge, char *text) {
 
 static void try_commit(struct bridge *bridge) {
     if (!bridge->context || !bridge->have_serial || !bridge->head) return;
-    struct message *message = bridge->head;
-    bridge->head = message->next;
-    if (!bridge->head) bridge->tail = NULL;
-    bridge->queued_messages--;
-    zwp_input_method_context_v1_commit_string(bridge->context, bridge->serial, message->text);
-    bridge->have_serial = false;
+
+    unsigned int committed = 0;
+    while (bridge->head) {
+        struct message *message = bridge->head;
+        bridge->head = message->next;
+        if (!bridge->head) bridge->tail = NULL;
+        bridge->queued_messages--;
+        zwp_input_method_context_v1_commit_string(bridge->context, bridge->serial, message->text);
+        trace("committed %zu UTF-8 bytes with serial=%u; queue=%u\n",
+                strlen(message->text), bridge->serial, bridge->queued_messages);
+        free(message->text);
+        free(message);
+        committed++;
+    }
     bridge->sent = true;
-    trace("committed %zu UTF-8 bytes with serial=%u; queue=%u\n",
-            strlen(message->text), bridge->serial, bridge->queued_messages);
-    free(message->text); free(message);
     if (wl_display_flush(bridge->display) < 0 && errno != EAGAIN) {
         perror("unable to flush Wayland text commit"); running = 0;
     }
+    trace("flushed %u commit(s) with serial=%u\n", committed, bridge->serial);
 }
 
 static void context_surrounding_text(void *data, struct zwp_input_method_context_v1 *context,
