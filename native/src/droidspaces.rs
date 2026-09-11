@@ -9,6 +9,9 @@ const GUEST_X11_SOCKET: &str = "/tmp/.X11-unix/X0";
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
+const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
+const GUEST_WAYLAND_IME_BRIDGE: &str = "/tmp/trierarch-wayland-host/ime/trierarch-wayland-ime-bridge";
+const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_COMPATIBILITY_SOURCE_DIRECTORY: &str = "/tmp/trierarch-compat-source";
@@ -249,18 +252,31 @@ impl DroidspacesSpec {
             host = GUEST_WAYLAND_HOST_DIRECTORY,
             socket = WAYLAND_SOCKET,
         );
-        if self.launch_argv.is_empty() {
-            format!("{prefix} /bin/sh -lc {}", privileged::shell_quote(&format!(
-                "{} exec /bin/sh -l",
-                prepare_runtime,
-            )))
+        let start_ime_bridge = if self.wayland_ime_bridge.is_empty() {
+            String::new()
         } else {
-            format!("{prefix} /bin/sh -lc {}", privileged::shell_quote(&format!(
-                "{} exec {}",
-                prepare_runtime,
-                shell_words(&self.launch_argv),
-            )))
-        }
+            format!(
+                "( ime_wait=0; while [ ! -S {runtime}/{nested} ] && [ \"$ime_wait\" -lt 200 ]; do sleep 0.05; ime_wait=$((ime_wait + 1)); done; [ -S {runtime}/{nested} ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; exec /usr/bin/env WAYLAND_DISPLAY={nested} {bridge} --socket {socket} ) & ime_bridge=$!; trap 'kill $ime_bridge >/dev/null 2>&1 || true' EXIT HUP INT TERM; ",
+                runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
+                nested = NESTED_WAYLAND_SOCKET,
+                bridge = GUEST_WAYLAND_IME_BRIDGE,
+                socket = GUEST_WAYLAND_IME_SOCKET,
+            )
+        };
+        let launch = if self.launch_argv.is_empty() {
+            "/bin/sh -l".to_owned()
+        } else {
+            shell_words(&self.launch_argv)
+        };
+        let script = if start_ime_bridge.is_empty() {
+            format!("{prepare_runtime}exec {launch}")
+        } else {
+            format!(
+                "{prepare_runtime}{start_ime_bridge}{launch}; status=$?; kill $ime_bridge >/dev/null 2>&1 || true; wait $ime_bridge >/dev/null 2>&1 || true; rm -f {socket}; exit $status",
+                socket = GUEST_WAYLAND_IME_SOCKET,
+            )
+        };
+        format!("{prefix} /bin/sh -lc {}", privileged::shell_quote(&script))
     }
 
     fn x11_bind(&self) -> io::Result<Option<String>> {
