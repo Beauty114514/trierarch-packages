@@ -11,6 +11,10 @@ use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
+const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
+const GUEST_KWIN_WAYLAND_WRAPPER_REAL: &str = "/opt/trierarch/compat/kwin_wayland_wrapper.real";
+const GUEST_KWIN_WAYLAND_WRAPPER_SHIM: &str = "/opt/trierarch/compat/kwin-wayland-wrapper";
 
 #[derive(Clone, Debug)]
 pub struct ChrootSpec {
@@ -93,26 +97,19 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     } else {
         shell_words(&spec.launch_argv)
     };
-    let mut environment = spec.graphics_environment.clone();
+    let environment = spec.graphics_environment.clone();
     let install_compatibility = if spec.udev_compatibility_library.as_os_str().is_empty() {
         String::new()
     } else {
-        let destination = spec.rootfs.join("opt/trierarch/compat/libtrierarch-udev-compat.so");
+        let destination = spec
+            .rootfs
+            .join(GUEST_UDEV_COMPATIBILITY_LIBRARY.trim_start_matches('/'));
         let parent = destination.parent().expect("compatibility library has a parent");
-        let wrapper = parent.join("kwin-wayland-wrapper");
-        let wrapper_script = kwin_wrapper_script("/opt/trierarch/compat/libtrierarch-udev-compat.so");
-        // `LD_PRELOAD` must not be exported by the desktop-session parent.
-        // Plasma reads KDEWM and starts this wrapper only for KWin.
-        if !x11 {
-            environment.push("KDEWM=/opt/trierarch/compat/kwin-wayland-wrapper".into());
-        }
         format!(
-            "test -f {source} || {{ printf '%s\\n' 'Trierarch guest compatibility library is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} && printf '%s' {wrapper_script} > {wrapper} && /system/bin/toybox chmod 755 {wrapper} || exit $?; ",
+            "test -f {source} || {{ printf '%s\\n' 'Trierarch guest compatibility library is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
             source = shell_quote(&spec.udev_compatibility_library),
             parent = shell_quote(parent),
             destination = shell_quote(&destination),
-            wrapper_script = shell_quote(Path::new(&wrapper_script)),
-            wrapper = shell_quote(&wrapper),
         )
     };
     let graphics_environment = shell_words(&environment);
@@ -144,16 +141,43 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     }
 
     if !x11 {
-        let target = spec.rootfs.join(GUEST_WAYLAND_HOST_DIRECTORY.trim_start_matches('/'));
+        let runtime_target = spec.rootfs.join(GUEST_WAYLAND_HOST_DIRECTORY.trim_start_matches('/'));
+        let kwin_wrapper_target = spec
+            .rootfs
+            .join(GUEST_KWIN_WAYLAND_WRAPPER.trim_start_matches('/'));
+        let kwin_wrapper_real = spec
+            .rootfs
+            .join(GUEST_KWIN_WAYLAND_WRAPPER_REAL.trim_start_matches('/'));
+        let kwin_wrapper_shim = spec
+            .rootfs
+            .join(GUEST_KWIN_WAYLAND_WRAPPER_SHIM.trim_start_matches('/'));
+        let kwin_wrapper_parent = kwin_wrapper_shim
+            .parent()
+            .expect("KWin compatibility wrapper has a parent");
+        let install_kwin_wrapper = if spec.udev_compatibility_library.as_os_str().is_empty() {
+            String::new()
+        } else {
+            let wrapper_script = kwin_wayland_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY);
+            format!(
+                "if [ -x {target} ]; then /system/bin/toybox umount {target} >/dev/null 2>&1 || true; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {target} {real} && /system/bin/toybox chmod 755 {real} && printf '%s' {script} > {shim} && /system/bin/toybox chmod 755 {shim} && /system/bin/toybox mount --bind {shim} {target} || exit $?; fi; ",
+                target = shell_quote(&kwin_wrapper_target),
+                parent = shell_quote(kwin_wrapper_parent),
+                real = shell_quote(&kwin_wrapper_real),
+                script = shell_quote(Path::new(&wrapper_script)),
+                shim = shell_quote(&kwin_wrapper_shim),
+            )
+        };
         return format!(
-            "{install_compatibility}{install_ime_bridge} mkdir -p {target}; /system/bin/toybox mount --bind {source} {target} || exit $?; \\
-             cleanup() {{ /system/bin/toybox umount {target} >/dev/null 2>&1 || true; }}; \\
+            "{install_compatibility}{install_ime_bridge}{install_kwin_wrapper} mkdir -p {runtime_target}; /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; \\
+             cleanup() {{ /system/bin/toybox umount {kwin_wrapper_target} >/dev/null 2>&1 || true; /system/bin/toybox umount {runtime_target} >/dev/null 2>&1 || true; }}; \\
              trap 'cleanup; exit 143' HUP INT TERM; /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
-            target = shell_quote(&target),
+            runtime_target = shell_quote(&runtime_target),
+            kwin_wrapper_target = shell_quote(&kwin_wrapper_target),
             rootfs = shell_quote(&spec.rootfs),
             install_compatibility = install_compatibility,
             install_ime_bridge = install_ime_bridge,
+            install_kwin_wrapper = install_kwin_wrapper,
         );
     }
 
@@ -179,9 +203,10 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     )
 }
 
-fn kwin_wrapper_script(library: &str) -> String {
+fn kwin_wayland_wrapper_script(library: &str) -> String {
     format!(
-        "#!/bin/sh\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland \"$@\"\n"
+        "#!/bin/sh\nexec /usr/bin/env LD_PRELOAD={library} {real} \"$@\"\n",
+        real = GUEST_KWIN_WAYLAND_WRAPPER_REAL,
     )
 }
 
