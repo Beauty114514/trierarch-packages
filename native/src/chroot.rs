@@ -11,6 +11,7 @@ use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
 const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
 const GUEST_KWIN_WAYLAND_WRAPPER_REAL: &str = "/opt/trierarch/compat/kwin_wayland_wrapper.real";
@@ -129,6 +130,12 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         format!(
             "/usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 \
              TMPDIR=/tmp XDG_RUNTIME_DIR=/tmp XKB_CONFIG_ROOT=/usr/share/X11/xkb {graphics_environment} {command}"
+        )
+    } else if wayland {
+        format!(
+            "/usr/bin/env -u DISPLAY -u QT_QUICK_BACKEND \
+             XDG_RUNTIME_DIR={GUEST_WAYLAND_HOST_DIRECTORY} WAYLAND_DISPLAY={WAYLAND_SOCKET} \
+             XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland {graphics_environment} {command}"
         )
     } else {
         format!("/usr/bin/env -u QT_QUICK_BACKEND {graphics_environment} {command}")
