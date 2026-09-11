@@ -15,7 +15,9 @@ const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-way
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
-const GUEST_KWIN_WRAPPER: &str = "/opt/trierarch/compat/kwin-wayland-wrapper";
+const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
+const GUEST_KWIN_WAYLAND_WRAPPER_REAL: &str = "/opt/trierarch/compat/kwin_wayland_wrapper.real";
+const GUEST_KWIN_WAYLAND_WRAPPER_SHIM: &str = "/opt/trierarch/compat/kwin-wayland-wrapper";
 
 pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CString>)> {
     let proot = spec.native_library_dir.join("libproot.so");
@@ -106,6 +108,9 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             "VirGL",
         )?;
     }
+    if wayland && udev_compatibility {
+        bind_kwin_wayland_wrapper(&mut argv, spec)?;
+    }
     if spec.launch_argv.is_empty() {
         if x11 {
             argv.extend([
@@ -158,9 +163,6 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     }
     validate_environment(&spec.graphics_environment)?;
     env.extend(spec.graphics_environment.iter().cloned());
-    if wayland && udev_compatibility {
-        env.push(format!("KDEWM={GUEST_KWIN_WRAPPER}"));
-    }
     Ok((strings(&argv)?, strings(&env)?))
 }
 
@@ -184,12 +186,35 @@ fn prepare_udev_compatibility_library(spec: &ProotSpec) -> Result<bool> {
     std::fs::rename(&temporary, &destination).with_context(|| {
         format!("install guest compatibility library at {}", destination.display())
     })?;
-    let wrapper = destination.with_file_name("kwin-wayland-wrapper");
-    std::fs::write(&wrapper, kwin_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY))
+    let guest_wrapper = spec.rootfs.join(GUEST_KWIN_WAYLAND_WRAPPER.trim_start_matches('/'));
+    if !guest_wrapper.is_file() {
+        return Ok(false);
+    }
+    let original_wrapper = parent.join("kwin_wayland_wrapper.real");
+    let original_temporary = original_wrapper.with_extension("real.tmp");
+    std::fs::copy(&guest_wrapper, &original_temporary).with_context(|| {
+        format!("copy guest KWin Wayland wrapper to {}", original_temporary.display())
+    })?;
+    std::fs::set_permissions(&original_temporary, std::fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("mark saved KWin Wayland wrapper executable: {}", original_temporary.display()))?;
+    std::fs::rename(&original_temporary, &original_wrapper).with_context(|| {
+        format!("install saved KWin Wayland wrapper at {}", original_wrapper.display())
+    })?;
+    let wrapper = parent.join("kwin-wayland-wrapper");
+    std::fs::write(&wrapper, kwin_wayland_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY))
         .with_context(|| format!("write KWin compatibility wrapper: {}", wrapper.display()))?;
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
         .with_context(|| format!("mark KWin compatibility wrapper executable: {}", wrapper.display()))?;
     Ok(true)
+}
+
+fn bind_kwin_wayland_wrapper(argv: &mut Vec<String>, spec: &ProotSpec) -> Result<()> {
+    let source = spec.rootfs.join(GUEST_KWIN_WAYLAND_WRAPPER_SHIM.trim_start_matches('/'));
+    let target = spec.rootfs.join(GUEST_KWIN_WAYLAND_WRAPPER.trim_start_matches('/'));
+    anyhow::ensure!(source.is_file() && target.is_file(),
+        "KWin Wayland compatibility wrapper is not ready");
+    argv.push(format!("--bind={}:{}", source.display(), GUEST_KWIN_WAYLAND_WRAPPER));
+    Ok(())
 }
 
 fn prepare_wayland_ime_bridge(spec: &ProotSpec) -> Result<bool> {
@@ -212,9 +237,10 @@ fn prepare_wayland_ime_bridge(spec: &ProotSpec) -> Result<bool> {
     Ok(true)
 }
 
-fn kwin_wrapper_script(library: &str) -> String {
+fn kwin_wayland_wrapper_script(library: &str) -> String {
     format!(
-        "#!/bin/sh\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland \"$@\"\n"
+        "#!/bin/sh\nexec /usr/bin/env LD_PRELOAD={library} {real} \"$@\"\n",
+        real = GUEST_KWIN_WAYLAND_WRAPPER_REAL,
     )
 }
 
