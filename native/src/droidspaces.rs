@@ -52,14 +52,19 @@ impl DroidspacesSpec {
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(container),
         ))?;
+        let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        // DroidSpaces 6.5 reports a stopped container as `NONE` and exits 1.
+        // That is a normal state query result, not a launch failure.
+        if pid.eq_ignore_ascii_case("NONE") {
+            return Ok(false);
+        }
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "DroidSpaces pid exited with {}",
                 output.status
             )));
         }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .trim()
+        Ok(pid
             .parse::<u32>()
             .is_ok_and(|pid| pid > 0))
     }
@@ -142,17 +147,43 @@ impl DroidspacesSpec {
                 privileged::shell_quote(host_socket),
             );
             Ok(format!(
-                "export TERM=xterm-256color LANG=C.UTF-8; {wait_for_socket} {running} {start} || exit $?;; *) printf '%s\\n' 'DroidSpaces container is already running without this X11 attachment; stop it, then start this Trierarch profile.' >&2; exit 125;; esac; {run}",
+                "export TERM=xterm-256color LANG=C.UTF-8; {wait_for_socket} {running} {start} || exit $?;; *) {} || {{ printf '%s\\n' 'DroidSpaces container is already running without this X11 attachment; stop it, then start this Trierarch profile.' >&2; exit 125; }};; esac; {run}",
+                self.existing_container_attachment_check(&[GUEST_X11_SOCKET]),
             ))
         } else if wayland_bind.is_some() || virgl_bind.is_some() {
+            let mut sockets = Vec::new();
+            if wayland_bind.is_some() {
+                sockets.push(format!("{GUEST_WAYLAND_HOST_DIRECTORY}/{WAYLAND_SOCKET}"));
+            }
+            if virgl_bind.is_some() {
+                sockets.push(format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}"));
+            }
             Ok(format!(
-                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; *) printf '%s\\n' 'DroidSpaces container is already running without this Trierarch graphical attachment; stop it, then start this profile.' >&2; exit 125;; esac; {run}",
+                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; *) {} || {{ printf '%s\\n' 'DroidSpaces container is already running without this Trierarch graphical attachment; stop it, then start this profile.' >&2; exit 125; }};; esac; {run}",
+                self.existing_container_attachment_check(&sockets),
             ))
         } else {
             Ok(format!(
                 "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; esac; {run}",
             ))
         }
+    }
+
+    /// A running DroidSpaces namespace cannot receive new bind mounts, but it
+    /// can safely run another Trierarch profile when the required attachment
+    /// was already mounted by an earlier profile using this same source.
+    fn existing_container_attachment_check(&self, sockets: &[impl AsRef<str>]) -> String {
+        let tests = sockets
+            .iter()
+            .map(|socket| format!("test -S {}", privileged::shell_quote(socket.as_ref())))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        format!(
+            "{} --name={} run /bin/sh -c {}",
+            privileged::shell_quote(DROIDSPACES_BINARY),
+            privileged::shell_quote(&self.container),
+            privileged::shell_quote(&tests),
+        )
     }
 
     fn start_command(
