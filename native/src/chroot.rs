@@ -255,9 +255,9 @@ fn kwin_wayland_wrapper_script(library: &str) -> String {
     )
 }
 
-/// Creates the minimum kernel-backed filesystem expected by ordinary guest
-/// programs.  A rootfs managed by another Android app may only have these
-/// points in that app's mount namespace, so Trierarch must prepare its own.
+/// Binds the Android kernel filesystems required by ordinary guest programs.
+/// A rootfs managed by another Android app may only have these points in that
+/// app's mount namespace, so Trierarch must prepare equivalent guest mounts.
 fn prepare_system_mounts(rootfs: &Path) -> String {
     let proc = rootfs.join("proc");
     let sys = rootfs.join("sys");
@@ -265,10 +265,10 @@ fn prepare_system_mounts(rootfs: &Path) -> String {
     let devpts = dev.join("pts");
     format!(
         "mkdir -p {proc} {sys} {dev} {devpts} || exit $?; \
-         if ! /system/bin/toybox mountpoint -q {proc}; then /system/bin/toybox mount -t proc proc {proc} || exit $?; trierarch_mount_proc=1; fi; \
+         if ! /system/bin/toybox mountpoint -q {proc}; then /system/bin/toybox mount --bind /proc {proc} || exit $?; trierarch_mount_proc=1; fi; \
          if ! /system/bin/toybox mountpoint -q {sys}; then /system/bin/toybox mount --bind /sys {sys} || exit $?; trierarch_mount_sys=1; fi; \
          if ! /system/bin/toybox mountpoint -q {dev}; then /system/bin/toybox mount --bind /dev {dev} || exit $?; trierarch_mount_dev=1; fi; \
-         if ! /system/bin/toybox mountpoint -q {devpts}; then /system/bin/toybox mount -t devpts devpts {devpts} || exit $?; trierarch_mount_devpts=1; fi; ",
+         if ! /system/bin/toybox mountpoint -q {devpts}; then /system/bin/toybox mount --bind /dev/pts {devpts} || exit $?; trierarch_mount_devpts=1; fi; ",
         proc = shell_quote(&proc),
         sys = shell_quote(&sys),
         dev = shell_quote(&dev),
