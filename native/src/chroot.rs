@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
+const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
@@ -139,7 +140,7 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     } else if wayland {
         format!(
             "/usr/bin/env -u DISPLAY -u QT_QUICK_BACKEND \
-             XDG_RUNTIME_DIR={GUEST_WAYLAND_HOST_DIRECTORY} WAYLAND_DISPLAY={WAYLAND_SOCKET} \
+             XDG_RUNTIME_DIR={GUEST_WAYLAND_RUNTIME_DIRECTORY} WAYLAND_DISPLAY={WAYLAND_SOCKET} \
              XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland {graphics_environment} {command}"
         )
     } else {
@@ -160,6 +161,9 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
 
     if !x11 {
         let runtime_target = spec.rootfs.join(GUEST_WAYLAND_HOST_DIRECTORY.trim_start_matches('/'));
+        let guest_runtime = spec.rootfs.join(GUEST_WAYLAND_RUNTIME_DIRECTORY.trim_start_matches('/'));
+        let guest_socket = guest_runtime.join(WAYLAND_SOCKET);
+        let host_socket = Path::new(GUEST_WAYLAND_HOST_DIRECTORY).join(WAYLAND_SOCKET);
         let kwin_wrapper_target = guest_kwin_wrapper_target(&spec.rootfs);
         let kwin_wrapper_real = spec
             .rootfs
@@ -193,9 +197,10 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_kwin_wrapper=0; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_kwin_wrapper=0; trierarch_wayland_socket_link=0; \\
              cleanup() {{ \\
                  if [ \"$trierarch_mount_kwin_wrapper\" = 1 ]; then /system/bin/toybox umount -l {kwin_wrapper_target} >/dev/null 2>&1 || true; fi; \\
+                 if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_wayland\" = 1 ]; then /system/bin/toybox umount -l {runtime_target} >/dev/null 2>&1 || true; fi; \\
                  {system_cleanup} \\
              }}; \\
@@ -204,9 +209,15 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
              {install_compatibility}{install_ime_bridge}{install_kwin_wrapper} \\
               mkdir -p {runtime_target} || exit $?; \\
               if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
+             /system/bin/toybox mkdir -p {guest_runtime} && /system/bin/toybox chmod 700 {guest_runtime} || exit $?; \\
+             if [ -e {guest_socket} ] || [ -L {guest_socket} ]; then /system/bin/toybox rm -f {guest_socket} || exit $?; fi; \\
+             /system/bin/toybox ln -s {host_socket} {guest_socket} || exit $?; trierarch_wayland_socket_link=1; \\
              /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
             runtime_target = shell_quote(&runtime_target),
+            guest_runtime = shell_quote(&guest_runtime),
+            guest_socket = shell_quote(&guest_socket),
+            host_socket = shell_quote(&host_socket),
             kwin_wrapper_target = shell_quote(kwin_wrapper_cleanup_target),
             rootfs = shell_quote(&spec.rootfs),
             install_compatibility = install_compatibility,
