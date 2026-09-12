@@ -6,6 +6,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod runtime_client;
+
 const PROFILES_DIRECTORY: &str = "config/profiles";
 
 pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
@@ -24,8 +26,30 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
     match arguments.as_slice() {
         [command] if command == "--help" => print_usage(),
         [command] if command == "--list" => list_profiles(&files_directory),
+        [command] if command == "--status" => {
+            runtime_client::request(&files_directory, "status", None)
+        }
+        [command, id] if command == "--status" => {
+            validate_profile_id(id)?;
+            runtime_client::request(&files_directory, "status", Some(id))
+        }
         [command, id] if command == "--config" => edit_profile(&files_directory, id),
         [command, id] if command == "--delete" => delete_profile(&files_directory, id),
+        [command, id] if command == "--run" => {
+            validate_profile_id(id)?;
+            runtime_client::request(&files_directory, "run", Some(id))
+        }
+        [command] if command == "--stop" => {
+            runtime_client::request(&files_directory, "stop", None)
+        }
+        [command, id] if command == "--stop" => {
+            validate_profile_id(id)?;
+            runtime_client::request(&files_directory, "stop", Some(id))
+        }
+        [command, id] if command == "--rerun" => {
+            validate_profile_id(id)?;
+            runtime_client::request(&files_directory, "rerun", Some(id))
+        }
         [command, archive, name_flag, name]
             if command == "--import" && name_flag == "--name" =>
         {
@@ -43,7 +67,7 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
 
 fn print_usage() -> Result<()> {
     println!(
-        "usage:\n  trierarch --list\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
+        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
     );
     Ok(())
 }
