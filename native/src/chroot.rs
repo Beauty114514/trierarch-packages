@@ -12,8 +12,10 @@ use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
+const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
+const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
 const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
 const GUEST_KWIN_WAYLAND_WRAPPER_PATHS: &[&str] = &[
@@ -33,6 +35,8 @@ pub struct ChrootSpec {
     pub wayland_runtime_directory: PathBuf,
     /// Optional app-provided guest Wayland IME bridge executable.
     pub wayland_ime_bridge: PathBuf,
+    /// Empty unless this chroot session uses the Trierarch VirGL vtest host.
+    pub virgl_runtime_directory: PathBuf,
     /// Empty starts the configured interactive shell.
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.
@@ -76,6 +80,19 @@ impl ChrootSpec {
             return Err(io::Error::new(io::ErrorKind::NotFound,
                 format!("Wayland runtime directory is not accessible: {}", self.wayland_runtime_directory.display())));
         }
+        if !self.virgl_runtime_directory.as_os_str().is_empty()
+            && (!self.virgl_runtime_directory.is_absolute()
+                || !self.virgl_runtime_directory.is_dir()
+                || !is_socket(&self.virgl_runtime_directory.join(VIRGL_SOCKET)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "VirGL runtime socket is not accessible: {}",
+                    self.virgl_runtime_directory.join(VIRGL_SOCKET).display(),
+                ),
+            ));
+        }
         let guest_command = guest_command(self, x11, wayland);
         let command = format!(
             "export HOME=/root TERM=xterm-256color LANG=C.UTF-8 USER=root \\
@@ -104,7 +121,12 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     } else {
         shell_words(&spec.launch_argv)
     };
-    let environment = spec.graphics_environment.clone();
+    let mut environment = spec.graphics_environment.clone();
+    if !spec.virgl_runtime_directory.as_os_str().is_empty() {
+        let socket = format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}");
+        environment.push(format!("VTEST_SOCKET_NAME={socket}"));
+        environment.push(format!("VTEST_RENDERER_SOCKET_NAME={socket}"));
+    }
     let install_compatibility = if spec.udev_compatibility_library.as_os_str().is_empty() {
         String::new()
     } else {
@@ -164,6 +186,18 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let guest_runtime = spec.rootfs.join(GUEST_WAYLAND_RUNTIME_DIRECTORY.trim_start_matches('/'));
         let guest_socket = guest_runtime.join(WAYLAND_SOCKET);
         let host_socket = Path::new(GUEST_WAYLAND_HOST_DIRECTORY).join(WAYLAND_SOCKET);
+        let virgl_target = spec
+            .rootfs
+            .join(GUEST_VIRGL_RUNTIME_DIRECTORY.trim_start_matches('/'));
+        let install_virgl = if spec.virgl_runtime_directory.as_os_str().is_empty() {
+            String::new()
+        } else {
+            format!(
+                "if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mkdir -p {target} && /system/bin/toybox mount --bind {source} {target} || exit $?; trierarch_mount_virgl=1; fi; ",
+                source = shell_quote(&spec.virgl_runtime_directory),
+                target = shell_quote(&virgl_target),
+            )
+        };
         let kwin_wrapper_target = guest_kwin_wrapper_target(&spec.rootfs);
         let kwin_wrapper_real = spec
             .rootfs
@@ -197,10 +231,11 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_kwin_wrapper=0; trierarch_wayland_socket_link=0; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_mount_kwin_wrapper=0; trierarch_wayland_socket_link=0; \\
              cleanup() {{ \\
                  if [ \"$trierarch_mount_kwin_wrapper\" = 1 ]; then /system/bin/toybox umount -l {kwin_wrapper_target} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
+                 if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_wayland\" = 1 ]; then /system/bin/toybox umount -l {runtime_target} >/dev/null 2>&1 || true; fi; \\
                  {system_cleanup} \\
              }}; \\
@@ -208,7 +243,8 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
              {system_mounts} \\
              {install_compatibility}{install_ime_bridge}{install_kwin_wrapper} \\
               mkdir -p {runtime_target} || exit $?; \\
-              if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
+             if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
+             {install_virgl} \\
              /system/bin/toybox mkdir -p {guest_runtime} && /system/bin/toybox chmod 700 {guest_runtime} || exit $?; \\
              if [ -e {guest_socket} ] || [ -L {guest_socket} ]; then /system/bin/toybox rm -f {guest_socket} || exit $?; fi; \\
              /system/bin/toybox ln -s {host_socket} {guest_socket} || exit $?; trierarch_wayland_socket_link=1; \\
@@ -218,6 +254,8 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             guest_runtime = shell_quote(&guest_runtime),
             guest_socket = shell_quote(&guest_socket),
             host_socket = shell_quote(&host_socket),
+            virgl_target = shell_quote(&virgl_target),
+            install_virgl = install_virgl,
             kwin_wrapper_target = shell_quote(kwin_wrapper_cleanup_target),
             rootfs = shell_quote(&spec.rootfs),
             install_compatibility = install_compatibility,
@@ -234,11 +272,24 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         .parent()
         .expect("X11 socket directory has a tmp parent");
     let target = spec.rootfs.join("tmp");
+    let virgl_target = spec
+        .rootfs
+        .join(GUEST_VIRGL_RUNTIME_DIRECTORY.trim_start_matches('/'));
+    let install_virgl = if spec.virgl_runtime_directory.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "if ! /system/bin/toybox mountpoint -q {virgl_target}; then /system/bin/toybox mkdir -p {virgl_target} && /system/bin/toybox mount --bind {virgl_source} {virgl_target} || exit $?; trierarch_mount_virgl=1; fi; ",
+            virgl_source = shell_quote(&spec.virgl_runtime_directory),
+            virgl_target = shell_quote(&virgl_target),
+        )
+    };
     let system_mounts = prepare_system_mounts(&spec.rootfs);
     let system_cleanup = cleanup_system_mounts(&spec.rootfs);
     format!(
-        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; \\
+        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; trierarch_mount_virgl=0; \\
          cleanup() {{ \\
+             if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
              if [ \"$trierarch_mount_x11\" = 1 ]; then /system/bin/toybox umount -l {target} >/dev/null 2>&1 || true; fi; \\
              {system_cleanup} \\
          }}; \\
@@ -247,10 +298,13 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
          {install_compatibility}{install_ime_bridge}{system_mounts} \\
          mkdir -p {target} || exit $?; \\
          if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; trierarch_mount_x11=1; fi; \\
+         {install_virgl} \\
          /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
         source = shell_quote(&source),
         source_tmp = shell_quote(source_tmp),
         target = shell_quote(&target),
+        virgl_target = shell_quote(&virgl_target),
+        install_virgl = install_virgl,
         rootfs = shell_quote(&spec.rootfs),
         install_compatibility = install_compatibility,
         install_ime_bridge = install_ime_bridge,
