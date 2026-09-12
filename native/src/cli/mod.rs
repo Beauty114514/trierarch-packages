@@ -137,12 +137,97 @@ fn list_profiles(files_directory: &Path) -> Result<()> {
 
 fn edit_profile(files_directory: &Path, id: &str) -> Result<()> {
     let profile = existing_profile_path(files_directory, id)?;
+    let temporary = profiles_directory(files_directory).join(format!(".{id}.edit.tmp"));
+    ensure!(
+        !temporary.exists(),
+        "an unsaved edited copy already exists: {}; inspect or remove it before editing again",
+        temporary.display(),
+    );
+    fs::copy(&profile, &temporary)
+        .with_context(|| format!("create editable copy for profile {id}"))?;
     let editor = env::var_os("EDITOR").unwrap_or_else(|| "vi".into());
     let status = Command::new(&editor)
-        .arg(&profile)
+        .arg(&temporary)
         .status()
-        .with_context(|| format!("start editor {}", Path::new(&editor).display()))?;
-    ensure!(status.success(), "editor exited with {status}");
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "could not start editor {}: {error}; the original profile was not changed\nEdited copy kept at: {}",
+                Path::new(&editor).display(),
+                temporary.display(),
+            )
+        })?;
+    ensure!(
+        status.success(),
+        "editor exited with {status}; the original profile was not changed\nEdited copy kept at: {}",
+        temporary.display(),
+    );
+
+    let new_id = edited_profile_id(&temporary).map_err(|error| {
+        anyhow::anyhow!(
+            "Configuration was not saved: {error}\nEdited copy kept at: {}",
+            temporary.display(),
+        )
+    })?;
+    replace_profile_with_edited_copy(&profile, &temporary, id, &new_id)?;
+    println!("Saved profile: {new_id}");
+    Ok(())
+}
+
+/// Validates just the durable document identity. Runtime availability is checked
+/// later by the runtime selected in the profile, not while an editor is saving.
+fn edited_profile_id(temporary: &Path) -> Result<String> {
+    let text = fs::read_to_string(temporary)
+        .with_context(|| format!("read edited profile {}", temporary.display()))?;
+    let document: toml::Value = text.parse().context("invalid TOML")?;
+    let id = document
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .context("top-level id must be a string")?
+        .to_owned();
+    validate_profile_id(&id)?;
+    Ok(id)
+}
+
+fn replace_profile_with_edited_copy(
+    original: &Path,
+    temporary: &Path,
+    original_id: &str,
+    new_id: &str,
+) -> Result<()> {
+    let destination = original.with_file_name(format!("{new_id}.toml"));
+    if destination == original {
+        fs::rename(temporary, original).with_context(|| format!("save profile {new_id}"))?;
+        return Ok(());
+    }
+    ensure!(
+        !destination.exists(),
+        "profile id '{new_id}' already exists"
+    );
+
+    let backup = original.with_file_name(format!(".{original_id}.rename-backup.tmp"));
+    ensure!(
+        !backup.exists(),
+        "a previous profile rename backup exists: {}; inspect or remove it before retrying",
+        backup.display(),
+    );
+    fs::rename(original, &backup)
+        .with_context(|| format!("prepare rename of profile {original_id}"))?;
+    if let Err(error) = fs::rename(temporary, &destination) {
+        let restored = fs::rename(&backup, original);
+        return match restored {
+            Ok(()) => Err(error).context("save edited profile; original profile was restored"),
+            Err(restore_error) => Err(anyhow::anyhow!(
+                "save edited profile failed: {error}; original profile backup remains at {}: {restore_error}",
+                backup.display(),
+            )),
+        };
+    }
+    if let Err(error) = fs::remove_file(&backup) {
+        eprintln!(
+            "Saved profile '{new_id}', but could not remove temporary backup {}: {error}",
+            backup.display(),
+        );
+    }
     Ok(())
 }
 
