@@ -1,7 +1,8 @@
 //! Launch an already deployed chroot through the device's existing `su` provider.
 //!
-//! This module does not install a rootfs or manage a persistent service. For
-//! an X11 profile it creates one temporary bind mount for the X11 runtime tmp.
+//! This module does not install a rootfs or manage a persistent service. It
+//! prepares the standard kernel filesystems and display runtime mounts for
+//! each session, then removes only the mounts it created.
 
 use crate::LaunchSpec;
 use std::io;
@@ -14,6 +15,10 @@ const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-way
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
 const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
+const GUEST_KWIN_WAYLAND_WRAPPER_PATHS: &[&str] = &[
+    "/usr/bin/kwin_wayland_wrapper",
+    "/usr/sbin/kwin_wayland_wrapper",
+];
 const GUEST_KWIN_WAYLAND_WRAPPER_REAL: &str = "/opt/trierarch/compat/kwin_wayland_wrapper.real";
 const GUEST_KWIN_WAYLAND_WRAPPER_SHIM: &str = "/opt/trierarch/compat/kwin-wayland-wrapper";
 
@@ -141,17 +146,21 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         format!("/usr/bin/env -u QT_QUICK_BACKEND {graphics_environment} {command}")
     };
     if !x11 && !wayland {
+        let system_mounts = prepare_system_mounts(&spec.rootfs);
+        let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "{install_compatibility}{install_ime_bridge} exec /system/bin/chroot {} {guest}",
-            shell_quote(&spec.rootfs),
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; \\
+             cleanup() {{ {system_cleanup} }}; \\
+             trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
+             {install_compatibility}{install_ime_bridge}{system_mounts} \\
+             /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
+            rootfs = shell_quote(&spec.rootfs),
         );
     }
 
     if !x11 {
         let runtime_target = spec.rootfs.join(GUEST_WAYLAND_HOST_DIRECTORY.trim_start_matches('/'));
-        let kwin_wrapper_target = spec
-            .rootfs
-            .join(GUEST_KWIN_WAYLAND_WRAPPER.trim_start_matches('/'));
+        let kwin_wrapper_target = guest_kwin_wrapper_target(&spec.rootfs);
         let kwin_wrapper_real = spec
             .rootfs
             .join(GUEST_KWIN_WAYLAND_WRAPPER_REAL.trim_start_matches('/'));
@@ -161,30 +170,50 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let kwin_wrapper_parent = kwin_wrapper_shim
             .parent()
             .expect("KWin compatibility wrapper has a parent");
-        let install_kwin_wrapper = if spec.udev_compatibility_library.as_os_str().is_empty() {
-            String::new()
+        let install_kwin_wrapper = if let Some(target) = kwin_wrapper_target.as_ref() {
+            if spec.udev_compatibility_library.as_os_str().is_empty() {
+                String::new()
+            } else {
+                let wrapper_script = kwin_wayland_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY);
+                format!(
+                    "if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {target} {real} && /system/bin/toybox chmod 755 {real} && printf '%s' {script} > {shim} && /system/bin/toybox chmod 755 {shim} && /system/bin/toybox mount --bind {shim} {target} || exit $?; trierarch_mount_kwin_wrapper=1; fi; ",
+                    target = shell_quote(target),
+                    parent = shell_quote(kwin_wrapper_parent),
+                    real = shell_quote(&kwin_wrapper_real),
+                    script = shell_quote(Path::new(&wrapper_script)),
+                    shim = shell_quote(&kwin_wrapper_shim),
+                )
+            }
         } else {
-            let wrapper_script = kwin_wayland_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY);
-            format!(
-                "if [ -x {target} ]; then /system/bin/toybox umount {target} >/dev/null 2>&1 || true; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {target} {real} && /system/bin/toybox chmod 755 {real} && printf '%s' {script} > {shim} && /system/bin/toybox chmod 755 {shim} && /system/bin/toybox mount --bind {shim} {target} || exit $?; fi; ",
-                target = shell_quote(&kwin_wrapper_target),
-                parent = shell_quote(kwin_wrapper_parent),
-                real = shell_quote(&kwin_wrapper_real),
-                script = shell_quote(Path::new(&wrapper_script)),
-                shim = shell_quote(&kwin_wrapper_shim),
-            )
+            String::new()
         };
+        let kwin_wrapper_cleanup_target = kwin_wrapper_target
+            .as_deref()
+            .unwrap_or_else(|| Path::new(GUEST_KWIN_WAYLAND_WRAPPER));
+        let system_mounts = prepare_system_mounts(&spec.rootfs);
+        let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "{install_compatibility}{install_ime_bridge}{install_kwin_wrapper} mkdir -p {runtime_target}; /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; \\
-             cleanup() {{ /system/bin/toybox umount {kwin_wrapper_target} >/dev/null 2>&1 || true; /system/bin/toybox umount {runtime_target} >/dev/null 2>&1 || true; }}; \\
-             trap 'cleanup; exit 143' HUP INT TERM; /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; exit $status",
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_kwin_wrapper=0; \\
+             cleanup() {{ \\
+                 if [ \"$trierarch_mount_kwin_wrapper\" = 1 ]; then /system/bin/toybox umount -l {kwin_wrapper_target} >/dev/null 2>&1 || true; fi; \\
+                 if [ \"$trierarch_mount_wayland\" = 1 ]; then /system/bin/toybox umount -l {runtime_target} >/dev/null 2>&1 || true; fi; \\
+                 {system_cleanup} \\
+             }}; \\
+             trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
+             {system_mounts} \\
+             {install_compatibility}{install_ime_bridge}{install_kwin_wrapper} \\
+              mkdir -p {runtime_target} || exit $?; \\
+              if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
+             /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
             runtime_target = shell_quote(&runtime_target),
-            kwin_wrapper_target = shell_quote(&kwin_wrapper_target),
+            kwin_wrapper_target = shell_quote(kwin_wrapper_cleanup_target),
             rootfs = shell_quote(&spec.rootfs),
             install_compatibility = install_compatibility,
             install_ime_bridge = install_ime_bridge,
             install_kwin_wrapper = install_kwin_wrapper,
+            system_mounts = system_mounts,
+            system_cleanup = system_cleanup,
         );
     }
 
@@ -194,19 +223,28 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         .parent()
         .expect("X11 socket directory has a tmp parent");
     let target = spec.rootfs.join("tmp");
+    let system_mounts = prepare_system_mounts(&spec.rootfs);
+    let system_cleanup = cleanup_system_mounts(&spec.rootfs);
     format!(
-        "{install_compatibility}{install_ime_bridge} test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
-         mkdir -p {target}; \\
-         /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; \\
-         cleanup() {{ /system/bin/toybox umount {target} >/dev/null 2>&1 || true; }}; \\
-         trap 'cleanup; exit 143' HUP INT TERM; \\
-         /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; exit $status",
+        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; \\
+         cleanup() {{ \\
+             if [ \"$trierarch_mount_x11\" = 1 ]; then /system/bin/toybox umount -l {target} >/dev/null 2>&1 || true; fi; \\
+             {system_cleanup} \\
+         }}; \\
+         trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
+         test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
+         {install_compatibility}{install_ime_bridge}{system_mounts} \\
+         mkdir -p {target} || exit $?; \\
+         if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; trierarch_mount_x11=1; fi; \\
+         /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
         source = shell_quote(&source),
         source_tmp = shell_quote(source_tmp),
         target = shell_quote(&target),
         rootfs = shell_quote(&spec.rootfs),
         install_compatibility = install_compatibility,
         install_ime_bridge = install_ime_bridge,
+        system_mounts = system_mounts,
+        system_cleanup = system_cleanup,
     )
 }
 
@@ -215,6 +253,51 @@ fn kwin_wayland_wrapper_script(library: &str) -> String {
         "#!/bin/sh\nexec /usr/bin/env LD_PRELOAD={library} {real} \"$@\"\n",
         real = GUEST_KWIN_WAYLAND_WRAPPER_REAL,
     )
+}
+
+/// Creates the minimum kernel-backed filesystem expected by ordinary guest
+/// programs.  A rootfs managed by another Android app may only have these
+/// points in that app's mount namespace, so Trierarch must prepare its own.
+fn prepare_system_mounts(rootfs: &Path) -> String {
+    let proc = rootfs.join("proc");
+    let sys = rootfs.join("sys");
+    let dev = rootfs.join("dev");
+    let devpts = dev.join("pts");
+    format!(
+        "mkdir -p {proc} {sys} {dev} {devpts} || exit $?; \
+         if ! /system/bin/toybox mountpoint -q {proc}; then /system/bin/toybox mount -t proc proc {proc} || exit $?; trierarch_mount_proc=1; fi; \
+         if ! /system/bin/toybox mountpoint -q {sys}; then /system/bin/toybox mount --bind /sys {sys} || exit $?; trierarch_mount_sys=1; fi; \
+         if ! /system/bin/toybox mountpoint -q {dev}; then /system/bin/toybox mount --bind /dev {dev} || exit $?; trierarch_mount_dev=1; fi; \
+         if ! /system/bin/toybox mountpoint -q {devpts}; then /system/bin/toybox mount -t devpts devpts {devpts} || exit $?; trierarch_mount_devpts=1; fi; ",
+        proc = shell_quote(&proc),
+        sys = shell_quote(&sys),
+        dev = shell_quote(&dev),
+        devpts = shell_quote(&devpts),
+    )
+}
+
+fn cleanup_system_mounts(rootfs: &Path) -> String {
+    let proc = rootfs.join("proc");
+    let sys = rootfs.join("sys");
+    let dev = rootfs.join("dev");
+    let devpts = dev.join("pts");
+    format!(
+        "if [ \"${{trierarch_mount_devpts}}\" = 1 ]; then /system/bin/toybox umount -l {devpts} >/dev/null 2>&1 || true; fi; \
+         if [ \"${{trierarch_mount_dev}}\" = 1 ]; then /system/bin/toybox umount -l {dev} >/dev/null 2>&1 || true; fi; \
+         if [ \"${{trierarch_mount_sys}}\" = 1 ]; then /system/bin/toybox umount -l {sys} >/dev/null 2>&1 || true; fi; \
+         if [ \"${{trierarch_mount_proc}}\" = 1 ]; then /system/bin/toybox umount -l {proc} >/dev/null 2>&1 || true; fi; ",
+        proc = shell_quote(&proc),
+        sys = shell_quote(&sys),
+        dev = shell_quote(&dev),
+        devpts = shell_quote(&devpts),
+    )
+}
+
+fn guest_kwin_wrapper_target(rootfs: &Path) -> Option<PathBuf> {
+    GUEST_KWIN_WAYLAND_WRAPPER_PATHS
+        .iter()
+        .map(|guest_path| rootfs.join(guest_path.trim_start_matches('/')))
+        .find(|path| path.is_file())
 }
 
 fn validate_environment(values: &[String]) -> io::Result<()> {
