@@ -11,8 +11,8 @@ name = "trierarch_native"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "trierarch-rootfs"
-path = "src/rootfs_cli.rs"
+name = "trierarch"
+path = "src/bin/trierarch.rs"
 
 [dependencies]
 anyhow = "1.0"

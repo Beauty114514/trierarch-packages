@@ -49,6 +49,30 @@ pub fn import_xz_tar(archive_path: &Path, files_directory: &Path, name: &str) ->
     result.map(|()| destination)
 }
 
+/// Removes a PRoot environment previously imported into Trierarch's private
+/// rootfs store. Only a direct, non-symlink child selected by a validated name
+/// can be removed.
+pub fn remove_imported(files_directory: &Path, name: &str) -> Result<PathBuf> {
+    validate_name(name)?;
+    ensure!(
+        files_directory.is_dir(),
+        "Trierarch files directory does not exist"
+    );
+
+    let destination = files_directory.join(ROOTFS_DIRECTORY).join(name);
+    let metadata = fs::symlink_metadata(&destination).with_context(|| {
+        format!("PRoot environment does not exist: {name}")
+    })?;
+    ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "PRoot environment is not a directory: {name}"
+    );
+    make_tree_writable(&destination);
+    fs::remove_dir_all(&destination)
+        .with_context(|| format!("remove PRoot environment {name}"))?;
+    Ok(destination)
+}
+
 fn import_into_staging(archive_path: &Path, staging: &Path, destination: &Path) -> Result<()> {
     let payload = staging.join("payload");
     fs::create_dir_all(&payload).context("create rootfs import staging directory")?;
@@ -178,10 +202,13 @@ fn make_tree_writable(root: &Path) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if fs::symlink_metadata(&path)
-            .map(|metadata| metadata.file_type().is_dir())
-            .unwrap_or(false)
-        {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.file_type().is_dir() {
             make_tree_writable(&path);
         }
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
@@ -291,7 +318,7 @@ fn validate_rootfs(rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_name(name: &str) -> Result<()> {
+pub fn validate_name(name: &str) -> Result<()> {
     let valid = !name.is_empty()
         && name.len() <= 64
         && name.as_bytes()[0].is_ascii_lowercase()

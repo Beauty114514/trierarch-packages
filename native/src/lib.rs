@@ -9,6 +9,7 @@ mod droidspaces;
 mod privileged;
 mod proot;
 mod pty;
+pub mod cli;
 pub mod rootfs;
 mod session;
 mod virgl;
