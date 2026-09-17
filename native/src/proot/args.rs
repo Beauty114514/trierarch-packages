@@ -12,6 +12,9 @@ const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const GUEST_WAYLAND_IME_DIRECTORY: &str = "/tmp/trierarch-wayland-ime-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.sock";
+const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.log";
+const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
@@ -111,7 +114,30 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     if wayland && udev_compatibility {
         bind_kwin_wayland_wrapper(&mut argv, spec)?;
     }
-    if spec.launch_argv.is_empty() {
+    if wayland && wayland_ime_bridge {
+        let launch = if spec.launch_argv.is_empty() {
+            format!("{} -i", crate::privileged::shell_quote(&spec.shell))
+        } else {
+            shell_words(&spec.launch_argv)
+        };
+        let script = format!(
+            "rm -f {socket}; ime_marker={runtime}/.trierarch-ime-start-$$; : > \"$ime_marker\"; \
+             ( ime_wait=0; while [ \"$ime_wait\" -lt 200 ]; do \
+                   [ -S {runtime}/{nested_socket} ] && [ {runtime}/{nested_socket} -nt \"$ime_marker\" ] && break; \
+                   sleep 0.05; ime_wait=$((ime_wait + 1)); \
+               done; \
+               [ -S {runtime}/{nested_socket} ] && [ {runtime}/{nested_socket} -nt \"$ime_marker\" ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \
+               rm -f \"$ime_marker\"; exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY={nested_socket} TRIERARCH_IME_LOG={log} {bridge} --socket {socket} ) & ime_bridge=$!; \
+             trap 'rm -f \"$ime_marker\"; kill ${{ime_bridge:-}} >/dev/null 2>&1 || true' EXIT HUP INT TERM; \
+             {launch}; status=$?; kill $ime_bridge >/dev/null 2>&1 || true; wait $ime_bridge >/dev/null 2>&1 || true; rm -f \"$ime_marker\" {socket}; exit $status",
+            runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
+            nested_socket = NESTED_WAYLAND_SOCKET,
+            bridge = GUEST_WAYLAND_IME_BRIDGE,
+            socket = GUEST_WAYLAND_IME_SOCKET,
+            log = GUEST_WAYLAND_IME_LOG,
+        );
+        argv.extend(["/bin/sh".into(), "-lc".into(), script]);
+    } else if spec.launch_argv.is_empty() {
         if x11 {
             argv.extend([
                 "/usr/bin/env".into(),
@@ -164,6 +190,14 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     validate_environment(&spec.graphics_environment)?;
     env.extend(spec.graphics_environment.iter().cloned());
     Ok((strings(&argv)?, strings(&env)?))
+}
+
+fn shell_words(values: &[String]) -> String {
+    values
+        .iter()
+        .map(crate::privileged::shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn prepare_udev_compatibility_library(spec: &ProotSpec) -> Result<bool> {
