@@ -33,6 +33,7 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
             validate_profile_id(id)?;
             runtime_client::request(&files_directory, "status", Some(id))
         }
+        [command, id] if command == "--create" => create_profile(&files_directory, id),
         [command, id] if command == "--config" => edit_profile(&files_directory, id),
         [command, id] if command == "--delete" => delete_profile(&files_directory, id),
         [command, id] if command == "--run" => {
@@ -67,7 +68,7 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
 
 fn print_usage() -> Result<()> {
     println!(
-        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
+        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
     );
     Ok(())
 }
@@ -90,6 +91,40 @@ fn existing_profile_path(files_directory: &Path, id: &str) -> Result<PathBuf> {
         "profile is not a regular file: {id}"
     );
     Ok(profile)
+}
+
+fn create_profile(files_directory: &Path, id: &str) -> Result<()> {
+    let profile = profile_path(files_directory, id)?;
+    let directory = profiles_directory(files_directory);
+    fs::create_dir_all(&directory)
+        .with_context(|| format!("create profile directory {}", directory.display()))?;
+    ensure!(directory.is_dir(), "profile directory is not a directory");
+    ensure!(!profile.exists(), "profile already exists: {id}");
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&profile)
+        .with_context(|| format!("create profile {id}"))?;
+    write!(
+        file,
+        "# Complete this template before running the profile.\n\
+         # Supported runtimes: proot, chroot, droidspaces.\n\
+         id = \"{id}\"\n\
+         runtime = \"proot\"\n\
+         \n\
+         # PRoot and chroot require these absolute guest paths.\n\
+         rootfs = \"/absolute/path/to/rootfs\"\n\
+         shell = \"/bin/bash\"\n\
+         \n\
+         # DroidSpaces instead requires: container = \"container-name\"\n\
+         \n\
+         [display]\n\
+         type = \"none\"\n"
+    )
+    .with_context(|| format!("write profile {id}"))?;
+    println!("Created profile: {id}\nEdit it with: trierarch --config {id}");
+    Ok(())
 }
 
 fn validate_profile_id(id: &str) -> Result<()> {
