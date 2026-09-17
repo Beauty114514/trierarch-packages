@@ -12,6 +12,9 @@ use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
+const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
+const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
+const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
@@ -228,11 +231,36 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let kwin_wrapper_cleanup_target = kwin_wrapper_target
             .as_deref()
             .unwrap_or_else(|| Path::new(GUEST_KWIN_WAYLAND_WRAPPER));
+        let ime_socket = spec
+            .rootfs
+            .join(GUEST_WAYLAND_IME_SOCKET.trim_start_matches('/'));
+        let start_ime_bridge = if spec.wayland_ime_bridge.as_os_str().is_empty() {
+            String::new()
+        } else {
+            let bridge_script = format!(
+                "rm -f {ime_socket}; \\
+                 ( ime_wait=0; while [ ! -S {runtime}/{nested_socket} ] && [ \"$ime_wait\" -lt 200 ]; do sleep 0.05; ime_wait=$((ime_wait + 1)); done; \\
+                   [ -S {runtime}/{nested_socket} ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \\
+                   exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY={nested_socket} TRIERARCH_IME_LOG={ime_log} {bridge} --socket {ime_socket} )",
+                runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
+                nested_socket = NESTED_WAYLAND_SOCKET,
+                ime_log = GUEST_WAYLAND_IME_LOG,
+                bridge = GUEST_WAYLAND_IME_BRIDGE,
+                ime_socket = GUEST_WAYLAND_IME_SOCKET,
+            );
+            format!(
+                "/system/bin/chroot {rootfs} /bin/sh -c {bridge_script} & trierarch_ime_bridge=$!; ",
+                rootfs = shell_quote(&spec.rootfs),
+                bridge_script = crate::privileged::shell_quote(&bridge_script),
+            )
+        };
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_mount_kwin_wrapper=0; trierarch_wayland_socket_link=0; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_mount_kwin_wrapper=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; \\
              cleanup() {{ \\
+                 if [ -n \"$trierarch_ime_bridge\" ]; then kill \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; wait \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; fi; \\
+                 /system/bin/toybox rm -f {ime_socket} >/dev/null 2>&1 || true; \\
                  if [ \"$trierarch_mount_kwin_wrapper\" = 1 ]; then /system/bin/toybox umount -l {kwin_wrapper_target} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
@@ -248,7 +276,7 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
              /system/bin/toybox mkdir -p {guest_runtime} && /system/bin/toybox chmod 700 {guest_runtime} || exit $?; \\
              if [ -e {guest_socket} ] || [ -L {guest_socket} ]; then /system/bin/toybox rm -f {guest_socket} || exit $?; fi; \\
              /system/bin/toybox ln -s {host_socket} {guest_socket} || exit $?; trierarch_wayland_socket_link=1; \\
-             /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
+             {start_ime_bridge}/system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
             runtime_target = shell_quote(&runtime_target),
             guest_runtime = shell_quote(&guest_runtime),
@@ -257,7 +285,9 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             virgl_target = shell_quote(&virgl_target),
             install_virgl = install_virgl,
             kwin_wrapper_target = shell_quote(kwin_wrapper_cleanup_target),
+            ime_socket = shell_quote(&ime_socket),
             rootfs = shell_quote(&spec.rootfs),
+            start_ime_bridge = start_ime_bridge,
             install_compatibility = install_compatibility,
             install_ime_bridge = install_ime_bridge,
             install_kwin_wrapper = install_kwin_wrapper,
