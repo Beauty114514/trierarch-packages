@@ -267,7 +267,10 @@ static bool consume_client(int fd, unsigned char *buffer, size_t *used, struct b
             size_t length = header & ~CONTROL_FRAME_BIT;
             if (!length || length > MAX_COMMIT_BYTES) { fputs("invalid bridge message length\n", stderr); return false; }
             if (*used < 4 + length) break;
-            if (control) {
+            if (!bridge->context) {
+                trace("dropped %s IME event: no active text input\n",
+                        control ? "keysym" : "text");
+            } else if (control) {
                 if (!enqueue_control(bridge, buffer + 4, length)) return false;
             } else {
                 if (memchr(buffer + 4, '\0', length)) { fputs("bridge commits may not contain NUL\n", stderr); return false; }
