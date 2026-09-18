@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 
@@ -21,8 +22,17 @@
 
 #define MAX_COMMIT_BYTES 65536U
 #define MAX_QUEUED_MESSAGES 128U
+#define CONTROL_FRAME_BIT UINT32_C(0x80000000)
+#define CONTROL_KEYSYM 1U
+#define KEY_STATE_RELEASED 0U
+#define KEY_STATE_PRESSED 1U
 
-struct message { char *text; struct message *next; };
+enum message_type { MESSAGE_TEXT, MESSAGE_KEYSYM };
+struct message {
+    enum message_type type;
+    union { char *text; struct { uint32_t sym, state; } keysym; } value;
+    struct message *next;
+};
 struct bridge {
     struct wl_display *display;
     struct zwp_input_method_v1 *input_method;
@@ -51,17 +61,34 @@ static void trace(const char *format, ...) {
     fflush(stdout);
 }
 
-static bool enqueue(struct bridge *bridge, char *text) {
+static bool enqueue_text(struct bridge *bridge, char *text) {
     if (bridge->queued_messages == MAX_QUEUED_MESSAGES) {
         fputs("IME bridge queue is full\n", stderr); free(text); return false;
     }
     struct message *message = calloc(1, sizeof(*message));
     if (!message) { free(text); return false; }
-    message->text = text;
+    message->type = MESSAGE_TEXT;
+    message->value.text = text;
     if (bridge->tail) bridge->tail->next = message; else bridge->head = message;
     bridge->tail = message;
     bridge->queued_messages++;
     trace("queued %zu UTF-8 bytes; queue=%u\n", strlen(text), bridge->queued_messages);
+    return true;
+}
+
+static bool enqueue_keysym(struct bridge *bridge, uint32_t sym, uint32_t state) {
+    if (bridge->queued_messages == MAX_QUEUED_MESSAGES) {
+        fputs("IME bridge queue is full\n", stderr); return false;
+    }
+    struct message *message = calloc(1, sizeof(*message));
+    if (!message) return false;
+    message->type = MESSAGE_KEYSYM;
+    message->value.keysym.sym = sym;
+    message->value.keysym.state = state;
+    if (bridge->tail) bridge->tail->next = message; else bridge->head = message;
+    bridge->tail = message;
+    bridge->queued_messages++;
+    trace("queued keysym=0x%x state=%u; queue=%u\n", sym, state, bridge->queued_messages);
     return true;
 }
 
@@ -74,10 +101,21 @@ static void try_commit(struct bridge *bridge) {
         bridge->head = message->next;
         if (!bridge->head) bridge->tail = NULL;
         bridge->queued_messages--;
-        zwp_input_method_context_v1_commit_string(bridge->context, bridge->serial, message->text);
-        trace("committed %zu UTF-8 bytes with serial=%u; queue=%u\n",
-                strlen(message->text), bridge->serial, bridge->queued_messages);
-        free(message->text);
+        if (message->type == MESSAGE_TEXT) {
+            zwp_input_method_context_v1_commit_string(bridge->context, bridge->serial, message->value.text);
+            trace("committed %zu UTF-8 bytes with serial=%u; queue=%u\n",
+                    strlen(message->value.text), bridge->serial, bridge->queued_messages);
+            free(message->value.text);
+        } else {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            uint32_t time = (uint32_t)(now.tv_sec * 1000U + now.tv_nsec / 1000000U);
+            zwp_input_method_context_v1_keysym(bridge->context, bridge->serial, time,
+                    message->value.keysym.sym, message->value.keysym.state, 0);
+            trace("sent keysym=0x%x state=%u with serial=%u; queue=%u\n",
+                    message->value.keysym.sym, message->value.keysym.state,
+                    bridge->serial, bridge->queued_messages);
+        }
         free(message);
         committed++;
     }
@@ -180,6 +218,16 @@ static int listen_socket(const char *path) {
     return fd;
 }
 
+static bool enqueue_control(struct bridge *bridge, const unsigned char *payload, size_t length) {
+    if (length != 6 || payload[0] != CONTROL_KEYSYM ||
+            (payload[1] != KEY_STATE_RELEASED && payload[1] != KEY_STATE_PRESSED)) {
+        fputs("invalid IME bridge control frame\n", stderr); return false;
+    }
+    uint32_t network_sym;
+    memcpy(&network_sym, payload + 2, sizeof(network_sym));
+    return enqueue_keysym(bridge, ntohl(network_sym), payload[1]);
+}
+
 static bool consume_client(int fd, unsigned char *buffer, size_t *used, struct bridge *bridge) {
     for (;;) {
         ssize_t read_count = read(fd, buffer + *used, 4 + MAX_COMMIT_BYTES - *used);
@@ -192,14 +240,20 @@ static bool consume_client(int fd, unsigned char *buffer, size_t *used, struct b
         while (*used >= 4) {
             uint32_t network_length;
             memcpy(&network_length, buffer, sizeof(network_length));
-            size_t length = ntohl(network_length);
+            uint32_t header = ntohl(network_length);
+            bool control = (header & CONTROL_FRAME_BIT) != 0;
+            size_t length = header & ~CONTROL_FRAME_BIT;
             if (!length || length > MAX_COMMIT_BYTES) { fputs("invalid bridge message length\n", stderr); return false; }
             if (*used < 4 + length) break;
-            if (memchr(buffer + 4, '\0', length)) { fputs("bridge commits may not contain NUL\n", stderr); return false; }
-            char *text = malloc(length + 1);
-            if (!text) return false;
-            memcpy(text, buffer + 4, length); text[length] = '\0';
-            if (!enqueue(bridge, text)) return false;
+            if (control) {
+                if (!enqueue_control(bridge, buffer + 4, length)) return false;
+            } else {
+                if (memchr(buffer + 4, '\0', length)) { fputs("bridge commits may not contain NUL\n", stderr); return false; }
+                char *text = malloc(length + 1);
+                if (!text) return false;
+                memcpy(text, buffer + 4, length); text[length] = '\0';
+                if (!enqueue_text(bridge, text)) return false;
+            }
             memmove(buffer, buffer + 4 + length, *used - 4 - length);
             *used -= 4 + length;
             try_commit(bridge);
@@ -255,7 +309,7 @@ int main(int argc, char **argv) {
     if (one_shot) {
         if (!argv[2][0]) { fputs("commit text may not be empty\n", stderr); return EXIT_FAILURE; }
         char *text = strdup(argv[2]);
-        if (!text || !enqueue(&bridge, text)) return EXIT_FAILURE;
+        if (!text || !enqueue_text(&bridge, text)) return EXIT_FAILURE;
     }
     signal(SIGINT, stop); signal(SIGTERM, stop);
     bridge.display = wl_display_connect(NULL);
@@ -288,7 +342,12 @@ int main(int argc, char **argv) {
     if (listener >= 0) close(listener);
     if (socket_path) unlink(socket_path);
     if (bridge.context) zwp_input_method_context_v1_destroy(bridge.context);
-    while (bridge.head) { struct message *message = bridge.head; bridge.head = message->next; free(message->text); free(message); }
+    while (bridge.head) {
+        struct message *message = bridge.head;
+        bridge.head = message->next;
+        if (message->type == MESSAGE_TEXT) free(message->value.text);
+        free(message);
+    }
     wl_display_disconnect(bridge.display);
     if (diagnostic_log) fclose(diagnostic_log);
     return result;
