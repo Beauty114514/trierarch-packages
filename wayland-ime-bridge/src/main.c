@@ -61,6 +61,20 @@ static void trace(const char *format, ...) {
     fflush(stdout);
 }
 
+/** Discard events whose Wayland input context is no longer valid. */
+static void clear_pending_messages(struct bridge *bridge, const char *reason) {
+    unsigned int discarded = bridge->queued_messages;
+    while (bridge->head) {
+        struct message *message = bridge->head;
+        bridge->head = message->next;
+        if (message->type == MESSAGE_TEXT) free(message->value.text);
+        free(message);
+    }
+    bridge->tail = NULL;
+    bridge->queued_messages = 0;
+    if (discarded) trace("discarded %u stale IME event(s): %s\n", discarded, reason);
+}
+
 static bool enqueue_text(struct bridge *bridge, char *text) {
     if (bridge->queued_messages == MAX_QUEUED_MESSAGES) {
         fputs("IME bridge queue is full\n", stderr); free(text); return false;
@@ -131,10 +145,11 @@ static void context_surrounding_text(void *data, struct zwp_input_method_context
     (void)data; (void)context; (void)text; (void)cursor; (void)anchor;
 }
 static void context_reset(void *data, struct zwp_input_method_context_v1 *context) {
-    (void)context;
     struct bridge *bridge = data;
+    if (bridge->context != context) return;
     bridge->have_serial = false;
-    trace("text input reset; queue=%u\n", bridge->queued_messages);
+    clear_pending_messages(bridge, "text input reset");
+    trace("text input reset\n");
 }
 static void context_content_type(void *data, struct zwp_input_method_context_v1 *context,
         uint32_t hint, uint32_t purpose) { (void)data; (void)context; (void)hint; (void)purpose; }
@@ -142,8 +157,8 @@ static void context_invoke_action(void *data, struct zwp_input_method_context_v1
         uint32_t button, uint32_t index) { (void)data; (void)context; (void)button; (void)index; }
 static void context_commit_state(void *data, struct zwp_input_method_context_v1 *context,
         uint32_t serial) {
-    (void)context;
     struct bridge *bridge = data;
+    if (bridge->context != context) return;
     bridge->serial = serial; bridge->have_serial = true;
     trace("text input state serial=%u; queue=%u\n", serial, bridge->queued_messages);
     try_commit(bridge);
@@ -160,7 +175,10 @@ static void input_method_activate(void *data, struct zwp_input_method_v1 *input_
         struct zwp_input_method_context_v1 *context) {
     (void)input_method;
     struct bridge *bridge = data;
-    if (bridge->context) zwp_input_method_context_v1_destroy(bridge->context);
+    if (bridge->context) {
+        clear_pending_messages(bridge, "input context replaced");
+        zwp_input_method_context_v1_destroy(bridge->context);
+    }
     bridge->context = context; bridge->have_serial = false;
     zwp_input_method_context_v1_add_listener(context, &context_listener, bridge);
     puts("text input activated; waiting for state serial"); fflush(stdout);
@@ -169,8 +187,12 @@ static void input_method_deactivate(void *data, struct zwp_input_method_v1 *inpu
         struct zwp_input_method_context_v1 *context) {
     (void)input_method;
     struct bridge *bridge = data;
-    if (bridge->context == context) { bridge->context = NULL; bridge->have_serial = false; }
-    printf("text input deactivated; queue=%u\n", bridge->queued_messages);
+    if (bridge->context == context) {
+        clear_pending_messages(bridge, "text input deactivated");
+        bridge->context = NULL;
+        bridge->have_serial = false;
+    }
+    printf("text input deactivated\n");
     fflush(stdout);
     zwp_input_method_context_v1_destroy(context);
 }
@@ -342,12 +364,7 @@ int main(int argc, char **argv) {
     if (listener >= 0) close(listener);
     if (socket_path) unlink(socket_path);
     if (bridge.context) zwp_input_method_context_v1_destroy(bridge.context);
-    while (bridge.head) {
-        struct message *message = bridge.head;
-        bridge.head = message->next;
-        if (message->type == MESSAGE_TEXT) free(message->value.text);
-        free(message);
-    }
+    clear_pending_messages(&bridge, "bridge shutdown");
     wl_display_disconnect(bridge.display);
     if (diagnostic_log) fclose(diagnostic_log);
     return result;
