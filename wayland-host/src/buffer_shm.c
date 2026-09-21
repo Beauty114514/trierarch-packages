@@ -117,7 +117,9 @@ static void pool_resize(struct wl_client *client, struct wl_resource *resource,
         int32_t size) {
     (void)client;
     struct shm_pool *pool = wl_resource_get_user_data(resource);
-    if (!pool || size <= 0 || ftruncate(pool->fd, size) < 0) {
+    /* wl_shm_pool.resize only changes the server's mapping.  The client owns
+     * the backing fd and must have grown it before sending this request. */
+    if (!pool || size <= 0 || (size_t)size <= pool->size) {
         wl_resource_post_error(resource, WL_SHM_ERROR_INVALID_FD,
                 "invalid wl_shm pool resize");
         return;
