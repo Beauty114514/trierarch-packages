@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "server_internal.h"
+#include "gpu_probe.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -476,6 +477,92 @@ static void draw_surface_tree(struct renderer_context *renderer,
         draw_surface_tree(renderer, server, child, own_x, own_y);
 }
 
+/* This is intentionally not a Wayland client buffer path.  A test client
+ * sends one exported guest buffer through gpu-probe.sock; the active renderer
+ * imports it in its own EGL context and overlays it once. */
+static int draw_gpu_probe(struct renderer_context *renderer,
+        struct wayland_server *server, int *result_client_fd) {
+    *result_client_fd = -1;
+    if (!server->gpu_probe) return 0;
+    struct trierarch_gpu_probe_buffer buffer;
+    int buffer_fd = -1;
+    int client_fd = -1;
+    if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
+    if (!renderer->dmabuf_import_supported) {
+        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, EGL_SUCCESS);
+        close(buffer_fd);
+        return 0;
+    }
+    EGLImageKHR image = EGL_NO_IMAGE_KHR;
+    const EGLint basic_attributes[] = {
+        EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
+        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
+        EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride, EGL_NONE,
+    };
+    image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+            EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
+    if (image == EGL_NO_IMAGE_KHR && buffer.modifier != DRM_FORMAT_MOD_INVALID) {
+        const EGLint modifier_attributes[] = {
+            EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
+            EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
+            EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride,
+            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(uint32_t)buffer.modifier,
+            EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(uint32_t)(buffer.modifier >> 32),
+            EGL_NONE,
+        };
+        image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                EGL_LINUX_DMA_BUF_EXT, NULL, modifier_attributes);
+    }
+    close(buffer_fd);
+    if (image == EGL_NO_IMAGE_KHR) {
+        EGLint error = eglGetError();
+        LOGE("gpu probe EGL import failed: format=0x%x modifier=0x%llx error=0x%x",
+                buffer.drm_format, (unsigned long long)buffer.modifier, error);
+        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_FAILED, error);
+        return 0;
+    }
+    int width = (int)buffer.width;
+    int height = (int)buffer.height;
+    const int max_edge = renderer->width < renderer->height ? renderer->width / 3 : renderer->height / 3;
+    if (width > max_edge || height > max_edge) {
+        float scale = (float)max_edge / (float)(width > height ? width : height);
+        width = (int)(width * scale);
+        height = (int)(height * scale);
+    }
+    const int x = 24;
+    const int y = 24;
+    const float left = 2.0f * x / renderer->width - 1.0f;
+    const float right = 2.0f * (x + width) / renderer->width - 1.0f;
+    const float top = 1.0f - 2.0f * y / renderer->height;
+    const float bottom = 1.0f - 2.0f * (y + height) / renderer->height;
+    const GLfloat vertices[] = { left,bottom,0,1, right,bottom,1,1,
+            left,top,0,0, right,top,1,0 };
+    glUseProgram(renderer->texture_program);
+    glBindTexture(GL_TEXTURE_2D, renderer->texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    renderer->image_target(GL_TEXTURE_2D, image);
+    glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), 0.0f);
+    glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), 1.0f);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), vertices);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), vertices + 2);
+    glEnableVertexAttribArray(0); glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
+    GLenum gl_error = glGetError();
+    renderer->destroy_image(renderer->display, image);
+    if (gl_error != GL_NO_ERROR) {
+        LOGE("gpu probe texture draw failed: 0x%x", gl_error);
+        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS);
+        return 0;
+    }
+    LOGI("gpu probe imported and drew guest buffer; awaiting Android swap");
+    *result_client_fd = client_fd;
+    return 1;
+}
+
 static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) {
     if (!surface || !surface->current || !surface->viewport_destination_set) return false;
     return (int64_t)surface->current->width * surface->current->height <= 256;
@@ -515,6 +602,8 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         int cursor_y = (int)wl_fixed_to_int(server->pointer_y) - server->cursor_hotspot_y;
         draw_surface(renderer, server->cursor_surface, cursor_x, cursor_y);
     }
+    int gpu_probe_client_fd = -1;
+    (void)draw_gpu_probe(renderer, server, &gpu_probe_client_fd);
     glDisable(GL_BLEND);
     /* Snapshot only callbacks for surfaces that participated in this output
      * composition.  A later commit cannot be completed by this swap. */
@@ -524,9 +613,12 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     uint64_t render_finished_ns = monotonic_ns();
     if (!swapped) {
         trierarch_surface_requeue_frame_callbacks(server);
+        trierarch_gpu_probe_report(gpu_probe_client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED,
+                eglGetError());
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
     }
+    trierarch_gpu_probe_report(gpu_probe_client_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS);
     trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     server->perf_render_count++;

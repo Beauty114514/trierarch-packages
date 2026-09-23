@@ -4,6 +4,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <wayland-client.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -21,7 +22,7 @@
 #endif
 
 typedef EGLBoolean (*egl_export_dmabuf_query_mesa_fn)(EGLDisplay, EGLImageKHR,
-        int *, int *, unsigned int *);
+        int *, int *, EGLuint64KHR *);
 typedef EGLBoolean (*egl_export_dmabuf_mesa_fn)(EGLDisplay, EGLImageKHR,
         int *, EGLint *, EGLint *);
 typedef EGLImageKHR (*egl_create_image_khr_fn)(EGLDisplay, EGLContext, EGLenum,
@@ -72,18 +73,24 @@ int main(int argc, char **argv) {
         return 64;
     }
     const char *socket_path = argv[1];
-    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    /* The KGSL Mesa path has been verified through Wayland EGL.  Do not use
+     * EGL_DEFAULT_DISPLAY here: on this device it selects an uninitializable
+     * default/surfaceless path and would test nothing about buffer sharing. */
+    struct wl_display *wayland_display = wl_display_connect(NULL);
+    if (!wayland_display) {
+        const char *display_name = getenv("WAYLAND_DISPLAY");
+        fprintf(stderr, "guest: wl_display_connect(%s) failed: %s\n",
+                display_name ? display_name : "wayland-0", strerror(errno));
+        return 1;
+    }
+    EGLDisplay display = eglGetDisplay((EGLNativeDisplayType)wayland_display);
     if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
         fprintf(stderr, "guest: eglInitialize failed: 0x%x\n", eglGetError());
+        wl_display_disconnect(wayland_display);
         return 1;
     }
     const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
     printf("guest: EGL extensions: %s\n", extensions ? extensions : "(none)");
-    if (!has_extension(extensions, "EGL_MESA_image_dma_buf_export")) {
-        fprintf(stderr, "guest: EGL_MESA_image_dma_buf_export unavailable\n");
-        eglTerminate(display);
-        return 2;
-    }
     const EGLint config_attributes[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE, 8, EGL_NONE };
@@ -91,7 +98,7 @@ int main(int argc, char **argv) {
     EGLint count = 0;
     if (!eglChooseConfig(display, config_attributes, &config, 1, &count) || !count) {
         fprintf(stderr, "guest: no GLES pbuffer config: 0x%x\n", eglGetError());
-        eglTerminate(display); return 3;
+        eglTerminate(display); wl_display_disconnect(wayland_display); return 3;
     }
     const EGLint context_attributes[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attributes);
@@ -100,10 +107,18 @@ int main(int argc, char **argv) {
     if (context == EGL_NO_CONTEXT || surface == EGL_NO_SURFACE ||
             !eglMakeCurrent(display, surface, surface, context)) {
         fprintf(stderr, "guest: context setup failed: 0x%x\n", eglGetError());
-        eglTerminate(display); return 4;
+        eglTerminate(display); wl_display_disconnect(wayland_display); return 4;
     }
     printf("guest: GL_VENDOR=%s\n", glGetString(GL_VENDOR));
     printf("guest: GL_RENDERER=%s\n", glGetString(GL_RENDERER));
+    if (!has_extension(extensions, "EGL_MESA_image_dma_buf_export")) {
+        fprintf(stderr, "guest: EGL_MESA_image_dma_buf_export unavailable\n");
+        eglDestroySurface(display, surface);
+        eglDestroyContext(display, context);
+        eglTerminate(display);
+        wl_display_disconnect(wayland_display);
+        return 2;
+    }
 
     GLuint texture = 0, framebuffer = 0;
     glGenTextures(1, &texture);
@@ -141,7 +156,7 @@ int main(int argc, char **argv) {
         return 7;
     }
     int fourcc = 0, planes = 0;
-    unsigned int modifier = 0;
+    EGLuint64KHR modifier = 0;
     if (!query_export(display, image, &fourcc, &planes, &modifier) || planes != 1) {
         fprintf(stderr, "guest: dma-buf export query failed/unsupported planes=%d: 0x%x\n",
                 planes, eglGetError());
@@ -159,7 +174,8 @@ int main(int argc, char **argv) {
         .type = TRIERARCH_GPU_PROBE_BUFFER, .width = 256, .height = 256,
         .drm_format = (uint32_t)fourcc, .stride = (uint32_t)stride, .modifier = modifier,
     };
-    printf("guest: export format=0x%x stride=%d modifier=0x%x\n", fourcc, stride, modifier);
+    printf("guest: export format=0x%x stride=%d modifier=0x%llx\n", fourcc, stride,
+            (unsigned long long)modifier);
     int socket_fd = connect_socket(socket_path);
     if (socket_fd < 0 || send_buffer(socket_fd, &buffer, buffer_fd) < 0) {
         fprintf(stderr, "guest: send buffer failed: %s\n", strerror(errno));
@@ -176,5 +192,6 @@ int main(int argc, char **argv) {
     close(socket_fd); close(buffer_fd); destroy_image(display, image);
     glDeleteFramebuffers(1, &framebuffer); glDeleteTextures(1, &texture);
     eglDestroySurface(display, surface); eglDestroyContext(display, context); eglTerminate(display);
+    wl_display_disconnect(wayland_display);
     return result.result == TRIERARCH_GPU_PROBE_OK ? 0 : 11;
 }

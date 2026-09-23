@@ -43,6 +43,8 @@ struct shm_buffer {
     struct wl_list pool_link;
 };
 
+struct trierarch_gpu_probe;
+
 struct compositor_surface {
     struct wl_list link;
     struct wayland_server *server;
@@ -148,6 +150,8 @@ struct wayland_server {
     uint32_t next_serial;
     bool valid;
     bool egl_buffer_supported;
+    /* Test-only listener, isolated from ordinary Wayland client buffers. */
+    struct trierarch_gpu_probe *gpu_probe;
     /* Output repaint state. Requests are coalesced until the next output tick,
      * so a burst of commits produces at most one composition. */
     bool repaint_needed;
