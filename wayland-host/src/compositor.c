@@ -200,6 +200,10 @@ bool trierarch_wayland_begin_repaint(wayland_server_t *opaque) {
     struct wayland_server *server = (struct wayland_server *)opaque;
     if (!server || !server->repaint_needed || !server->repaint_ready ||
             server->repaint_rendering) return false;
+    /* Consume the request which made this frame eligible.  Requests arriving
+     * while EGL is rendering set repaint_needed again and must schedule a new
+     * frame instead of being discarded by frame_presented(). */
+    server->repaint_needed = false;
     server->repaint_ready = false;
     server->repaint_rendering = true;
     server->perf_repaint_started++;
@@ -232,7 +236,8 @@ void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t t
     trierarch_surface_send_frame_callbacks(server, time_ms);
     server->repaint_rendering = false;
     server->repaint_ready = false;
-    server->repaint_needed = false;
+    if (server->repaint_needed)
+        schedule_repaint(server);
 }
 
 bool trierarch_wayland_has_surface(wayland_server_t *server) {
