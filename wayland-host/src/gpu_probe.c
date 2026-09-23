@@ -21,6 +21,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #define DRM_FORMAT_ABGR8888 0x34324241u
+#define GPU_PROBE_BUFFER_COUNT 3u
 
 /* VNDK-only: resolving this dynamically makes availability and native-handle
  * shape probe data instead of an unstated Android ABI dependency. */
@@ -28,12 +29,18 @@ struct native_handle { int version; int numFds; int numInts; int data[]; };
 typedef const struct native_handle *(*get_native_handle_fn)(const AHardwareBuffer *);
 enum client_mode { CLIENT_NONE, CLIENT_GUEST_TO_HOST, CLIENT_HOST_TO_GUEST };
 
+struct host_buffer_slot {
+    AHardwareBuffer *buffer;
+    int guest_fence_fd;
+    bool ready;
+};
+
 struct trierarch_gpu_probe {
     struct wayland_server *server;
-    int listener_fd, client_fd, buffer_fd, guest_fence_fd;
+    int listener_fd, client_fd, buffer_fd;
     struct wl_event_source *listener_source, *client_source;
     struct trierarch_gpu_probe_buffer buffer;
-    AHardwareBuffer *host_buffer;
+    struct host_buffer_slot host_buffers[GPU_PROBE_BUFFER_COUNT];
     char socket_path[PATH_MAX];
     enum client_mode mode;
     bool pending;
@@ -48,17 +55,25 @@ static void close_client(struct trierarch_gpu_probe *probe) {
 static void discard_pending(struct trierarch_gpu_probe *probe) {
     if (probe->buffer_fd >= 0) close(probe->buffer_fd);
     probe->buffer_fd = -1;
-    if (probe->guest_fence_fd >= 0) close(probe->guest_fence_fd);
-    probe->guest_fence_fd = -1;
-    if (probe->host_buffer) AHardwareBuffer_release(probe->host_buffer);
-    probe->host_buffer = NULL; probe->pending = false;
+    for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
+        if (probe->host_buffers[index].guest_fence_fd >= 0)
+            close(probe->host_buffers[index].guest_fence_fd);
+        probe->host_buffers[index].guest_fence_fd = -1;
+        if (probe->host_buffers[index].buffer)
+            AHardwareBuffer_release(probe->host_buffers[index].buffer);
+        probe->host_buffers[index].buffer = NULL;
+        probe->host_buffers[index].ready = false;
+    }
+    probe->pending = false;
     memset(&probe->buffer, 0, sizeof(probe->buffer));
 }
 
-static void send_result(int client_fd, uint32_t result, uint32_t egl_error, int fence_fd) {
+static void send_result(int client_fd, uint32_t result, uint32_t egl_error,
+        uint32_t buffer_id, int fence_fd) {
     const struct trierarch_gpu_probe_result_message message = {
         .magic = TRIERARCH_GPU_PROBE_MAGIC, .version = TRIERARCH_GPU_PROBE_VERSION,
         .type = TRIERARCH_GPU_PROBE_RESULT, .result = result, .egl_error = egl_error,
+        .buffer_id = buffer_id,
     };
     if (fence_fd < 0) {
         (void)send(client_fd, &message, sizeof(message), MSG_NOSIGNAL);
@@ -98,34 +113,39 @@ static get_native_handle_fn get_native_handle(void) {
     return function;
 }
 
-static int create_and_send_host_buffer(struct trierarch_gpu_probe *probe) {
+static int create_and_send_host_buffers(struct trierarch_gpu_probe *probe) {
     const AHardwareBuffer_Desc requested = {
         .width = 256, .height = 256, .layers = 1,
         .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
         .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
     };
-    if (AHardwareBuffer_allocate(&requested, &probe->host_buffer) != 0 || !probe->host_buffer) {
-        LOGE("AHardwareBuffer_allocate failed"); return -1;
-    }
-    AHardwareBuffer_Desc actual = {0}; AHardwareBuffer_describe(probe->host_buffer, &actual);
     get_native_handle_fn native_handle = get_native_handle();
-    const struct native_handle *handle = native_handle ? native_handle(probe->host_buffer) : NULL;
-    if (!handle || handle->numFds < 1 || handle->data[0] < 0) {
-        LOGE("Android AHardwareBuffer native handle unavailable or has no pixel FD"); return -1;
+    for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
+        struct host_buffer_slot *slot = &probe->host_buffers[index];
+        if (AHardwareBuffer_allocate(&requested, &slot->buffer) != 0 || !slot->buffer) {
+            LOGE("AHardwareBuffer_allocate failed for slot=%u", index); return -1;
+        }
+        AHardwareBuffer_Desc actual = {0}; AHardwareBuffer_describe(slot->buffer, &actual);
+        const struct native_handle *handle = native_handle ? native_handle(slot->buffer) : NULL;
+        if (!handle || handle->numFds < 1 || handle->data[0] < 0) {
+            LOGE("Android AHardwareBuffer native handle unavailable for slot=%u", index); return -1;
+        }
+        LOGI("host AHardwareBuffer slot=%u: %ux%u stride=%u format=0x%x native_handle fds=%d ints=%d",
+                index, actual.width, actual.height, actual.stride, actual.format,
+                handle->numFds, handle->numInts);
+        int fd = dup(handle->data[0]);
+        if (fd < 0) return -1;
+        struct trierarch_gpu_probe_buffer buffer = {
+            .magic = TRIERARCH_GPU_PROBE_MAGIC, .version = TRIERARCH_GPU_PROBE_VERSION,
+            .type = TRIERARCH_GPU_PROBE_HOST_BUFFER, .width = actual.width, .height = actual.height,
+            /* R8G8B8A8 memory on little-endian Android is DRM ABGR8888. */
+            .drm_format = DRM_FORMAT_ABGR8888, .stride = actual.stride * 4u,
+            .modifier = 0, .buffer_id = index,
+        };
+        int result = send_buffer(probe->client_fd, &buffer, fd); close(fd);
+        if (result < 0) return -1;
     }
-    LOGI("host AHardwareBuffer: %ux%u stride=%u format=0x%x native_handle fds=%d ints=%d",
-            actual.width, actual.height, actual.stride, actual.format, handle->numFds, handle->numInts);
-    int fd = dup(handle->data[0]);
-    if (fd < 0) return -1;
-    probe->buffer = (struct trierarch_gpu_probe_buffer) {
-        .magic = TRIERARCH_GPU_PROBE_MAGIC, .version = TRIERARCH_GPU_PROBE_VERSION,
-        .type = TRIERARCH_GPU_PROBE_HOST_BUFFER, .width = actual.width, .height = actual.height,
-        /* R8G8B8A8 memory on little-endian Android is DRM ABGR8888. */
-        .drm_format = DRM_FORMAT_ABGR8888, .stride = actual.stride * 4u, .modifier = 0,
-    };
-    int result = send_buffer(probe->client_fd, &probe->buffer, fd); close(fd);
-    if (result < 0) return -1;
-    LOGI("sent Android AHardwareBuffer pixel FD to guest; awaiting guest render result");
+    LOGI("sent %u Android AHardwareBuffer slots to guest; awaiting render results", GPU_PROBE_BUFFER_COUNT);
     return 0;
 }
 
@@ -138,7 +158,7 @@ static int receive_hello(struct trierarch_gpu_probe *probe) {
     if (hello.direction == TRIERARCH_GPU_PROBE_GUEST_TO_HOST) { probe->mode = CLIENT_GUEST_TO_HOST; return 1; }
     if (hello.direction != TRIERARCH_GPU_PROBE_HOST_TO_GUEST) return -1;
     probe->mode = CLIENT_HOST_TO_GUEST;
-    return create_and_send_host_buffer(probe) == 0 ? 1 : -1;
+    return create_and_send_host_buffers(probe) == 0 ? 1 : -1;
 }
 
 static int receive_guest_buffer(struct trierarch_gpu_probe *probe) {
@@ -174,16 +194,26 @@ static int receive_guest_result(struct trierarch_gpu_probe *probe) {
             result.version != TRIERARCH_GPU_PROBE_VERSION || result.type != TRIERARCH_GPU_PROBE_RESULT) return -1;
     if (result.result != TRIERARCH_GPU_PROBE_OK) {
         LOGE("guest could not import/render Android buffer: result=%u egl=0x%x", result.result, result.egl_error);
-        send_result(probe->client_fd, result.result, result.egl_error, -1); return -1;
+        send_result(probe->client_fd, result.result, result.egl_error, result.buffer_id, -1); return -1;
+    }
+    if (result.buffer_id >= GPU_PROBE_BUFFER_COUNT) {
+        LOGE("guest result has invalid buffer slot=%u", result.buffer_id); return -1;
+    }
+    struct host_buffer_slot *slot = &probe->host_buffers[result.buffer_id];
+    if (!slot->buffer || slot->ready || slot->guest_fence_fd >= 0) {
+        LOGE("guest attempted to submit busy buffer slot=%u", result.buffer_id); return -1;
     }
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&packet);
     if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
             cmsg->cmsg_len != CMSG_LEN(sizeof(int))) {
         LOGE("guest result lacks its release fence"); return -1;
     }
-    memcpy(&probe->guest_fence_fd, CMSG_DATA(cmsg), sizeof(probe->guest_fence_fd));
-    if (probe->guest_fence_fd < 0) return -1;
-    probe->pending = true; LOGI("guest rendered Android buffer; scheduling host sample"); return 1;
+    memcpy(&slot->guest_fence_fd, CMSG_DATA(cmsg), sizeof(slot->guest_fence_fd));
+    if (slot->guest_fence_fd < 0) return -1;
+    slot->ready = true;
+    probe->pending = true;
+    LOGI("guest rendered Android buffer slot=%u; scheduling host sample", result.buffer_id);
+    return 1;
 }
 
 static int client_readable(int fd, uint32_t mask, void *data) {
@@ -196,12 +226,14 @@ static int client_readable(int fd, uint32_t mask, void *data) {
         else outcome = receive_guest_result(probe);
     }
     if (outcome == 1 && probe->pending) {
-        if (probe->client_source) { wl_event_source_remove(probe->client_source); probe->client_source = NULL; }
+        if (probe->mode == CLIENT_GUEST_TO_HOST && probe->client_source) {
+            wl_event_source_remove(probe->client_source); probe->client_source = NULL;
+        }
         trierarch_wayland_request_render(probe->server); return 0;
     }
     if (outcome < 0 || (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) {
         LOGE("guest gpu probe connection failed: %s", strerror(errno));
-        if (probe->client_fd >= 0) send_result(probe->client_fd, TRIERARCH_GPU_PROBE_BAD_MESSAGE, 0, -1);
+        if (probe->client_fd >= 0) send_result(probe->client_fd, TRIERARCH_GPU_PROBE_BAD_MESSAGE, 0, 0, -1);
         close_client(probe); discard_pending(probe);
     }
     return 0;
@@ -222,7 +254,9 @@ static int listener_readable(int fd, uint32_t mask, void *data) {
 struct trierarch_gpu_probe *trierarch_gpu_probe_create(struct wayland_server *server, const char *runtime_dir) {
     if (!server || !server->event_loop || !runtime_dir) return NULL;
     struct trierarch_gpu_probe *probe = calloc(1, sizeof(*probe)); if (!probe) return NULL;
-    probe->server = server; probe->listener_fd = -1; probe->client_fd = -1; probe->buffer_fd = -1; probe->guest_fence_fd = -1;
+    probe->server = server; probe->listener_fd = -1; probe->client_fd = -1; probe->buffer_fd = -1;
+    for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index)
+        probe->host_buffers[index].guest_fence_fd = -1;
     int length = snprintf(probe->socket_path, sizeof(probe->socket_path), "%s/gpu-probe.sock", runtime_dir);
     if (length <= 0 || (size_t)length >= sizeof(probe->socket_path)) goto fail;
     probe->listener_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0); if (probe->listener_fd < 0) goto fail;
@@ -257,18 +291,40 @@ bool trierarch_gpu_probe_take(struct trierarch_gpu_probe *probe, struct trierarc
 }
 
 bool trierarch_gpu_probe_take_host_buffer(struct trierarch_gpu_probe *probe, AHardwareBuffer **buffer,
-        int *client_fd, int *guest_fence_fd) {
-    if (!probe || !buffer || !client_fd || !guest_fence_fd || !probe->pending || probe->mode != CLIENT_HOST_TO_GUEST ||
-            !probe->host_buffer || probe->client_fd < 0 || probe->guest_fence_fd < 0) return false;
-    *buffer = probe->host_buffer; *client_fd = probe->client_fd; *guest_fence_fd = probe->guest_fence_fd;
-    probe->host_buffer = NULL; probe->client_fd = -1; probe->guest_fence_fd = -1;
-    probe->pending = false; probe->mode = CLIENT_NONE;
-    memset(&probe->buffer, 0, sizeof(probe->buffer)); return true;
+        uint32_t *buffer_id, int *guest_fence_fd) {
+    if (!probe || !buffer || !buffer_id || !guest_fence_fd || !probe->pending ||
+            probe->mode != CLIENT_HOST_TO_GUEST || probe->client_fd < 0) return false;
+    for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
+        struct host_buffer_slot *slot = &probe->host_buffers[index];
+        if (!slot->ready || !slot->buffer || slot->guest_fence_fd < 0) continue;
+        *buffer = slot->buffer;
+        *buffer_id = index;
+        *guest_fence_fd = slot->guest_fence_fd;
+        slot->guest_fence_fd = -1;
+        slot->ready = false;
+        probe->pending = false;
+        for (uint32_t other = 0; other < GPU_PROBE_BUFFER_COUNT; ++other)
+            probe->pending = probe->pending || probe->host_buffers[other].ready;
+        if (probe->pending)
+            trierarch_wayland_request_render(probe->server);
+        return true;
+    }
+    return false;
 }
 
 void trierarch_gpu_probe_report(int client_fd, uint32_t result, uint32_t egl_error, int fence_fd) {
     if (client_fd < 0) { if (fence_fd >= 0) close(fence_fd); return; }
-    send_result(client_fd, result, egl_error, fence_fd);
+    send_result(client_fd, result, egl_error, 0, fence_fd);
     if (fence_fd >= 0) close(fence_fd);
     close(client_fd);
+}
+
+void trierarch_gpu_probe_report_host_buffer(struct trierarch_gpu_probe *probe, uint32_t buffer_id,
+        uint32_t result, uint32_t egl_error, int fence_fd) {
+    if (!probe || probe->client_fd < 0 || buffer_id >= GPU_PROBE_BUFFER_COUNT) {
+        if (fence_fd >= 0) close(fence_fd);
+        return;
+    }
+    send_result(probe->client_fd, result, egl_error, buffer_id, fence_fd);
+    if (fence_fd >= 0) close(fence_fd);
 }

@@ -12,12 +12,12 @@ guest EGL/Mesa texture
   -> Android EGL_EXT_image_dma_buf_import
   -> Android Surface texture draw
 
-Android AHardwareBuffer allocation
+three Android AHardwareBuffer allocations
   -> runtime-inspected first native-handle FD + SCM_RIGHTS
   -> guest surfaceless EGL_EXT_image_dma_buf_import
-  -> guest GLES clear + native release fence
-  -> Android waits that fence and samples its original allocation
-  -> Android native read-complete fence -> guest waits before reuse
+  -> guest renders up to three in-flight frames + native release fences
+  -> Android waits the matching fence and samples each slot
+  -> Android read-complete fence -> guest waits before reusing that slot
 ```
 
 It answers a binary question that normal GL capability probes cannot answer:
@@ -32,13 +32,13 @@ driver rendered into?
   received Android pixel FD through a surfaceless EGL display, clears it cyan,
   exports an `EGL_ANDROID_native_fence_sync` release fence, and waits the host
   reuse fence before exit.
-- `wayland-host/src/gpu_probe.c` allocates a 256×256 RGBA
+- `wayland-host/src/gpu_probe.c` allocates three 256×256 RGBA
   `AHardwareBuffer`, dynamically queries its non-NDK native handle, and sends
   only the first FD after logging its complete shape. `renderer.c` samples the
   original Android allocation as a temporary overlay after the guest replies.
 
 The guest program reports the actual `GL_RENDERER`, surfaceless EGL extensions,
-import result, GL error, and both fence outcomes. The host reports the Android native-handle shape,
+import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes. The host reports the Android native-handle shape,
 the assumed one-plane RGBA DRM metadata, and whether Android-side sampling
 succeeded. A positive result means only that this particular Android allocator,
 guest Mesa driver, and EGL import stack interoperate; it is not yet a general
@@ -46,8 +46,8 @@ buffer queue.
 
 ## Intentionally not implemented yet
 
-A multi-buffer queue, fence timeouts/telemetry, and any production protocol
-belong to a later bridge. The current implementation intentionally rejects a
+A production queue policy, detailed fence telemetry, and any production protocol
+belong to a later bridge. This fixed three-slot probe intentionally rejects a
 native handle without a first FD, and does not claim that a multi-FD handle is
 portable merely because this test can inspect it.
 

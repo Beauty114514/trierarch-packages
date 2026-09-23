@@ -11,6 +11,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 
@@ -600,19 +601,19 @@ static int create_native_fence(struct renderer_context *renderer) {
  * renders through its exported pixel FD, then Android waits the guest release
  * fence before sampling. The reply returns a host read-complete fence. */
 static int draw_host_gpu_probe(struct renderer_context *renderer,
-        struct wayland_server *server, int *result_client_fd, int *host_fence_fd) {
-    *result_client_fd = -1;
+        struct wayland_server *server, uint32_t *buffer_id, int *host_fence_fd) {
+    *buffer_id = UINT32_MAX;
     *host_fence_fd = -1;
     if (!server->gpu_probe || !renderer->create_image || !renderer->destroy_image ||
             !renderer->image_target || !renderer->native_client_buffer) return 0;
     AHardwareBuffer *buffer = NULL;
-    int client_fd = -1;
+    uint32_t slot = UINT32_MAX;
     int guest_fence_fd = -1;
-    if (!trierarch_gpu_probe_take_host_buffer(server->gpu_probe, &buffer, &client_fd, &guest_fence_fd)) return 0;
+    if (!trierarch_gpu_probe_take_host_buffer(server->gpu_probe, &buffer, &slot, &guest_fence_fd)) return 0;
     if (!wait_native_fence(guest_fence_fd)) {
         LOGE("reverse gpu probe guest release fence wait failed: %s", strerror(errno));
-        AHardwareBuffer_release(buffer);
-        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
+        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
+                TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
         return 0;
     }
     EGLClientBuffer native_buffer = renderer->native_client_buffer(buffer);
@@ -622,8 +623,8 @@ static int draw_host_gpu_probe(struct renderer_context *renderer,
     if (image == EGL_NO_IMAGE_KHR) {
         EGLint error = eglGetError();
         LOGE("reverse gpu probe Android buffer image creation failed: 0x%x", error);
-        AHardwareBuffer_release(buffer);
-        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_FAILED, error, -1);
+        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
+                TRIERARCH_GPU_PROBE_IMPORT_FAILED, error, -1);
         return 0;
     }
     const int width = renderer->width / 4;
@@ -650,20 +651,21 @@ static int draw_host_gpu_probe(struct renderer_context *renderer,
     glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
     GLenum gl_error = glGetError();
     renderer->destroy_image(renderer->display, image);
-    AHardwareBuffer_release(buffer);
     if (gl_error != GL_NO_ERROR) {
         LOGE("reverse gpu probe Android buffer sampling failed: 0x%x", gl_error);
-        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
+        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
+                TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
         return 0;
     }
     int fence_fd = create_native_fence(renderer);
     if (fence_fd < 0) {
         LOGE("reverse gpu probe could not export host read-complete fence");
-        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, eglGetError(), -1);
+        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
+                TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, eglGetError(), -1);
         return 0;
     }
     LOGI("reverse gpu probe waited guest fence and sampled Android buffer; awaiting Android swap");
-    *result_client_fd = client_fd;
+    *buffer_id = slot;
     *host_fence_fd = fence_fd;
     return 1;
 }
@@ -709,9 +711,9 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     }
     int gpu_probe_client_fd = -1;
     (void)draw_gpu_probe(renderer, server, &gpu_probe_client_fd);
-    int host_gpu_probe_client_fd = -1;
+    uint32_t host_gpu_probe_buffer_id = UINT32_MAX;
     int host_gpu_probe_fence_fd = -1;
-    (void)draw_host_gpu_probe(renderer, server, &host_gpu_probe_client_fd, &host_gpu_probe_fence_fd);
+    (void)draw_host_gpu_probe(renderer, server, &host_gpu_probe_buffer_id, &host_gpu_probe_fence_fd);
     glDisable(GL_BLEND);
     /* Snapshot only callbacks for surfaces that participated in this output
      * composition.  A later commit cannot be completed by this swap. */
@@ -723,14 +725,16 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         trierarch_surface_requeue_frame_callbacks(server);
         trierarch_gpu_probe_report(gpu_probe_client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED,
                 eglGetError(), -1);
-        trierarch_gpu_probe_report(host_gpu_probe_client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED,
-                eglGetError(), host_gpu_probe_fence_fd);
+        if (host_gpu_probe_buffer_id != UINT32_MAX)
+            trierarch_gpu_probe_report_host_buffer(server->gpu_probe, host_gpu_probe_buffer_id,
+                    TRIERARCH_GPU_PROBE_DRAW_FAILED, eglGetError(), host_gpu_probe_fence_fd);
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
     }
     trierarch_gpu_probe_report(gpu_probe_client_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, -1);
-    trierarch_gpu_probe_report(host_gpu_probe_client_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS,
-            host_gpu_probe_fence_fd);
+    if (host_gpu_probe_buffer_id != UINT32_MAX)
+        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, host_gpu_probe_buffer_id,
+                TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, host_gpu_probe_fence_fd);
     trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     server->perf_render_count++;

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define TRIERARCH_GPU_PROBE_MAGIC 0x54524750u /* TRGP */
-#define TRIERARCH_GPU_PROBE_VERSION 3u
+#define TRIERARCH_GPU_PROBE_VERSION 4u
 
 enum trierarch_gpu_probe_message_type {
     TRIERARCH_GPU_PROBE_HELLO = 1,
@@ -45,6 +45,8 @@ struct trierarch_gpu_probe_buffer {
     uint32_t drm_format;
     uint32_t stride;
     uint64_t modifier;
+    uint32_t buffer_id;
+    uint32_t reserved;
 };
 
 struct trierarch_gpu_probe_result_message {
@@ -53,6 +55,8 @@ struct trierarch_gpu_probe_result_message {
     uint16_t type;
     uint32_t result;
     uint32_t egl_error;
+    uint32_t buffer_id;
+    uint32_t reserved;
 };
 
 /* RESULT may carry exactly one optional SCM_RIGHTS FD.  In the reverse probe
