@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="trierarch_adreno_presenter_v1">
+  <copyright>
+    Copyright 2026 Trierarch contributors
+
+    SPDX-License-Identifier: MIT
+  </copyright>
+
+  <interface name="trierarch_adreno_presenter_v1" version="1">
+    <description summary="experimental host-owned Android buffers">
+      This private protocol is intentionally not a replacement for
+      linux-dmabuf.  It is an opt-in path for a Mesa Wayland EGL presenter
+      that renders into buffers allocated by the Android host.
+
+      A client must inspect capabilities before creating a buffer.  An absent
+      capability means it must continue with its normal Wayland EGL path.
+    </description>
+
+    <enum name="capability" bitfield="true">
+      <entry name="host_buffer" value="1" summary="host can provide renderable buffers"/>
+      <entry name="explicit_sync" value="2" summary="host consumes client completion fences"/>
+    </enum>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="create_buffer">
+      <description summary="request a host-owned rendering buffer">
+        The reply is sent on the newly-created buffer object.  The client must
+        not attach or submit it before receiving ready.
+      </description>
+      <arg name="id" type="new_id" interface="trierarch_adreno_buffer_v1"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="format" type="uint" summary="DRM fourcc"/>
+      <arg name="flags" type="uint"/>
+    </request>
+
+    <event name="capabilities">
+      <arg name="flags" type="uint" enum="capability"/>
+    </event>
+  </interface>
+
+  <interface name="trierarch_adreno_buffer_v1" version="1">
+    <description summary="one host-owned rendering buffer request">
+      The host creates the wl_buffer only after it has allocated an Android
+      AHardwareBuffer and exported an importable guest handle.  wl_buffer
+      release remains the normal Wayland reuse signal.
+    </description>
+
+    <enum name="error">
+      <entry name="unsupported" value="0" summary="host presenter is unavailable"/>
+      <entry name="invalid_size" value="1" summary="dimensions are unsupported"/>
+      <entry name="invalid_format" value="2" summary="format is unsupported"/>
+      <entry name="no_memory" value="3" summary="host could not allocate a buffer"/>
+      <entry name="invalid_submission" value="4" summary="buffer cannot be submitted"/>
+    </enum>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="submit">
+      <description summary="submit rendering completion fence">
+        The client sends the native fence fd after it has rendered the buffer
+        and before the associated wl_surface commit.  The host waits for this
+        fence before sampling the Android buffer.
+      </description>
+      <arg name="acquire_fence" type="fd"/>
+    </request>
+
+    <event name="ready">
+      <description summary="host buffer is ready for guest rendering"/>
+      <arg name="buffer" type="new_id" interface="wl_buffer"/>
+      <arg name="dma_buf" type="fd"/>
+      <arg name="stride" type="uint"/>
+      <arg name="offset" type="uint"/>
+      <arg name="modifier_hi" type="uint"/>
+      <arg name="modifier_lo" type="uint"/>
+      <arg name="slot" type="uint"/>
+    </event>
+
+    <event name="failed">
+      <description summary="host could not provide the requested buffer"/>
+      <arg name="reason" type="uint" enum="error"/>
+    </event>
+  </interface>
+</protocol>

@@ -16,6 +16,7 @@ xdg_decoration_xml="$source_dir/wayland-protocols/unstable/xdg-decoration/xdg-de
 fractional_scale_xml="$source_dir/wayland-protocols/staging/fractional-scale/fractional-scale-v1.xml"
 relative_pointer_xml="$source_dir/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml"
 android_wlegl_xml="$package_dir/protocol/android-wlegl.xml"
+adreno_presenter_xml="$package_dir/protocol/trierarch-adreno-presenter-v1.xml"
 build_dir="$package_dir/build"
 ffi_prefix="$build_dir/libffi-install"
 wayland_build="$build_dir/wayland-android"
@@ -88,6 +89,8 @@ wayland-scanner server-header "$relative_pointer_xml" "$protocol_dir/relative-po
 wayland-scanner private-code "$relative_pointer_xml" "$protocol_dir/relative-pointer-unstable-v1-protocol.c"
 wayland-scanner server-header "$android_wlegl_xml" "$protocol_dir/android-wlegl-server-protocol.h"
 wayland-scanner private-code "$android_wlegl_xml" "$protocol_dir/android-wlegl-protocol.c"
+wayland-scanner server-header "$adreno_presenter_xml" "$protocol_dir/trierarch-adreno-presenter-v1-server-protocol.h"
+wayland-scanner private-code "$adreno_presenter_xml" "$protocol_dir/trierarch-adreno-presenter-v1-protocol.c"
 
 (cd "$package_dir" && "$ndk/ndk-build" NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=./Android.mk \
     NDK_APPLICATION_MK=./Application.mk NDK_LIBS_OUT="$build_dir/ndk-libs" \
