@@ -1,5 +1,6 @@
 #include "server_internal.h"
 #include "dmabuf_presentation.h"
+#include "surface_lifecycle.h"
 
 #include <stdlib.h>
 #include <android/log.h>
@@ -314,15 +315,19 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     }
     if (surface->pending_attached) {
         struct shm_buffer *pending = surface->pending;
+        struct shm_buffer *previous = surface->current;
+        enum trierarch_surface_source previous_source =
+                trierarch_surface_buffer_source(previous);
+        enum trierarch_surface_source pending_source =
+                trierarch_surface_buffer_source(pending);
         bool queued_dmabuf = pending && pending->dmabuf &&
                 trierarch_dmabuf_surface_submit(surface, pending);
-        if (pending != surface->current)
+        if (pending != previous)
             surface->perf_buffer_replacements++;
-        if (surface->current) {
-            struct shm_buffer *current = surface->current;
+        if (previous) {
             surface->current = NULL;
-            surface_release_buffer(current);
-            surface_drop_buffer_reference(current);
+            surface_release_buffer(previous);
+            surface_drop_buffer_reference(previous);
         }
         if (!queued_dmabuf)
             trierarch_dmabuf_surface_retire(surface);
@@ -342,6 +347,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
             surface->height = 0;
             surface->mapped = false;
         }
+        trierarch_surface_log_lifecycle_transition(surface, previous_source, pending_source);
         surface->damaged = true;
     }
     if (surface->xdg_surface && !surface->configured)

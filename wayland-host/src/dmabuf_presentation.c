@@ -3,6 +3,10 @@
 #include "dmabuf_frame_queue.h"
 #include "server_internal.h"
 
+#include <android/log.h>
+
+#define TRIERARCH_TAG "TrierarchWayland"
+
 bool trierarch_dmabuf_surface_submit(struct compositor_surface *surface,
         struct shm_buffer *buffer) {
     if (!surface || !buffer || !buffer->dmabuf || !buffer->dmabuf_record)
@@ -28,12 +32,20 @@ bool trierarch_dmabuf_surface_submit(struct compositor_surface *surface,
 void trierarch_dmabuf_surface_retire(struct compositor_surface *surface) {
     if (!surface)
         return;
+    bool had_presented_frame = surface->dmabuf_presented_frame != NULL;
+    size_t queued_frames = surface->dmabuf_frames
+            ? trierarch_dmabuf_frame_queue_size(surface->dmabuf_frames) : 0;
     if (surface->dmabuf_presented_frame) {
         trierarch_dmabuf_frame_unref(surface->dmabuf_presented_frame);
         surface->dmabuf_presented_frame = NULL;
     }
     if (surface->dmabuf_frames)
         trierarch_dmabuf_frame_queue_clear(surface->dmabuf_frames);
+    if (had_presented_frame || queued_frames) {
+        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                "dma-buf presentation retired: surface=%u active=%d queued=%zu",
+                wl_resource_get_id(surface->wl_surface), had_presented_frame, queued_frames);
+    }
 }
 
 void trierarch_dmabuf_surface_destroy(struct compositor_surface *surface) {

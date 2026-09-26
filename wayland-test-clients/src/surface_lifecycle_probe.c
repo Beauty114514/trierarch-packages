@@ -89,12 +89,14 @@ static struct wl_buffer *create_solid_buffer(struct wl_shm *shm, uint32_t color)
 
 static int commit_buffer(struct wl_display *display, struct wl_surface *surface,
         struct wl_buffer *buffer, const char *state) {
-    fprintf(stdout, "%s\n", state);
     wl_surface_attach(surface, buffer, 0, 0);
     if (buffer)
         wl_surface_damage_buffer(surface, 0, 0, BUFFER_WIDTH, BUFFER_HEIGHT);
     wl_surface_commit(surface);
-    return wl_display_flush(display) < 0 && errno != EAGAIN ? -1 : 0;
+    if (wl_display_roundtrip(display) < 0)
+        return -1;
+    fprintf(stdout, "%s (host acknowledged)\n", state);
+    return 0;
 }
 
 static int parse_hold_ms(int argc, char **argv, long *hold_ms) {
@@ -159,7 +161,7 @@ int main(int argc, char **argv) {
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
     if (status != 0) {
-        fprintf(stderr, "Wayland display flush failed.\n");
+        fprintf(stderr, "Wayland commit roundtrip failed.\n");
         return EXIT_FAILURE;
     }
     fprintf(stdout, "probe: complete\n");
