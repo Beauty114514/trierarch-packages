@@ -26,9 +26,11 @@ bash scripts/build-linux.sh
 ```
 
 For an arm64 cross-build, reuse the Debian Wayland client sysroot already
-prepared for `wayland-ime-bridge`:
+prepared for `wayland-ime-bridge`, then extend it with the small GBM/DRM
+development subset used by the export probe:
 
 ```sh
+./scripts/fetch-debian-arm64-sysroot.sh
 CC=aarch64-linux-gnu-gcc bash scripts/build-linux.sh
 ```
 
@@ -42,3 +44,14 @@ dist/trierarch-surface-lifecycle-probe --hold-ms 1500
 
 The host should show red, blank, then green.  A later dma-buf probe will use
 the same direct-parent model.
+
+## GBM dma-buf export probe
+
+`trierarch-gbm-export-probe` has no Wayland connection. It opens the guest
+render node, creates a linear `XRGB8888` GBM buffer, and calls
+`gbm_bo_get_fd()`. A successful result proves that the guest can produce a
+real dma-buf FD before that FD is ever handed to Trierarch's Wayland host.
+
+```sh
+dist/trierarch-gbm-export-probe
+```
