@@ -1,4 +1,5 @@
 #include "server_internal.h"
+#include "dmabuf_frame_queue.h"
 
 #include <stdlib.h>
 #include <android/log.h>
@@ -33,6 +34,46 @@ static void surface_drop_buffer_reference(struct shm_buffer *buffer) {
         trierarch_dmabuf_buffer_unref(buffer);
     else if (buffer->egl_buffer)
         free(buffer);
+}
+
+static void surface_release_buffer(struct shm_buffer *buffer) {
+    if (!buffer)
+        return;
+    if (!buffer->dmabuf || !buffer->dmabuf_presentation_uses)
+        trierarch_shm_buffer_release(buffer);
+}
+
+static void surface_retire_dmabuf_frames(struct compositor_surface *surface) {
+    if (!surface)
+        return;
+    if (surface->dmabuf_presented_frame) {
+        trierarch_dmabuf_frame_unref(surface->dmabuf_presented_frame);
+        surface->dmabuf_presented_frame = NULL;
+    }
+    if (surface->dmabuf_frames)
+        trierarch_dmabuf_frame_queue_clear(surface->dmabuf_frames);
+}
+
+static bool surface_queue_dmabuf_frame(struct compositor_surface *surface,
+        struct shm_buffer *buffer) {
+    if (!surface || !buffer || !buffer->dmabuf || !buffer->dmabuf_record)
+        return false;
+    if (!surface->dmabuf_frames) {
+        surface->dmabuf_frames = trierarch_dmabuf_frame_queue_create();
+        if (!surface->dmabuf_frames)
+            return false;
+    }
+    struct trierarch_dmabuf_frame *frame = trierarch_dmabuf_frame_create(
+            buffer->dmabuf_record, -1, ++surface->dmabuf_frame_sequence);
+    if (!frame)
+        return false;
+    buffer->dmabuf_presentation_uses++;
+    trierarch_dmabuf_frame_set_retire_callback(frame,
+            trierarch_dmabuf_buffer_retire_presentation, buffer);
+    if (trierarch_dmabuf_frame_queue_push(surface->dmabuf_frames, frame))
+        return true;
+    trierarch_dmabuf_frame_unref(frame);
+    return false;
 }
 
 static void surface_set_pending_buffer(struct compositor_surface *surface,
@@ -219,16 +260,21 @@ static void surface_resource_destroy(struct wl_resource *resource) {
         surface->server->cursor_hotspot_y = 0;
     }
     trierarch_wayland_request_render(surface->server);
+    surface_retire_dmabuf_frames(surface);
     if (surface->current) {
         struct shm_buffer *current = surface->current;
         surface->current = NULL;
-        trierarch_shm_buffer_release(current);
+        surface_release_buffer(current);
         surface_drop_buffer_reference(current);
     }
     if (surface->pending) {
         struct shm_buffer *pending = surface->pending;
         surface->pending = NULL;
         surface_drop_buffer_reference(pending);
+    }
+    if (surface->dmabuf_frames) {
+        trierarch_dmabuf_frame_queue_destroy(surface->dmabuf_frames);
+        surface->dmabuf_frames = NULL;
     }
     wl_list_remove(&surface->link);
     free(surface);
@@ -301,14 +347,18 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
         wl_list_init(&surface->pending_frame_callbacks);
     }
     if (surface->pending) {
+        bool queued_dmabuf = surface->pending->dmabuf &&
+                surface_queue_dmabuf_frame(surface, surface->pending);
         if (surface->pending != surface->current)
             surface->perf_buffer_replacements++;
         if (surface->current) {
             struct shm_buffer *current = surface->current;
             surface->current = NULL;
-            trierarch_shm_buffer_release(current);
+            surface_release_buffer(current);
             surface_drop_buffer_reference(current);
         }
+        if (!queued_dmabuf)
+            surface_retire_dmabuf_frames(surface);
         surface->current = surface->pending;
         surface->current->busy = true;
         surface->pending = NULL;
@@ -323,6 +373,21 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
     trierarch_wayland_request_render(surface->server);
+}
+
+void trierarch_surface_latch_dmabuf_frames(struct wayland_server *server) {
+    if (!server)
+        return;
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        struct trierarch_dmabuf_frame *latest = surface->dmabuf_frames
+                ? trierarch_dmabuf_frame_queue_take_latest(surface->dmabuf_frames) : NULL;
+        if (!latest)
+            continue;
+        if (surface->dmabuf_presented_frame)
+            trierarch_dmabuf_frame_unref(surface->dmabuf_presented_frame);
+        surface->dmabuf_presented_frame = latest;
+    }
 }
 
 static bool surface_participates_in_output(const struct wayland_server *server,

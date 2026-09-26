@@ -20,6 +20,7 @@ struct trierarch_dmabuf_frame_queue;
 /* Called exactly once, immediately before the record's canonical fd is closed.
  * `data` is owned by the caller and is never interpreted by this module. */
 typedef void (*trierarch_dmabuf_record_destroy_fn)(void *data);
+typedef void (*trierarch_dmabuf_frame_retire_fn)(void *data);
 
 /* Takes ownership of canonical_fd. `data` and destroy are for the future
  * Wayland/import adapter; they permit it to tear down side data at the same
@@ -37,6 +38,10 @@ void *trierarch_dmabuf_record_data(const struct trierarch_dmabuf_record *record)
 struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_create(
         struct trierarch_dmabuf_record *record, int acquire_fence_fd,
         uint64_t sequence);
+/* Installs an optional one-shot callback run while the frame still owns its
+ * record, immediately before its fds and record reference are released. */
+void trierarch_dmabuf_frame_set_retire_callback(struct trierarch_dmabuf_frame *frame,
+        trierarch_dmabuf_frame_retire_fn retire, void *data);
 void trierarch_dmabuf_frame_ref(struct trierarch_dmabuf_frame *frame);
 void trierarch_dmabuf_frame_unref(struct trierarch_dmabuf_frame *frame);
 int trierarch_dmabuf_frame_fd(const struct trierarch_dmabuf_frame *frame);

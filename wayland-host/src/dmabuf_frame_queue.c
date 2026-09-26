@@ -19,6 +19,8 @@ struct trierarch_dmabuf_frame {
     int fd;
     int acquire_fence_fd;
     uint64_t sequence;
+    trierarch_dmabuf_frame_retire_fn retire;
+    void *retire_data;
     struct trierarch_dmabuf_frame *next;
 };
 
@@ -110,6 +112,14 @@ struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_create(
     return frame;
 }
 
+void trierarch_dmabuf_frame_set_retire_callback(struct trierarch_dmabuf_frame *frame,
+        trierarch_dmabuf_frame_retire_fn retire, void *data) {
+    if (!frame)
+        return;
+    frame->retire = retire;
+    frame->retire_data = data;
+}
+
 void trierarch_dmabuf_frame_ref(struct trierarch_dmabuf_frame *frame) {
     if (frame)
         atomic_fetch_add_explicit(&frame->references, 1, memory_order_relaxed);
@@ -119,6 +129,8 @@ void trierarch_dmabuf_frame_unref(struct trierarch_dmabuf_frame *frame) {
     if (!frame || atomic_fetch_sub_explicit(&frame->references, 1,
             memory_order_acq_rel) != 1)
         return;
+    if (frame->retire)
+        frame->retire(frame->retire_data);
     if (frame->fd >= 0)
         close(frame->fd);
     if (frame->acquire_fence_fd >= 0)

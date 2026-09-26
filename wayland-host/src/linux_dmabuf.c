@@ -343,6 +343,15 @@ void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer) {
         wl_buffer_send_release(buffer->resource);
 }
 
+void trierarch_dmabuf_buffer_retire_presentation(void *data) {
+    struct shm_buffer *buffer = data;
+    if (!buffer || !buffer->dmabuf || !buffer->dmabuf_presentation_uses)
+        return;
+    buffer->dmabuf_presentation_uses--;
+    if (!buffer->dmabuf_presentation_uses)
+        trierarch_dmabuf_buffer_release(buffer);
+}
+
 void trierarch_dmabuf_buffer_ref(struct shm_buffer *buffer) {
     if (buffer && buffer->dmabuf_record)
         trierarch_dmabuf_record_ref(buffer->dmabuf_record);

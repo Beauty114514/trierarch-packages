@@ -9,10 +9,16 @@
 #include <unistd.h>
 
 static unsigned int destroyed;
+static unsigned int retired;
 
 static void record_destroy(void *data) {
     assert(data == (void *)(uintptr_t)0x1234);
     destroyed++;
+}
+
+static void frame_retire(void *data) {
+    assert(data == (void *)(uintptr_t)0x5678);
+    retired++;
 }
 
 static int make_fd(void) {
@@ -31,6 +37,8 @@ static void test_destroy_before_frame_retire(void) {
     assert(fence >= 0);
     struct trierarch_dmabuf_frame *frame = trierarch_dmabuf_frame_create(record, fence, 1);
     assert(frame);
+    trierarch_dmabuf_frame_set_retire_callback(frame, frame_retire,
+            (void *)(uintptr_t)0x5678);
     assert(trierarch_dmabuf_frame_fd(frame) >= 0);
 
     /* Simulates wl_buffer.destroy: the resource reference disappears first. */
@@ -40,6 +48,7 @@ static void test_destroy_before_frame_retire(void) {
     assert(fcntl(trierarch_dmabuf_frame_acquire_fence_fd(frame), F_GETFD) >= 0);
 
     trierarch_dmabuf_frame_unref(frame);
+    assert(retired == 1);
     assert(destroyed == 1);
     errno = 0;
     assert(fcntl(canonical_fd, F_GETFD) == -1 && errno == EBADF);
@@ -59,6 +68,10 @@ static void test_latest_retires_older_frames(void) {
     struct trierarch_dmabuf_frame *old = trierarch_dmabuf_frame_create(record, old_fence, 10);
     struct trierarch_dmabuf_frame *latest = trierarch_dmabuf_frame_create(record, latest_fence, 11);
     assert(old && latest);
+    trierarch_dmabuf_frame_set_retire_callback(old, frame_retire,
+            (void *)(uintptr_t)0x5678);
+    trierarch_dmabuf_frame_set_retire_callback(latest, frame_retire,
+            (void *)(uintptr_t)0x5678);
     assert(trierarch_dmabuf_frame_queue_push(queue, old));
     assert(trierarch_dmabuf_frame_queue_push(queue, latest));
     assert(trierarch_dmabuf_frame_queue_size(queue) == 2);
@@ -69,9 +82,11 @@ static void test_latest_retires_older_frames(void) {
     assert(trierarch_dmabuf_frame_queue_size(queue) == 0);
     errno = 0;
     assert(fcntl(old_fence, F_GETFD) == -1 && errno == EBADF);
+    assert(retired == 2);
     assert(fcntl(trierarch_dmabuf_frame_acquire_fence_fd(taken), F_GETFD) >= 0);
 
     trierarch_dmabuf_frame_unref(taken);
+    assert(retired == 3);
     trierarch_dmabuf_frame_queue_destroy(queue);
     trierarch_dmabuf_record_unref(record);
     assert(destroyed == 2);
@@ -88,9 +103,12 @@ static void test_queue_clear_releases_everything(void) {
         struct trierarch_dmabuf_frame *frame = trierarch_dmabuf_frame_create(record,
                 eventfd(0, EFD_CLOEXEC), sequence);
         assert(frame);
+        trierarch_dmabuf_frame_set_retire_callback(frame, frame_retire,
+                (void *)(uintptr_t)0x5678);
         assert(trierarch_dmabuf_frame_queue_push(queue, frame));
     }
     trierarch_dmabuf_frame_queue_clear(queue);
+    assert(retired == 6);
     assert(trierarch_dmabuf_frame_queue_size(queue) == 0);
     trierarch_dmabuf_frame_queue_destroy(queue);
     trierarch_dmabuf_record_unref(record);

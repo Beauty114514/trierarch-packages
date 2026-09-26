@@ -40,6 +40,9 @@ struct shm_buffer {
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
+    /* A dma-buf may be queued or currently presented after its client has
+     * detached it. Release the guest buffer only once every such use retires. */
+    uint32_t dmabuf_presentation_uses;
     /* The client wl_buffer resource may disappear before a surface or renderer
      * has finished using this dma-buf.  The record owns the canonical fd and
      * keeps this wrapper alive until every such reference is dropped. */
@@ -49,6 +52,8 @@ struct shm_buffer {
 
 struct trierarch_gpu_probe;
 struct trierarch_dmabuf_record;
+struct trierarch_dmabuf_frame;
+struct trierarch_dmabuf_frame_queue;
 
 struct compositor_surface {
     struct wl_list link;
@@ -69,6 +74,9 @@ struct compositor_surface {
     int32_t buffer_scale;
     struct shm_buffer *current;
     struct shm_buffer *pending;
+    struct trierarch_dmabuf_frame_queue *dmabuf_frames;
+    struct trierarch_dmabuf_frame *dmabuf_presented_frame;
+    uint64_t dmabuf_frame_sequence;
     int32_t width;
     int32_t height;
     bool configured;
@@ -208,6 +216,7 @@ void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
+void trierarch_surface_latch_dmabuf_frames(struct wayland_server *server);
 void trierarch_surface_send_configure(struct compositor_surface *surface);
 void trierarch_surface_latch_frame_callbacks(struct wayland_server *server);
 void trierarch_surface_requeue_frame_callbacks(struct wayland_server *server);
@@ -218,6 +227,7 @@ struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resour
 void trierarch_shm_buffer_release(struct shm_buffer *buffer);
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource);
 void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer);
+void trierarch_dmabuf_buffer_retire_presentation(void *data);
 void trierarch_dmabuf_buffer_ref(struct shm_buffer *buffer);
 void trierarch_dmabuf_buffer_unref(struct shm_buffer *buffer);
 void trierarch_dmabuf_bind(struct wl_client *, void *, uint32_t, uint32_t);
