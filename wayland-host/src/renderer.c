@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "server_internal.h"
+#include "dmabuf_frame_queue.h"
 #include "dmabuf_presentation.h"
 #include "gpu_probe.h"
 
@@ -333,9 +334,41 @@ bool trierarch_renderer_valid(const struct renderer_context *renderer) {
     return renderer && renderer->valid;
 }
 
+struct render_buffer_source {
+    struct shm_buffer *buffer;
+    int dmabuf_fd;
+};
+
+/* wl_shm has no asynchronous presentation lease, so its current surface
+ * buffer remains the render source.  A DMA-BUF is different: a commit creates
+ * a frame-owned FD and the presentation queue selects one such frame for this
+ * repaint.  Never fall back to the record's canonical FD here, otherwise the
+ * queue would govern release while the renderer read a different owner. */
+static struct render_buffer_source surface_render_source(
+        struct compositor_surface *surface) {
+    struct render_buffer_source source = {
+        .buffer = surface ? surface->current : NULL,
+        .dmabuf_fd = -1,
+    };
+    if (!source.buffer || !source.buffer->dmabuf)
+        return source;
+    struct trierarch_dmabuf_frame *frame = surface->dmabuf_presented_frame;
+    struct trierarch_dmabuf_record *record = trierarch_dmabuf_frame_record(frame);
+    struct shm_buffer *buffer = trierarch_dmabuf_record_data(record);
+    int fd = trierarch_dmabuf_frame_fd(frame);
+    if (!buffer || !buffer->dmabuf || fd < 0) {
+        source.buffer = NULL;
+        return source;
+    }
+    source.buffer = buffer;
+    source.dmabuf_fd = fd;
+    return source;
+}
+
 static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
-    struct shm_buffer *buffer = surface->current;
+    struct render_buffer_source source = surface_render_source(surface);
+    struct shm_buffer *buffer = source.buffer;
     if (!buffer) return;
     int scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
     int width = surface->viewport_destination_set ? surface->viewport_destination_width : buffer->width / scale;
@@ -370,9 +403,9 @@ static void draw_surface(struct renderer_context *renderer,
                 EGL_WAYLAND_BUFFER_WL, (EGLClientBuffer)buffer->egl_resource, NULL);
         if (image != EGL_NO_IMAGE_KHR) { renderer->image_target(GL_TEXTURE_2D, image); swizzle = 0.0f; opaque = 0.0f; }
     }
-    if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && buffer->dmabuf_fd >= 0 &&
+    if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && source.dmabuf_fd >= 0 &&
             renderer->dmabuf_import_supported) {
-        int fd = dup(buffer->dmabuf_fd);
+        int fd = dup(source.dmabuf_fd);
         if (fd >= 0) {
             const EGLint basic_attributes[] = {
                 EGL_WIDTH, buffer->width,
@@ -388,7 +421,7 @@ static void draw_surface(struct renderer_context *renderer,
             close(fd);
         }
         if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf_modifier != DRM_FORMAT_MOD_INVALID) {
-            int fd = dup(buffer->dmabuf_fd);
+            int fd = dup(source.dmabuf_fd);
             if (fd >= 0) {
                 const EGLint modifier_attributes[] = {
                     EGL_WIDTH, buffer->width,
@@ -471,11 +504,8 @@ static void draw_surface(struct renderer_context *renderer,
     glDrawArrays(GL_TRIANGLE_STRIP,0,4);
     glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
     if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image) renderer->destroy_image(renderer->display,image);
-    /* `surface->current` remains the source for later redraws until a new
-     * wl_surface.commit replaces it.  Releasing here would let the client
-     * destroy or reuse the wl_buffer while this surface still points at it.
-     * surface_commit()/surface_resource_destroy() release it at the point
-     * where the compositor actually stops using it. */
+    /* SHM stays current until a later commit replaces it. DMA-BUF ownership is
+     * instead held by dmabuf_presented_frame and retired by its queue path. */
 }
 
 static void draw_surface_tree(struct renderer_context *renderer,
