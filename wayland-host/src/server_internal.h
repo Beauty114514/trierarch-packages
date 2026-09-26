@@ -216,7 +216,6 @@ void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
-void trierarch_surface_latch_dmabuf_frames(struct wayland_server *server);
 void trierarch_surface_send_configure(struct compositor_surface *surface);
 void trierarch_surface_latch_frame_callbacks(struct wayland_server *server);
 void trierarch_surface_requeue_frame_callbacks(struct wayland_server *server);

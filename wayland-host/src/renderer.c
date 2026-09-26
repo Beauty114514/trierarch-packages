@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "server_internal.h"
+#include "dmabuf_presentation.h"
 #include "gpu_probe.h"
 
 #include <EGL/egl.h>
@@ -695,7 +696,7 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     /* Promote one mailbox frame per surface immediately before composition.
      * Older queued dma-buf frames retire here; the selected one stays leased
      * until a later commit replaces it or the surface disappears. */
-    trierarch_surface_latch_dmabuf_frames(server);
+    trierarch_dmabuf_surface_latch_frames(server);
     struct compositor_surface *surface;
     /* Plasma uses tiny viewport-scaled root buffers during startup. Draw those
      * first so they cannot cover the actual desktop surface. */
