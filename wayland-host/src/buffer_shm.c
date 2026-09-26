@@ -212,6 +212,10 @@ struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resour
 }
 
 void trierarch_shm_buffer_release(struct shm_buffer *buffer) {
+    if (buffer && buffer->dmabuf) {
+        trierarch_dmabuf_buffer_release(buffer);
+        return;
+    }
     if (!buffer || !buffer->resource || !buffer->busy) return;
     buffer->busy = false;
     wl_buffer_send_release(buffer->resource);

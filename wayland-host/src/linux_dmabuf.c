@@ -1,4 +1,5 @@
 #include "server_internal.h"
+#include "dmabuf_frame_queue.h"
 
 #include <android/log.h>
 #include <errno.h>
@@ -42,15 +43,23 @@ static bool supported_format(uint32_t format) {
             format == DRM_FORMAT_XBGR8888 || format == DRM_FORMAT_ABGR8888;
 }
 
+static void dmabuf_record_destroy(void *data) {
+    struct shm_buffer *buffer = data;
+    if (!buffer)
+        return;
+    if (buffer->dmabuf_mapping)
+        munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
+    free(buffer);
+}
+
 static void dmabuf_buffer_destroy(struct wl_resource *resource) {
     struct shm_buffer *buffer = wl_resource_get_user_data(resource);
     if (!buffer) return;
     buffer->resource = NULL;
-    if (buffer->dmabuf_mapping)
-        munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
-    if (buffer->dmabuf_fd >= 0)
-        close(buffer->dmabuf_fd);
-    free(buffer);
+    /* wl_buffer.destroy is allowed while a committed surface is still being
+     * read. Surface references keep the record (and therefore the fd/mapping)
+     * alive until the last use has retired. */
+    trierarch_dmabuf_buffer_unref(buffer);
 }
 
 static void dmabuf_buffer_destroy_request(struct wl_client *client,
@@ -85,7 +94,6 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
         return NULL;
     }
     buffer->dmabuf = true;
-    buffer->dmabuf_fd = params->fd;
     buffer->dmabuf_mapping = mapping;
     buffer->dmabuf_mapping_size = mapping ? end : 0;
     buffer->data = mapping ? (char *)mapping + params->offset : NULL;
@@ -96,13 +104,19 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     buffer->format = format;
     buffer->dmabuf_modifier = params->modifier;
     buffer->dmabuf_offset = params->offset;
-    buffer->dmabuf_fd = params->fd;
-    params->fd = -1;
+    buffer->dmabuf_record = trierarch_dmabuf_record_create(params->fd, buffer,
+            dmabuf_record_destroy);
+    params->fd = -1; /* The record now owns the canonical dma-buf fd. */
+    if (!buffer->dmabuf_record) {
+        /* record_create closes the fd on allocation failure. */
+        if (mapping) munmap(mapping, end);
+        free(buffer);
+        return NULL;
+    }
+    buffer->dmabuf_fd = trierarch_dmabuf_record_fd(buffer->dmabuf_record);
     buffer->resource = wl_resource_create(client, &wl_buffer_interface, 1, id);
     if (!buffer->resource) {
-        if (mapping) munmap(mapping, end);
-        close(buffer->dmabuf_fd);
-        free(buffer);
+        trierarch_dmabuf_buffer_unref(buffer);
         return NULL;
     }
     wl_resource_set_implementation(buffer->resource, &dmabuf_buffer_impl,
@@ -323,7 +337,18 @@ struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *res
 }
 
 void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer) {
-    if (!buffer || !buffer->resource || !buffer->busy) return;
+    if (!buffer || !buffer->dmabuf || !buffer->busy) return;
     buffer->busy = false;
-    wl_buffer_send_release(buffer->resource);
+    if (buffer->resource)
+        wl_buffer_send_release(buffer->resource);
+}
+
+void trierarch_dmabuf_buffer_ref(struct shm_buffer *buffer) {
+    if (buffer && buffer->dmabuf_record)
+        trierarch_dmabuf_record_ref(buffer->dmabuf_record);
+}
+
+void trierarch_dmabuf_buffer_unref(struct shm_buffer *buffer) {
+    if (buffer && buffer->dmabuf_record)
+        trierarch_dmabuf_record_unref(buffer->dmabuf_record);
 }

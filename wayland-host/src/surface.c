@@ -26,6 +26,25 @@ static const struct wl_region_interface region_impl = {
     .subtract = region_subtract,
 };
 
+static void surface_drop_buffer_reference(struct shm_buffer *buffer) {
+    if (!buffer)
+        return;
+    if (buffer->dmabuf)
+        trierarch_dmabuf_buffer_unref(buffer);
+    else if (buffer->egl_buffer)
+        free(buffer);
+}
+
+static void surface_set_pending_buffer(struct compositor_surface *surface,
+        struct shm_buffer *buffer) {
+    if (!surface || surface->pending == buffer)
+        return;
+    if (buffer && buffer->dmabuf)
+        trierarch_dmabuf_buffer_ref(buffer);
+    surface_drop_buffer_reference(surface->pending);
+    surface->pending = buffer;
+}
+
 static void compositor_create_region(struct wl_client *client,
         struct wl_resource *resource, uint32_t id) {
     struct wl_resource *region = wl_resource_create(
@@ -75,18 +94,21 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
                 "non-zero buffer offsets are not supported");
         return;
     }
-    surface->pending = buffer_resource
+    struct shm_buffer *pending = buffer_resource
             ? trierarch_shm_buffer_from_resource(buffer_resource) : NULL;
-    if (buffer_resource && !surface->pending)
-        surface->pending = trierarch_dmabuf_buffer_from_resource(buffer_resource);
-    if (buffer_resource && !surface->pending)
-        surface->pending = trierarch_android_buffer_from_resource(buffer_resource);
-    if (buffer_resource && !surface->pending)
-        surface->pending = trierarch_egl_buffer_from_resource(buffer_resource, surface->server);
-    if (buffer_resource && !surface->pending) {
+    if (buffer_resource && !pending)
+        pending = trierarch_dmabuf_buffer_from_resource(buffer_resource);
+    if (buffer_resource && !pending)
+        pending = trierarch_android_buffer_from_resource(buffer_resource);
+    if (buffer_resource && !pending)
+        pending = trierarch_egl_buffer_from_resource(buffer_resource, surface->server);
+    if (buffer_resource && !pending) {
         wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SIZE,
                 "unsupported wl_buffer type");
-    } else if (surface->pending) {
+    } else {
+        surface_set_pending_buffer(surface, pending);
+    }
+    if (surface->pending) {
         static unsigned int attach_logs;
         if (attach_logs++ < 64) {
             __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
@@ -199,11 +221,15 @@ static void surface_resource_destroy(struct wl_resource *resource) {
     trierarch_wayland_request_render(surface->server);
     if (surface->current) {
         struct shm_buffer *current = surface->current;
+        surface->current = NULL;
         trierarch_shm_buffer_release(current);
-        if (current->egl_buffer) free(current);
+        surface_drop_buffer_reference(current);
     }
-    if (surface->pending && surface->pending->egl_buffer)
-        free(surface->pending);
+    if (surface->pending) {
+        struct shm_buffer *pending = surface->pending;
+        surface->pending = NULL;
+        surface_drop_buffer_reference(pending);
+    }
     wl_list_remove(&surface->link);
     free(surface);
 }
@@ -279,8 +305,9 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
             surface->perf_buffer_replacements++;
         if (surface->current) {
             struct shm_buffer *current = surface->current;
+            surface->current = NULL;
             trierarch_shm_buffer_release(current);
-            if (current->egl_buffer) free(current);
+            surface_drop_buffer_reference(current);
         }
         surface->current = surface->pending;
         surface->current->busy = true;

@@ -40,10 +40,15 @@ struct shm_buffer {
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
+    /* The client wl_buffer resource may disappear before a surface or renderer
+     * has finished using this dma-buf.  The record owns the canonical fd and
+     * keeps this wrapper alive until every such reference is dropped. */
+    struct trierarch_dmabuf_record *dmabuf_record;
     struct wl_list pool_link;
 };
 
 struct trierarch_gpu_probe;
+struct trierarch_dmabuf_record;
 
 struct compositor_surface {
     struct wl_list link;
@@ -213,6 +218,8 @@ struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resour
 void trierarch_shm_buffer_release(struct shm_buffer *buffer);
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource);
 void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer);
+void trierarch_dmabuf_buffer_ref(struct shm_buffer *buffer);
+void trierarch_dmabuf_buffer_unref(struct shm_buffer *buffer);
 void trierarch_dmabuf_bind(struct wl_client *, void *, uint32_t, uint32_t);
 struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resource,
         struct wayland_server *server);
