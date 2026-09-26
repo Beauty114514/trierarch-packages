@@ -74,6 +74,10 @@ struct compositor_surface {
     int32_t buffer_scale;
     struct shm_buffer *current;
     struct shm_buffer *pending;
+    /* A NULL pending buffer is meaningful only when an attach happened in
+     * this commit cycle: wl_surface.attach(NULL) unmaps the surface, while a
+     * commit without attach keeps the current buffer. */
+    bool pending_attached;
     struct trierarch_dmabuf_frame_queue *dmabuf_frames;
     struct trierarch_dmabuf_frame *dmabuf_presented_frame;
     uint64_t dmabuf_frame_sequence;

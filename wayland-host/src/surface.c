@@ -45,12 +45,15 @@ static void surface_release_buffer(struct shm_buffer *buffer) {
 
 static void surface_set_pending_buffer(struct compositor_surface *surface,
         struct shm_buffer *buffer) {
-    if (!surface || surface->pending == buffer)
+    if (!surface)
         return;
-    if (buffer && buffer->dmabuf)
-        trierarch_dmabuf_buffer_ref(buffer);
-    surface_drop_buffer_reference(surface->pending);
-    surface->pending = buffer;
+    if (surface->pending != buffer) {
+        if (buffer && buffer->dmabuf)
+            trierarch_dmabuf_buffer_ref(buffer);
+        surface_drop_buffer_reference(surface->pending);
+        surface->pending = buffer;
+    }
+    surface->pending_attached = true;
 }
 
 static void compositor_create_region(struct wl_client *client,
@@ -309,10 +312,11 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
                 &surface->pending_frame_callbacks);
         wl_list_init(&surface->pending_frame_callbacks);
     }
-    if (surface->pending) {
-        bool queued_dmabuf = surface->pending->dmabuf &&
-                trierarch_dmabuf_surface_submit(surface, surface->pending);
-        if (surface->pending != surface->current)
+    if (surface->pending_attached) {
+        struct shm_buffer *pending = surface->pending;
+        bool queued_dmabuf = pending && pending->dmabuf &&
+                trierarch_dmabuf_surface_submit(surface, pending);
+        if (pending != surface->current)
             surface->perf_buffer_replacements++;
         if (surface->current) {
             struct shm_buffer *current = surface->current;
@@ -322,16 +326,23 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
         }
         if (!queued_dmabuf)
             trierarch_dmabuf_surface_retire(surface);
-        surface->current = surface->pending;
-        surface->current->busy = true;
+        surface->current = pending;
         surface->pending = NULL;
-        surface->width = surface->current->width;
-        surface->height = surface->current->height;
-        surface->mapped = true;
+        surface->pending_attached = false;
+        if (surface->current) {
+            surface->current->busy = true;
+            surface->width = surface->current->width;
+            surface->height = surface->current->height;
+            surface->mapped = true;
+            /* Nested compositors such as KWin wait for the surface to enter
+             * an output before committing their real desktop buffer. */
+            trierarch_output_enter_surface(surface->server, surface->wl_surface);
+        } else {
+            surface->width = 0;
+            surface->height = 0;
+            surface->mapped = false;
+        }
         surface->damaged = true;
-        /* Nested compositors such as KWin wait for the surface to enter an
-         * output before committing their real desktop buffer. */
-        trierarch_output_enter_surface(surface->server, surface->wl_surface);
     }
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
