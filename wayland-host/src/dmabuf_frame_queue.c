@@ -183,22 +183,6 @@ enum trierarch_dmabuf_frame_readiness trierarch_dmabuf_frame_readiness(
     return TRIERARCH_DMABUF_FRAME_READY;
 }
 
-bool trierarch_dmabuf_frame_wait_acquire_fence(struct trierarch_dmabuf_frame *frame) {
-    if (!frame || frame->acquire_fence_fd < 0)
-        return true;
-    struct pollfd pollfd = {
-        .fd = frame->acquire_fence_fd,
-        .events = POLLIN,
-    };
-    int result;
-    do {
-        result = poll(&pollfd, 1, -1);
-    } while (result < 0 && errno == EINTR);
-    close(frame->acquire_fence_fd);
-    frame->acquire_fence_fd = -1;
-    return result == 1 && !(pollfd.revents & (POLLERR | POLLNVAL));
-}
-
 uint64_t trierarch_dmabuf_frame_sequence(const struct trierarch_dmabuf_frame *frame) {
     return frame ? frame->sequence : 0;
 }
@@ -298,6 +282,46 @@ struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_queue_take_latest(
     }
     latest->next = NULL;
     return latest;
+}
+
+struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_queue_take_latest_ready(
+        struct trierarch_dmabuf_frame_queue *queue,
+        enum trierarch_dmabuf_frame_readiness *head_readiness) {
+    if (head_readiness)
+        *head_readiness = TRIERARCH_DMABUF_FRAME_READY;
+    if (!queue)
+        return NULL;
+    pthread_mutex_lock(&queue->lock);
+    struct trierarch_dmabuf_frame *head = queue->head;
+    struct trierarch_dmabuf_frame *candidate = NULL;
+    size_t consumed = 0;
+    enum trierarch_dmabuf_frame_readiness readiness = TRIERARCH_DMABUF_FRAME_READY;
+    for (struct trierarch_dmabuf_frame *frame = head; frame; frame = frame->next) {
+        readiness = trierarch_dmabuf_frame_readiness(frame);
+        if (readiness != TRIERARCH_DMABUF_FRAME_READY)
+            break;
+        candidate = frame;
+        consumed++;
+    }
+    if (!candidate) {
+        if (head_readiness && head)
+            *head_readiness = readiness;
+        pthread_mutex_unlock(&queue->lock);
+        return NULL;
+    }
+    queue->head = candidate->next;
+    if (!queue->head)
+        queue->tail = NULL;
+    queue->size -= consumed;
+    candidate->next = NULL;
+    pthread_mutex_unlock(&queue->lock);
+    while (head != candidate) {
+        struct trierarch_dmabuf_frame *next = head->next;
+        head->next = NULL;
+        trierarch_dmabuf_frame_unref(head);
+        head = next;
+    }
+    return candidate;
 }
 
 size_t trierarch_dmabuf_frame_queue_size(struct trierarch_dmabuf_frame_queue *queue) {

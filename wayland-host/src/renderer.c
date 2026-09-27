@@ -73,7 +73,6 @@ struct renderer_context {
     int height;
     bool valid;
     uint64_t last_dmabuf_frame_sequence;
-    uint64_t last_pending_dmabuf_frame_sequence;
     create_image_fn create_image;
     destroy_image_fn destroy_image;
     image_target_fn image_target;
@@ -357,26 +356,6 @@ static struct render_buffer_source surface_render_source(
     if (!source.buffer || !source.buffer->dmabuf)
         return source;
     struct trierarch_dmabuf_frame *frame = surface->dmabuf_presented_frame;
-    enum trierarch_dmabuf_frame_readiness readiness =
-            trierarch_dmabuf_frame_readiness(frame);
-    if (readiness == TRIERARCH_DMABUF_FRAME_PENDING &&
-            renderer->last_pending_dmabuf_frame_sequence !=
-                    trierarch_dmabuf_frame_sequence(frame)) {
-        renderer->last_pending_dmabuf_frame_sequence =
-                trierarch_dmabuf_frame_sequence(frame);
-        LOGI("dma-buf frame pending: surface=%u sequence=%llu sync=%s",
-                surface->wl_surface ? wl_resource_get_id(surface->wl_surface) : 0,
-                (unsigned long long)trierarch_dmabuf_frame_sequence(frame),
-                trierarch_dmabuf_frame_acquire_fence_fd(frame) >= 0
-                        ? "explicit" : "implicit");
-    }
-    if (!trierarch_dmabuf_frame_wait_acquire_fence(frame)) {
-        LOGE("dma-buf acquire fence wait failed: surface=%u sequence=%llu",
-                surface->wl_surface ? wl_resource_get_id(surface->wl_surface) : 0,
-                (unsigned long long)trierarch_dmabuf_frame_sequence(frame));
-        source.buffer = NULL;
-        return source;
-    }
     struct trierarch_dmabuf_record *record = trierarch_dmabuf_frame_record(frame);
     struct shm_buffer *buffer = trierarch_dmabuf_record_data(record);
     int fd = trierarch_dmabuf_frame_fd(frame);

@@ -115,10 +115,55 @@ static void test_queue_clear_releases_everything(void) {
     assert(destroyed == 3);
 }
 
+static void test_ready_prefix_preserves_pending_frame(void) {
+    int canonical_fd = make_fd();
+    struct trierarch_dmabuf_record *record = trierarch_dmabuf_record_create(
+            canonical_fd, (void *)(uintptr_t)0x1234, record_destroy);
+    assert(record);
+    struct trierarch_dmabuf_frame_queue *queue = trierarch_dmabuf_frame_queue_create();
+    assert(queue);
+    int ready_fence = eventfd(1, EFD_CLOEXEC);
+    int pending_fence = eventfd(0, EFD_CLOEXEC);
+    assert(ready_fence >= 0 && pending_fence >= 0);
+    struct trierarch_dmabuf_frame *ready = trierarch_dmabuf_frame_create(record, ready_fence, 20);
+    struct trierarch_dmabuf_frame *pending = trierarch_dmabuf_frame_create(record, pending_fence, 21);
+    assert(ready && pending);
+    trierarch_dmabuf_frame_set_retire_callback(ready, frame_retire,
+            (void *)(uintptr_t)0x5678);
+    trierarch_dmabuf_frame_set_retire_callback(pending, frame_retire,
+            (void *)(uintptr_t)0x5678);
+    assert(trierarch_dmabuf_frame_queue_push(queue, ready));
+    assert(trierarch_dmabuf_frame_queue_push(queue, pending));
+
+    enum trierarch_dmabuf_frame_readiness readiness;
+    struct trierarch_dmabuf_frame *taken =
+            trierarch_dmabuf_frame_queue_take_latest_ready(queue, &readiness);
+    assert(taken == ready);
+    assert(readiness == TRIERARCH_DMABUF_FRAME_READY);
+    assert(trierarch_dmabuf_frame_queue_size(queue) == 1);
+    trierarch_dmabuf_frame_unref(taken);
+
+    taken = trierarch_dmabuf_frame_queue_take_latest_ready(queue, &readiness);
+    assert(!taken);
+    assert(readiness == TRIERARCH_DMABUF_FRAME_PENDING);
+    assert(trierarch_dmabuf_frame_queue_size(queue) == 1);
+    uint64_t signal = 1;
+    assert(write(pending_fence, &signal, sizeof(signal)) == (ssize_t)sizeof(signal));
+    taken = trierarch_dmabuf_frame_queue_take_latest_ready(queue, &readiness);
+    assert(taken == pending);
+    assert(readiness == TRIERARCH_DMABUF_FRAME_READY);
+    trierarch_dmabuf_frame_unref(taken);
+    trierarch_dmabuf_frame_queue_destroy(queue);
+    trierarch_dmabuf_record_unref(record);
+    assert(retired == 8);
+    assert(destroyed == 4);
+}
+
 int main(void) {
     test_destroy_before_frame_retire();
     test_latest_retires_older_frames();
     test_queue_clear_releases_everything();
+    test_ready_prefix_preserves_pending_frame();
     puts("dmabuf_frame_queue_test: ok");
     return 0;
 }

@@ -57,9 +57,6 @@ int trierarch_dmabuf_frame_acquire_fence_fd(const struct trierarch_dmabuf_frame 
  * otherwise the dma-buf's implicit writer fence is queried by polling its FD. */
 enum trierarch_dmabuf_frame_readiness trierarch_dmabuf_frame_readiness(
         const struct trierarch_dmabuf_frame *frame);
-/* Waits once and consumes the frame-owned acquire fence.  A negative fence
- * means implicit synchronization and succeeds immediately. */
-bool trierarch_dmabuf_frame_wait_acquire_fence(struct trierarch_dmabuf_frame *frame);
 uint64_t trierarch_dmabuf_frame_sequence(const struct trierarch_dmabuf_frame *frame);
 struct trierarch_dmabuf_record *trierarch_dmabuf_frame_record(
         const struct trierarch_dmabuf_frame *frame);
@@ -82,6 +79,13 @@ struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_queue_take_next(
  * older queued frames. This is useful for a mailbox presentation policy. */
 struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_queue_take_latest(
         struct trierarch_dmabuf_frame_queue *queue);
+
+/* Transfers the newest contiguous ready prefix frame and retires its older
+ * ready predecessors. A pending or errored queue head remains queued, so a
+ * compositor can continue showing its prior presented frame. */
+struct trierarch_dmabuf_frame *trierarch_dmabuf_frame_queue_take_latest_ready(
+        struct trierarch_dmabuf_frame_queue *queue,
+        enum trierarch_dmabuf_frame_readiness *head_readiness);
 
 void trierarch_dmabuf_frame_queue_clear(struct trierarch_dmabuf_frame_queue *queue);
 size_t trierarch_dmabuf_frame_queue_size(struct trierarch_dmabuf_frame_queue *queue);

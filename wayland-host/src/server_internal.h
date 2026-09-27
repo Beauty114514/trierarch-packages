@@ -85,6 +85,7 @@ struct compositor_surface {
     struct trierarch_dmabuf_frame *dmabuf_presented_frame;
     uint64_t dmabuf_frame_sequence;
     uint32_t dmabuf_release_pending;
+    bool dmabuf_frame_pending;
     int32_t width;
     int32_t height;
     bool configured;

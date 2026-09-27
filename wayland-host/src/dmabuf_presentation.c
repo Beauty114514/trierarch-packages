@@ -75,6 +75,7 @@ void trierarch_dmabuf_surface_retire(struct compositor_surface *surface) {
     }
     if (surface->dmabuf_frames)
         trierarch_dmabuf_frame_queue_clear(surface->dmabuf_frames);
+    surface->dmabuf_frame_pending = false;
     if (had_presented_frame || queued_frames) {
         __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
                 "dma-buf presentation retired: surface=%u active=%d queued=%zu",
@@ -97,10 +98,21 @@ void trierarch_dmabuf_surface_latch_frames(struct wayland_server *server) {
         return;
     struct compositor_surface *surface;
     wl_list_for_each(surface, &server->surfaces, link) {
+        enum trierarch_dmabuf_frame_readiness readiness = TRIERARCH_DMABUF_FRAME_READY;
         struct trierarch_dmabuf_frame *latest = surface->dmabuf_frames
-                ? trierarch_dmabuf_frame_queue_take_latest(surface->dmabuf_frames) : NULL;
-        if (!latest)
+                ? trierarch_dmabuf_frame_queue_take_latest_ready(surface->dmabuf_frames,
+                        &readiness) : NULL;
+        if (!latest) {
+            if (readiness == TRIERARCH_DMABUF_FRAME_PENDING &&
+                    !surface->dmabuf_frame_pending) {
+                surface->dmabuf_frame_pending = true;
+                __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                        "dma-buf frame pending: surface=%u",
+                        wl_resource_get_id(surface->wl_surface));
+            }
             continue;
+        }
+        surface->dmabuf_frame_pending = false;
         if (surface->dmabuf_presented_frame)
             trierarch_dmabuf_frame_unref(surface->dmabuf_presented_frame);
         surface->dmabuf_presented_frame = latest;
