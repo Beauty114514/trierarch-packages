@@ -4,8 +4,26 @@
 #include "server_internal.h"
 
 #include <android/log.h>
+#include <stdlib.h>
 
 #define TRIERARCH_TAG "TrierarchWayland"
+
+struct dmabuf_retire_data {
+    struct compositor_surface *surface;
+    struct shm_buffer *buffer;
+    struct trierarch_explicit_release *release;
+};
+
+static void retire_frame(void *data) {
+    struct dmabuf_retire_data *retire = data;
+    if (!retire)
+        return;
+    trierarch_dmabuf_buffer_retire_presentation(retire->buffer);
+    if (retire->release && retire->surface->dmabuf_release_pending)
+        retire->surface->dmabuf_release_pending--;
+    trierarch_explicit_release_complete(retire->release);
+    free(retire);
+}
 
 bool trierarch_dmabuf_surface_submit(struct compositor_surface *surface,
         struct shm_buffer *buffer) {
@@ -16,13 +34,29 @@ bool trierarch_dmabuf_surface_submit(struct compositor_surface *surface,
         if (!surface->dmabuf_frames)
             return false;
     }
+    int acquire_fence_fd = trierarch_explicit_sync_state_take_acquire_fence(
+            &surface->explicit_sync);
+    struct trierarch_explicit_release *release = trierarch_explicit_sync_state_take_release(
+            &surface->explicit_sync);
     struct trierarch_dmabuf_frame *frame = trierarch_dmabuf_frame_create(
-            buffer->dmabuf_record, -1, ++surface->dmabuf_frame_sequence);
-    if (!frame)
+            buffer->dmabuf_record, acquire_fence_fd, ++surface->dmabuf_frame_sequence);
+    if (!frame) {
+        trierarch_explicit_release_complete(release);
         return false;
+    }
+    struct dmabuf_retire_data *retire = calloc(1, sizeof(*retire));
+    if (!retire) {
+        trierarch_dmabuf_frame_unref(frame);
+        trierarch_explicit_release_complete(release);
+        return false;
+    }
+    retire->surface = surface;
+    retire->buffer = buffer;
+    retire->release = release;
+    if (release)
+        surface->dmabuf_release_pending++;
     buffer->dmabuf_presentation_uses++;
-    trierarch_dmabuf_frame_set_retire_callback(frame,
-            trierarch_dmabuf_buffer_retire_presentation, buffer);
+    trierarch_dmabuf_frame_set_retire_callback(frame, retire_frame, retire);
     if (trierarch_dmabuf_frame_queue_push(surface->dmabuf_frames, frame))
         return true;
     trierarch_dmabuf_frame_unref(frame);

@@ -356,6 +356,13 @@ static struct render_buffer_source surface_render_source(
     if (!source.buffer || !source.buffer->dmabuf)
         return source;
     struct trierarch_dmabuf_frame *frame = surface->dmabuf_presented_frame;
+    if (!trierarch_dmabuf_frame_wait_acquire_fence(frame)) {
+        LOGE("dma-buf acquire fence wait failed: surface=%u sequence=%llu",
+                surface->wl_surface ? wl_resource_get_id(surface->wl_surface) : 0,
+                (unsigned long long)trierarch_dmabuf_frame_sequence(frame));
+        source.buffer = NULL;
+        return source;
+    }
     struct trierarch_dmabuf_record *record = trierarch_dmabuf_frame_record(frame);
     struct shm_buffer *buffer = trierarch_dmabuf_record_data(record);
     int fd = trierarch_dmabuf_frame_fd(frame);
@@ -754,11 +761,23 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    /* An explicit-sync release may be replied to while latching replaces the
+     * old frame. Finish the preceding host GL reads before that reply. This
+     * is deliberately conservative until Android fence export is available. */
+    struct compositor_surface *surface;
+    bool explicit_release_pending = false;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (surface->dmabuf_release_pending) {
+            explicit_release_pending = true;
+            break;
+        }
+    }
+    if (explicit_release_pending)
+        glFinish();
     /* Promote one mailbox frame per surface immediately before composition.
      * Older queued dma-buf frames retire here; the selected one stays leased
      * until a later commit replaces it or the surface disappears. */
     trierarch_dmabuf_surface_latch_frames(server);
-    struct compositor_surface *surface;
     /* Plasma uses tiny viewport-scaled root buffers during startup. Draw those
      * first so they cannot cover the actual desktop surface. */
     wl_list_for_each(surface, &server->surfaces, link) {

@@ -13,6 +13,7 @@
 #include "pointer-constraints-server-protocol.h"
 #include "presentation-time-server-protocol.h"
 #include "linux-dmabuf-v1-server-protocol.h"
+#include "linux-explicit-synchronization-unstable-v1-server-protocol.h"
 #include "xdg-output-unstable-v1-server-protocol.h"
 #include "xdg-decoration-unstable-v1-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
@@ -83,6 +84,7 @@ struct compositor_surface {
     struct trierarch_dmabuf_frame_queue *dmabuf_frames;
     struct trierarch_dmabuf_frame *dmabuf_presented_frame;
     uint64_t dmabuf_frame_sequence;
+    uint32_t dmabuf_release_pending;
     int32_t width;
     int32_t height;
     bool configured;

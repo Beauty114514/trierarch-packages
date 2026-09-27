@@ -1,7 +1,9 @@
 #include "dmabuf_frame_queue.h"
 
 #include <stdatomic.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -154,6 +156,22 @@ int trierarch_dmabuf_frame_fd(const struct trierarch_dmabuf_frame *frame) {
 
 int trierarch_dmabuf_frame_acquire_fence_fd(const struct trierarch_dmabuf_frame *frame) {
     return frame ? frame->acquire_fence_fd : -1;
+}
+
+bool trierarch_dmabuf_frame_wait_acquire_fence(struct trierarch_dmabuf_frame *frame) {
+    if (!frame || frame->acquire_fence_fd < 0)
+        return true;
+    struct pollfd pollfd = {
+        .fd = frame->acquire_fence_fd,
+        .events = POLLIN,
+    };
+    int result;
+    do {
+        result = poll(&pollfd, 1, -1);
+    } while (result < 0 && errno == EINTR);
+    close(frame->acquire_fence_fd);
+    frame->acquire_fence_fd = -1;
+    return result == 1 && !(pollfd.revents & (POLLERR | POLLNVAL));
 }
 
 uint64_t trierarch_dmabuf_frame_sequence(const struct trierarch_dmabuf_frame *frame) {

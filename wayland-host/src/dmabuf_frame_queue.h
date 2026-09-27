@@ -47,6 +47,9 @@ void trierarch_dmabuf_frame_ref(struct trierarch_dmabuf_frame *frame);
 void trierarch_dmabuf_frame_unref(struct trierarch_dmabuf_frame *frame);
 int trierarch_dmabuf_frame_fd(const struct trierarch_dmabuf_frame *frame);
 int trierarch_dmabuf_frame_acquire_fence_fd(const struct trierarch_dmabuf_frame *frame);
+/* Waits once and consumes the frame-owned acquire fence.  A negative fence
+ * means implicit synchronization and succeeds immediately. */
+bool trierarch_dmabuf_frame_wait_acquire_fence(struct trierarch_dmabuf_frame *frame);
 uint64_t trierarch_dmabuf_frame_sequence(const struct trierarch_dmabuf_frame *frame);
 struct trierarch_dmabuf_record *trierarch_dmabuf_frame_record(
         const struct trierarch_dmabuf_frame *frame);

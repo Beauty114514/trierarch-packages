@@ -141,6 +141,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             trierarch_seat_bind);
     wl_global_create(server->display, &zwp_pointer_constraints_v1_interface, 1,
             server, trierarch_pointer_constraints_bind);
+    wl_global_create(server->display, &zwp_linux_explicit_synchronization_v1_interface, 1,
+            server, trierarch_explicit_sync_bind);
     wl_global_create(server->display, &wp_presentation_interface, 1, server,
             trierarch_presentation_bind);
     wl_global_create(server->display, &xdg_wm_base_interface, 6, server,

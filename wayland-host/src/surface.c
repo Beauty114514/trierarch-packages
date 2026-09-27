@@ -304,6 +304,20 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 
 void trierarch_surface_commit(struct compositor_surface *surface) {
     if (!surface) return;
+    if (trierarch_explicit_sync_state_has_pending(&surface->explicit_sync)) {
+        struct shm_buffer *pending = surface->pending;
+        uint32_t error = !surface->pending_attached
+                ? ZWP_LINUX_SURFACE_SYNCHRONIZATION_V1_ERROR_NO_BUFFER
+                : ZWP_LINUX_SURFACE_SYNCHRONIZATION_V1_ERROR_UNSUPPORTED_BUFFER;
+        if (!surface->pending_attached || !pending || !pending->dmabuf) {
+            if (surface->explicit_sync.resource) {
+                wl_resource_post_error(surface->explicit_sync.resource, error,
+                        "explicit synchronization requires an attached dma-buf");
+            }
+            trierarch_explicit_sync_state_discard_pending(&surface->explicit_sync);
+            return;
+        }
+    }
     surface->perf_commits++;
     surface->server->perf_surface_commits++;
     surface->server->perf_surface_commit_generation++;
