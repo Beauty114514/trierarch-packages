@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "compositor.h"
+#include "explicit_sync.h"
 #include "single-pixel-buffer-v1-server-protocol.h"
 #include "viewporter-server-protocol.h"
 #include "pointer-constraints-server-protocol.h"
@@ -78,6 +79,7 @@ struct compositor_surface {
      * this commit cycle: wl_surface.attach(NULL) unmaps the surface, while a
      * commit without attach keeps the current buffer. */
     bool pending_attached;
+    struct trierarch_explicit_sync_state explicit_sync;
     struct trierarch_dmabuf_frame_queue *dmabuf_frames;
     struct trierarch_dmabuf_frame *dmabuf_presented_frame;
     uint64_t dmabuf_frame_sequence;

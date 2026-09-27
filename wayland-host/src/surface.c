@@ -232,6 +232,7 @@ static void surface_resource_destroy(struct wl_resource *resource) {
     }
     trierarch_wayland_request_render(surface->server);
     trierarch_dmabuf_surface_destroy(surface);
+    trierarch_explicit_sync_state_destroy(&surface->explicit_sync);
     if (surface->current) {
         struct shm_buffer *current = surface->current;
         surface->current = NULL;
@@ -257,6 +258,7 @@ static void compositor_create_surface(struct wl_client *client,
     }
     surface->server = server;
     surface->buffer_scale = 1;
+    trierarch_explicit_sync_state_init(&surface->explicit_sync);
     wl_list_init(&surface->children);
     wl_list_init(&surface->subsurface_link);
     wl_list_init(&surface->pending_frame_callbacks);
@@ -314,6 +316,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
         wl_list_init(&surface->pending_frame_callbacks);
     }
     if (surface->pending_attached) {
+        trierarch_explicit_sync_state_commit(&surface->explicit_sync, true);
         struct shm_buffer *pending = surface->pending;
         struct shm_buffer *previous = surface->current;
         enum trierarch_surface_source previous_source =
