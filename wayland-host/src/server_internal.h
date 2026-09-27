@@ -83,8 +83,10 @@ struct compositor_surface {
     struct trierarch_explicit_sync_state explicit_sync;
     struct trierarch_dmabuf_frame_queue *dmabuf_frames;
     struct trierarch_dmabuf_frame *dmabuf_presented_frame;
+    struct wl_event_source *dmabuf_fence_source;
     uint64_t dmabuf_frame_sequence;
     uint32_t dmabuf_release_pending;
+    int dmabuf_fence_fd;
     bool dmabuf_frame_pending;
     int32_t width;
     int32_t height;

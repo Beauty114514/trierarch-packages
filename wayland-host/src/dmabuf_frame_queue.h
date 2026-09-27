@@ -57,6 +57,11 @@ int trierarch_dmabuf_frame_acquire_fence_fd(const struct trierarch_dmabuf_frame 
  * otherwise the dma-buf's implicit writer fence is queried by polling its FD. */
 enum trierarch_dmabuf_frame_readiness trierarch_dmabuf_frame_readiness(
         const struct trierarch_dmabuf_frame *frame);
+/* Returns a close-on-exec duplicate of the queue head's fence fd. Explicit
+ * synchronization wins; otherwise this is the dma-buf fd used to observe the
+ * implicit writer fence. The duplicate remains valid if the queue changes. */
+int trierarch_dmabuf_frame_queue_dup_head_readiness_fd(
+        struct trierarch_dmabuf_frame_queue *queue);
 uint64_t trierarch_dmabuf_frame_sequence(const struct trierarch_dmabuf_frame *frame);
 struct trierarch_dmabuf_record *trierarch_dmabuf_frame_record(
         const struct trierarch_dmabuf_frame *frame);

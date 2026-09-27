@@ -14,6 +14,9 @@ bool trierarch_dmabuf_surface_submit(struct compositor_surface *surface,
 /* Promote each surface's newest queued frame before composition. */
 void trierarch_dmabuf_surface_latch_frames(struct wayland_server *server);
 
+/* Watch a queued pending frame without blocking the render path. */
+void trierarch_dmabuf_surface_watch_pending_fence(struct compositor_surface *surface);
+
 /* Retire active and queued presentation leases without freeing the queue. */
 void trierarch_dmabuf_surface_retire(struct compositor_surface *surface);
 

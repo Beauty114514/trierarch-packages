@@ -183,6 +183,18 @@ enum trierarch_dmabuf_frame_readiness trierarch_dmabuf_frame_readiness(
     return TRIERARCH_DMABUF_FRAME_READY;
 }
 
+int trierarch_dmabuf_frame_queue_dup_head_readiness_fd(
+        struct trierarch_dmabuf_frame_queue *queue) {
+    if (!queue)
+        return -1;
+    pthread_mutex_lock(&queue->lock);
+    const struct trierarch_dmabuf_frame *head = queue->head;
+    int fd = head ? (head->acquire_fence_fd >= 0 ? head->acquire_fence_fd : head->fd) : -1;
+    int duplicate = fd >= 0 ? duplicate_fd(fd) : -1;
+    pthread_mutex_unlock(&queue->lock);
+    return duplicate;
+}
+
 uint64_t trierarch_dmabuf_frame_sequence(const struct trierarch_dmabuf_frame *frame) {
     return frame ? frame->sequence : 0;
 }

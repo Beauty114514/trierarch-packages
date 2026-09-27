@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/eventfd.h>
@@ -147,8 +148,13 @@ static void test_ready_prefix_preserves_pending_frame(void) {
     assert(!taken);
     assert(readiness == TRIERARCH_DMABUF_FRAME_PENDING);
     assert(trierarch_dmabuf_frame_queue_size(queue) == 1);
+    int watched_fence = trierarch_dmabuf_frame_queue_dup_head_readiness_fd(queue);
+    assert(watched_fence >= 0 && watched_fence != pending_fence);
     uint64_t signal = 1;
     assert(write(pending_fence, &signal, sizeof(signal)) == (ssize_t)sizeof(signal));
+    struct pollfd watched = { .fd = watched_fence, .events = POLLIN };
+    assert(poll(&watched, 1, 0) == 1 && (watched.revents & POLLIN));
+    close(watched_fence);
     taken = trierarch_dmabuf_frame_queue_take_latest_ready(queue, &readiness);
     assert(taken == pending);
     assert(readiness == TRIERARCH_DMABUF_FRAME_READY);
