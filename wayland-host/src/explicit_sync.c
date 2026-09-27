@@ -2,7 +2,10 @@
 
 #include "server_internal.h"
 
+#include <linux/sync_file.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 struct trierarch_explicit_release {
@@ -14,6 +17,14 @@ static void close_fence(int *fd) {
     if (*fd >= 0)
         close(*fd);
     *fd = -1;
+}
+
+static bool fence_is_sync_file(int fd) {
+    if (fd < 0)
+        return false;
+    struct sync_file_info info;
+    memset(&info, 0, sizeof(info));
+    return ioctl(fd, SYNC_IOC_FILE_INFO, &info) == 0;
 }
 
 static void release_unref(struct trierarch_explicit_release *release) {
@@ -132,7 +143,9 @@ static void sync_set_acquire_fence(struct wl_client *client, struct wl_resource 
                 "the wl_surface was destroyed");
         return;
     }
-    if (fd < 0) {
+    if (!fence_is_sync_file(fd)) {
+        if (fd >= 0)
+            close(fd);
         wl_resource_post_error(resource,
                 ZWP_LINUX_SURFACE_SYNCHRONIZATION_V1_ERROR_INVALID_FENCE,
                 "invalid acquire fence");

@@ -158,6 +158,31 @@ int trierarch_dmabuf_frame_acquire_fence_fd(const struct trierarch_dmabuf_frame 
     return frame ? frame->acquire_fence_fd : -1;
 }
 
+enum trierarch_dmabuf_frame_readiness trierarch_dmabuf_frame_readiness(
+        const struct trierarch_dmabuf_frame *frame) {
+    if (!frame)
+        return TRIERARCH_DMABUF_FRAME_ERROR;
+    int readiness_fd = frame->acquire_fence_fd >= 0
+            ? frame->acquire_fence_fd : frame->fd;
+    if (readiness_fd < 0)
+        return TRIERARCH_DMABUF_FRAME_ERROR;
+    struct pollfd pollfd = {
+        .fd = readiness_fd,
+        .events = POLLIN,
+    };
+    int result;
+    do {
+        result = poll(&pollfd, 1, 0);
+    } while (result < 0 && errno == EINTR);
+    if (result == 0)
+        return TRIERARCH_DMABUF_FRAME_PENDING;
+    if (result < 0)
+        return TRIERARCH_DMABUF_FRAME_ERROR;
+    if (pollfd.revents & POLLNVAL)
+        return TRIERARCH_DMABUF_FRAME_ERROR;
+    return TRIERARCH_DMABUF_FRAME_READY;
+}
+
 bool trierarch_dmabuf_frame_wait_acquire_fence(struct trierarch_dmabuf_frame *frame) {
     if (!frame || frame->acquire_fence_fd < 0)
         return true;

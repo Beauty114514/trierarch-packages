@@ -17,6 +17,12 @@ struct trierarch_dmabuf_record;
 struct trierarch_dmabuf_frame;
 struct trierarch_dmabuf_frame_queue;
 
+enum trierarch_dmabuf_frame_readiness {
+    TRIERARCH_DMABUF_FRAME_READY,
+    TRIERARCH_DMABUF_FRAME_PENDING,
+    TRIERARCH_DMABUF_FRAME_ERROR,
+};
+
 /* Called exactly once, immediately before the record's canonical fd is closed.
  * `data` is owned by the caller and is never interpreted by this module. */
 typedef void (*trierarch_dmabuf_record_destroy_fn)(void *data);
@@ -47,6 +53,10 @@ void trierarch_dmabuf_frame_ref(struct trierarch_dmabuf_frame *frame);
 void trierarch_dmabuf_frame_unref(struct trierarch_dmabuf_frame *frame);
 int trierarch_dmabuf_frame_fd(const struct trierarch_dmabuf_frame *frame);
 int trierarch_dmabuf_frame_acquire_fence_fd(const struct trierarch_dmabuf_frame *frame);
+/* Checks readiness without consuming any FD. Explicit synchronization wins;
+ * otherwise the dma-buf's implicit writer fence is queried by polling its FD. */
+enum trierarch_dmabuf_frame_readiness trierarch_dmabuf_frame_readiness(
+        const struct trierarch_dmabuf_frame *frame);
 /* Waits once and consumes the frame-owned acquire fence.  A negative fence
  * means implicit synchronization and succeeds immediately. */
 bool trierarch_dmabuf_frame_wait_acquire_fence(struct trierarch_dmabuf_frame *frame);
