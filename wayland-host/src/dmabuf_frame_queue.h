@@ -30,6 +30,7 @@ struct trierarch_dmabuf_record *trierarch_dmabuf_record_create(
 void trierarch_dmabuf_record_ref(struct trierarch_dmabuf_record *record);
 void trierarch_dmabuf_record_unref(struct trierarch_dmabuf_record *record);
 int trierarch_dmabuf_record_fd(const struct trierarch_dmabuf_record *record);
+uint64_t trierarch_dmabuf_record_inode(const struct trierarch_dmabuf_record *record);
 void *trierarch_dmabuf_record_data(const struct trierarch_dmabuf_record *record);
 
 /* Takes ownership of acquire_fence_fd (-1 means implicit synchronization) and

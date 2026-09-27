@@ -72,6 +72,7 @@ struct renderer_context {
     int width;
     int height;
     bool valid;
+    uint64_t last_dmabuf_frame_sequence;
     create_image_fn create_image;
     destroy_image_fn destroy_image;
     image_target_fn image_target;
@@ -337,6 +338,8 @@ bool trierarch_renderer_valid(const struct renderer_context *renderer) {
 struct render_buffer_source {
     struct shm_buffer *buffer;
     int dmabuf_fd;
+    uint64_t dmabuf_frame_sequence;
+    uint64_t dmabuf_inode;
 };
 
 /* wl_shm has no asynchronous presentation lease, so its current surface
@@ -362,7 +365,34 @@ static struct render_buffer_source surface_render_source(
     }
     source.buffer = buffer;
     source.dmabuf_fd = fd;
+    source.dmabuf_frame_sequence = trierarch_dmabuf_frame_sequence(frame);
+    source.dmabuf_inode = trierarch_dmabuf_record_inode(record);
     return source;
+}
+
+static bool dmabuf_cpu_sample(const struct render_buffer_source *source,
+        uint32_t *sample) {
+    if (!source->buffer || !source->buffer->data || !sample)
+        return false;
+    memcpy(sample, source->buffer->data, sizeof(*sample));
+    return true;
+}
+
+static void log_dmabuf_render_source(struct renderer_context *renderer,
+        const struct compositor_surface *surface,
+        const struct render_buffer_source *source) {
+    if (!source->dmabuf_frame_sequence ||
+            renderer->last_dmabuf_frame_sequence == source->dmabuf_frame_sequence)
+        return;
+    renderer->last_dmabuf_frame_sequence = source->dmabuf_frame_sequence;
+    uint32_t sample = 0;
+    const char *sample_state = dmabuf_cpu_sample(source, &sample) ? "available" : "unavailable";
+    LOGI("dma-buf render source: surface=%u sequence=%llu inode=%llu frame-fd=%d "
+            "cpu-sample=%s xrgb=0x%08x",
+            surface->wl_surface ? wl_resource_get_id(surface->wl_surface) : 0,
+            (unsigned long long)source->dmabuf_frame_sequence,
+            (unsigned long long)source->dmabuf_inode, source->dmabuf_fd,
+            sample_state, sample);
 }
 
 static void draw_surface(struct renderer_context *renderer,
@@ -370,6 +400,7 @@ static void draw_surface(struct renderer_context *renderer,
     struct render_buffer_source source = surface_render_source(surface);
     struct shm_buffer *buffer = source.buffer;
     if (!buffer) return;
+    log_dmabuf_render_source(renderer, surface, &source);
     int scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
     int width = surface->viewport_destination_set ? surface->viewport_destination_width : buffer->width / scale;
     int height = surface->viewport_destination_set ? surface->viewport_destination_height : buffer->height / scale;

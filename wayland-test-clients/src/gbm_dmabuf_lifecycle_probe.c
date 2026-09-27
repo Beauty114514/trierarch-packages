@@ -22,6 +22,8 @@ enum {
     BYTES_PER_PIXEL = 4,
 };
 
+static const uint32_t gbm_test_color = 0x00ff0000u;
+
 struct globals {
     struct wl_compositor *compositor;
     struct wl_shm *shm;
@@ -104,6 +106,30 @@ static int modifier_supported(uint64_t modifier) {
     return modifier == DRM_FORMAT_MOD_LINEAR || modifier == DRM_FORMAT_MOD_INVALID;
 }
 
+static int fill_gbm_buffer(struct gbm_bo *buffer) {
+    uint32_t stride = 0;
+    void *map_data = NULL;
+    uint32_t *pixels = gbm_bo_map(buffer, 0, 0, BUFFER_WIDTH, BUFFER_HEIGHT,
+            GBM_BO_TRANSFER_WRITE, &stride, &map_data);
+    if (!pixels) {
+        fprintf(stderr, "gbm_bo_map for write failed.\n");
+        return -1;
+    }
+    if (stride < BUFFER_WIDTH * BYTES_PER_PIXEL || stride % BYTES_PER_PIXEL != 0) {
+        fprintf(stderr, "GBM map returned invalid stride %u.\n", stride);
+        gbm_bo_unmap(buffer, map_data);
+        return -1;
+    }
+    uint32_t pixels_per_row = stride / BYTES_PER_PIXEL;
+    for (uint32_t y = 0; y < BUFFER_HEIGHT; y++) {
+        for (uint32_t x = 0; x < BUFFER_WIDTH; x++)
+            pixels[(size_t)y * pixels_per_row + x] = gbm_test_color;
+    }
+    gbm_bo_unmap(buffer, map_data);
+    printf("probe: painted GBM XRGB sample=0x%08x stride=%u\n", gbm_test_color, stride);
+    return 0;
+}
+
 static struct wl_buffer *create_dmabuf_buffer(struct globals *globals,
         struct gbm_bo *buffer) {
     uint64_t modifier = gbm_bo_get_modifier(buffer);
@@ -176,7 +202,8 @@ int main(int argc, char **argv) {
     struct gbm_bo *gbm_buffer = device ? gbm_bo_create(device, BUFFER_WIDTH, BUFFER_HEIGHT,
             GBM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR) : NULL;
     struct wl_surface *surface = wl_compositor_create_surface(globals.compositor);
-    struct wl_buffer *dmabuf_buffer = gbm_buffer ? create_dmabuf_buffer(&globals, gbm_buffer) : NULL;
+    struct wl_buffer *dmabuf_buffer = gbm_buffer && fill_gbm_buffer(gbm_buffer) == 0
+            ? create_dmabuf_buffer(&globals, gbm_buffer) : NULL;
     struct wl_buffer *shm_buffer = create_shm_buffer(globals.shm);
     if (!device || !gbm_buffer || !surface || !dmabuf_buffer || !shm_buffer) {
         fprintf(stderr, "Unable to allocate GBM, DMA-BUF, surface, or SHM test buffer.\n");

@@ -4,11 +4,13 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 struct trierarch_dmabuf_record {
     atomic_uint references;
     int canonical_fd;
+    uint64_t inode;
     void *data;
     trierarch_dmabuf_record_destroy_fn destroy;
 };
@@ -53,6 +55,9 @@ struct trierarch_dmabuf_record *trierarch_dmabuf_record_create(
     }
     atomic_init(&record->references, 1);
     record->canonical_fd = canonical_fd;
+    struct stat statbuf;
+    if (fstat(canonical_fd, &statbuf) == 0)
+        record->inode = (uint64_t)statbuf.st_ino;
     record->data = data;
     record->destroy = destroy;
     return record;
@@ -76,6 +81,10 @@ void trierarch_dmabuf_record_unref(struct trierarch_dmabuf_record *record) {
 
 int trierarch_dmabuf_record_fd(const struct trierarch_dmabuf_record *record) {
     return record ? record->canonical_fd : -1;
+}
+
+uint64_t trierarch_dmabuf_record_inode(const struct trierarch_dmabuf_record *record) {
+    return record ? record->inode : 0;
 }
 
 void *trierarch_dmabuf_record_data(const struct trierarch_dmabuf_record *record) {

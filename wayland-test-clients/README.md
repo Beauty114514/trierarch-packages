@@ -60,8 +60,9 @@ dist/trierarch-gbm-export-probe
 
 `trierarch-gbm-dmabuf-lifecycle-probe` uses `zwp_linux_dmabuf_v1` to submit a
 linear GBM `XRGB8888` buffer to the parent host, then commits `attach(NULL)`,
-and finally submits an SHM buffer. It only runs when the GBM allocation reports
-a modifier advertised by the Trierarch host (linear or invalid).
+and finally submits an SHM buffer. Before submission it maps the GBM buffer
+and writes a fixed red XRGB sample. It only runs when the GBM allocation
+reports a modifier advertised by the Trierarch host (linear or invalid).
 
 ```sh
 WAYLAND_DISPLAY=wayland-trierarch \
@@ -70,5 +71,6 @@ WAYLAND_DISPLAY=wayland-trierarch \
 
 The client prints an acknowledgement after every state transition. Host logs
 should show `dma-buf`, `detached`, then `shm` lifecycle transitions. This
-validates protocol acceptance and buffer retirement; it is not a test of the
-Android DMA-BUF importer or GPU-rendered pixels.
+validates protocol acceptance, buffer retirement, and CPU-visible source
+content; it is not a test of the Android DMA-BUF importer or GPU-rendered
+pixels.
