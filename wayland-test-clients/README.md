@@ -74,3 +74,28 @@ should show `dma-buf`, `detached`, then `shm` lifecycle transitions. This
 validates protocol acceptance, buffer retirement, and CPU-visible source
 content; it is not a test of the Android DMA-BUF importer or GPU-rendered
 pixels.
+
+## GBM explicit synchronization probe
+
+`trierarch-gbm-explicit-sync-probe` creates a signaled kernel `sync_file` from
+the same DRM render node used to allocate a linear GBM DMA-BUF. It submits that
+file through `zwp_linux_surface_synchronization_v1`, requests a release object,
+then detaches the buffer. The probe expects exactly one `immediate_release`.
+
+```sh
+WAYLAND_DISPLAY=wayland-trierarch \
+  dist/trierarch-gbm-explicit-sync-probe
+```
+
+It validates the protocol's acquire-fence ownership and release-object lifetime
+against the host's current conservative CPU-fallback renderer. It does not
+validate an Android-native GPU release fence.
+
+If a container's DRM render node prohibits syncobj creation, the real fence
+test cannot run. Its release-object half remains separately testable without
+passing a fence:
+
+```sh
+WAYLAND_DISPLAY=wayland-trierarch \
+  dist/trierarch-gbm-explicit-sync-probe --release-only
+```
