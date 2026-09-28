@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "server_internal.h"
+#include "adreno_ahb_import.h"
 #include "dmabuf_frame_queue.h"
 #include "dmabuf_presentation.h"
 #include "gpu_probe.h"
@@ -563,6 +564,11 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     int buffer_fd = -1;
     int client_fd = -1;
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
+    struct trierarch_adreno_ahb_preflight preflight;
+    bool ahb_preflight_available = trierarch_adreno_ahb_preflight_run(
+            buffer.width, buffer.height, buffer.drm_format, &preflight);
+    if (!ahb_preflight_available)
+        LOGI("Adreno AHB preflight unavailable for this guest buffer");
     if (!renderer->dmabuf_import_supported) {
         trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, EGL_SUCCESS, -1);
         close(buffer_fd);
