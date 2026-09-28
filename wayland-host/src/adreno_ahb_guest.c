@@ -17,10 +17,11 @@ static bool describe_matches(const AHardwareBuffer_Desc *expected,
             expected->stride == actual->stride && expected->usage == actual->usage;
 }
 
-bool trierarch_adreno_ahb_guest_fd_probe(int guest_fd, uint32_t width, uint32_t height,
-        uint32_t stride_bytes, uint32_t ahb_format) {
-    if (guest_fd < 0 || !width || !height || !stride_bytes)
+bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t height,
+        uint32_t stride_bytes, uint32_t ahb_format, AHardwareBuffer **buffer) {
+    if (!buffer || guest_fd < 0 || !width || !height || !stride_bytes)
         return false;
+    *buffer = NULL;
     const AHardwareBuffer_Desc requested = {
         .width = width,
         .height = height,
@@ -56,9 +57,13 @@ bool trierarch_adreno_ahb_guest_fd_probe(int guest_fd, uint32_t width, uint32_t 
     AHardwareBuffer_Desc received_description = {0};
     AHardwareBuffer_describe(received, &received_description);
     success = describe_matches(&description, &received_description);
-    LOGI("AHB guest pixel-FD probe: success=%d %ux%u stride=%u format=%u",
+    LOGI("AHB guest pixel-FD import: success=%d %ux%u stride=%u format=%u",
             success, received_description.width, received_description.height,
             received_description.stride, received_description.format);
+    if (success) {
+        *buffer = received;
+        received = NULL;
+    }
 
 out:
     if (received)
@@ -66,6 +71,6 @@ out:
     if (donor)
         AHardwareBuffer_release(donor);
     if (!success)
-        LOGW("AHB guest pixel-FD probe failed");
+        LOGW("AHB guest pixel-FD import failed");
     return success;
 }

@@ -568,46 +568,70 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     struct trierarch_adreno_ahb_preflight preflight;
     bool ahb_preflight_available = trierarch_adreno_ahb_preflight_run(
             buffer.width, buffer.height, buffer.drm_format, &preflight);
+    bool ahb_import_attempted = false;
+    bool ahb_image = false;
+    AHardwareBuffer *ahb = NULL;
+    EGLImageKHR image = EGL_NO_IMAGE_KHR;
     if (!ahb_preflight_available)
         LOGI("Adreno AHB preflight unavailable for this guest buffer");
     else if (!preflight.candidate)
         LOGI("Adreno AHB preflight did not validate this allocator layout");
-    else if (!trierarch_adreno_ahb_guest_fd_probe(buffer_fd, buffer.width, buffer.height,
-            buffer.stride, preflight.donor_format))
-        LOGI("Adreno AHB guest pixel-FD probe was not accepted");
-    if (!renderer->dmabuf_import_supported) {
-        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, EGL_SUCCESS, -1);
-        close(buffer_fd);
-        return 0;
+    else if (!renderer->create_image || !renderer->destroy_image ||
+            !renderer->native_client_buffer || !renderer->image_target)
+        LOGI("Adreno AHB probe unavailable: EGL native-buffer entry points are absent");
+    else {
+        ahb_import_attempted = true;
+        if (!trierarch_adreno_ahb_guest_fd_import(buffer_fd, buffer.width, buffer.height,
+                buffer.stride, preflight.donor_format, &ahb)) {
+            LOGI("Adreno AHB guest pixel-FD was not accepted");
+        } else {
+            EGLClientBuffer native_buffer = renderer->native_client_buffer(ahb);
+            const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+            image = native_buffer ? renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                    EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes) : EGL_NO_IMAGE_KHR;
+            if (image == EGL_NO_IMAGE_KHR) {
+                LOGE("Adreno AHB probe EGLImage creation failed: 0x%x", eglGetError());
+                AHardwareBuffer_release(ahb);
+                ahb = NULL;
+            } else {
+                ahb_image = true;
+                LOGI("Adreno AHB probe created EGLImage from guest pixel FD");
+            }
+        }
     }
-    EGLImageKHR image = EGL_NO_IMAGE_KHR;
-    const EGLint basic_attributes[] = {
-        EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
-        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
-        EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride, EGL_NONE,
-    };
-    image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
-            EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
-    if (image == EGL_NO_IMAGE_KHR && buffer.modifier != DRM_FORMAT_MOD_INVALID) {
-        const EGLint modifier_attributes[] = {
+    if (image == EGL_NO_IMAGE_KHR && renderer->dmabuf_import_supported) {
+        const EGLint basic_attributes[] = {
             EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
             EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
             EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-            EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride,
-            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(uint32_t)buffer.modifier,
-            EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(uint32_t)(buffer.modifier >> 32),
-            EGL_NONE,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride, EGL_NONE,
         };
         image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
-                EGL_LINUX_DMA_BUF_EXT, NULL, modifier_attributes);
+                EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
+        if (image == EGL_NO_IMAGE_KHR && buffer.modifier != DRM_FORMAT_MOD_INVALID) {
+            const EGLint modifier_attributes[] = {
+                EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
+                EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
+                EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+                EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride,
+                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(uint32_t)buffer.modifier,
+                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(uint32_t)(buffer.modifier >> 32),
+                EGL_NONE,
+            };
+            image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                    EGL_LINUX_DMA_BUF_EXT, NULL, modifier_attributes);
+        }
     }
     close(buffer_fd);
     if (image == EGL_NO_IMAGE_KHR) {
         EGLint error = eglGetError();
         LOGE("gpu probe EGL import failed: format=0x%x modifier=0x%llx error=0x%x",
                 buffer.drm_format, (unsigned long long)buffer.modifier, error);
-        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_FAILED, error, -1);
+        trierarch_gpu_probe_report(client_fd, ahb_import_attempted ?
+                TRIERARCH_GPU_PROBE_IMPORT_FAILED : TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE,
+                error, -1);
+        if (ahb)
+            AHardwareBuffer_release(ahb);
         return 0;
     }
     int width = (int)buffer.width;
@@ -640,12 +664,15 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
     GLenum gl_error = glGetError();
     renderer->destroy_image(renderer->display, image);
+    if (ahb)
+        AHardwareBuffer_release(ahb);
     if (gl_error != GL_NO_ERROR) {
         LOGE("gpu probe texture draw failed: 0x%x", gl_error);
         trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
         return 0;
     }
-    LOGI("gpu probe imported and drew guest buffer; awaiting Android swap");
+    LOGI(ahb_image ? "Adreno AHB probe sampled guest pixel FD; awaiting Android swap" :
+            "gpu probe imported and drew guest buffer; awaiting Android swap");
     *result_client_fd = client_fd;
     return 1;
 }

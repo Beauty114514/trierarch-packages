@@ -3,9 +3,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <android/hardware_buffer.h>
 
 /* Test-only: replace an otherwise unchanged donor pixel FD with guest DMA-BUF. */
-bool trierarch_adreno_ahb_guest_fd_probe(int guest_fd, uint32_t width, uint32_t height,
-        uint32_t stride_bytes, uint32_t ahb_format);
+bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t height,
+        uint32_t stride_bytes, uint32_t ahb_format, AHardwareBuffer **buffer);
 
 #endif
