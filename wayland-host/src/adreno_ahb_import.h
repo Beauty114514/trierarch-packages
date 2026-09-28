@@ -1,8 +1,7 @@
 #ifndef TRIERARCH_ADRENO_AHB_IMPORT_H
 #define TRIERARCH_ADRENO_AHB_IMPORT_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "adreno_ahb_layout.h"
 
 /*
  * This is deliberately a preflight rather than an importer. It identifies
@@ -17,6 +16,7 @@ struct trierarch_adreno_ahb_preflight {
     int native_handle_fds;
     int native_handle_ints;
     uint64_t metadata_bytes;
+    struct trierarch_adreno_ahb_layout layout;
 };
 
 bool trierarch_adreno_ahb_preflight_run(uint32_t width, uint32_t height,
