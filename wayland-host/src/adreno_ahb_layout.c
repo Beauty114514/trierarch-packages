@@ -1,11 +1,10 @@
 #include "adreno_ahb_layout.h"
+#include "adreno_ahb_native.h"
 #include "adreno_ahb_offsets.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
-#include <dlfcn.h>
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -15,19 +14,9 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
-/* VNDK exposes this through libnativewindow, but it is not an NDK API. */
-struct native_handle {
-    int version;
-    int num_fds;
-    int num_ints;
-    int data[];
-};
-
-typedef const struct native_handle *(*get_native_handle_fn)(const AHardwareBuffer *);
-
 struct donor {
     AHardwareBuffer *buffer;
-    const struct native_handle *handle;
+    const struct trierarch_adreno_native_handle *handle;
     uint32_t width;
     uint32_t height;
     uint32_t stride;
@@ -36,28 +25,13 @@ struct donor {
     const uint32_t *metadata;
 };
 
-static get_native_handle_fn resolve_native_handle(void) {
-    static bool attempted;
-    static get_native_handle_fn function;
-    if (attempted)
-        return function;
-    attempted = true;
-    function = (get_native_handle_fn)dlsym(RTLD_DEFAULT, "AHardwareBuffer_getNativeHandle");
-    if (function)
-        return function;
-    void *library = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
-    if (library)
-        function = (get_native_handle_fn)dlsym(library, "AHardwareBuffer_getNativeHandle");
-    return function;
-}
-
 static uint64_t fd_size(int fd) {
     off_t size = fd >= 0 ? lseek(fd, 0, SEEK_END) : -1;
     return size > 0 ? (uint64_t)size : 0;
 }
 
 static bool donor_create(struct donor *donor, uint32_t width, uint32_t height,
-        uint32_t format, get_native_handle_fn native_handle) {
+        uint32_t format) {
     const AHardwareBuffer_Desc requested = {
         .width = width,
         .height = height,
@@ -70,7 +44,7 @@ static bool donor_create(struct donor *donor, uint32_t width, uint32_t height,
 
     AHardwareBuffer_Desc actual = {0};
     AHardwareBuffer_describe(donor->buffer, &actual);
-    donor->handle = native_handle(donor->buffer);
+    donor->handle = trierarch_adreno_ahb_native_handle(donor->buffer);
     if (!donor->handle || donor->handle->num_fds != 2 || donor->handle->num_ints < 0)
         return false;
     donor->width = width;
@@ -164,8 +138,7 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     if (!result)
         return false;
     memset(result, 0, sizeof(*result));
-    get_native_handle_fn native_handle = resolve_native_handle();
-    if (!native_handle) {
+    if (!trierarch_adreno_ahb_native_handle_available()) {
         LOGW("AHardwareBuffer native-handle accessor is unavailable");
         return false;
     }
@@ -174,9 +147,9 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     struct donor first = {0};
     struct donor second = {0};
     struct donor third = {0};
-    bool valid = donor_create(&first, 300, 300, ahb_format, native_handle) &&
-            donor_create(&second, 1134, 567, ahb_format, native_handle) &&
-            donor_create(&third, 769, 127, ahb_format, native_handle);
+    bool valid = donor_create(&first, 300, 300, ahb_format) &&
+            donor_create(&second, 1134, 567, ahb_format) &&
+            donor_create(&third, 769, 127, ahb_format);
     if (!valid || first.handle->num_ints != second.handle->num_ints ||
             first.handle->num_ints != third.handle->num_ints ||
             first.metadata_bytes != second.metadata_bytes ||

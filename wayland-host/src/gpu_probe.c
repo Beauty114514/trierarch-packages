@@ -1,11 +1,11 @@
 #define _GNU_SOURCE
 #include "gpu_probe.h"
+#include "adreno_ahb_native.h"
 #include "server_internal.h"
 #include "compositor.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
-#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -23,10 +23,6 @@
 #define DRM_FORMAT_ABGR8888 0x34324241u
 #define GPU_PROBE_BUFFER_COUNT 3u
 
-/* VNDK-only: resolving this dynamically makes availability and native-handle
- * shape probe data instead of an unstated Android ABI dependency. */
-struct native_handle { int version; int numFds; int numInts; int data[]; };
-typedef const struct native_handle *(*get_native_handle_fn)(const AHardwareBuffer *);
 enum client_mode { CLIENT_NONE, CLIENT_GUEST_TO_HOST, CLIENT_HOST_TO_GUEST };
 
 struct host_buffer_slot {
@@ -100,39 +96,26 @@ static int send_buffer(int client_fd, const struct trierarch_gpu_probe_buffer *b
     return sendmsg(client_fd, &message, MSG_NOSIGNAL) == (ssize_t)sizeof(*buffer) ? 0 : -1;
 }
 
-static get_native_handle_fn get_native_handle(void) {
-    static bool attempted;
-    static get_native_handle_fn function;
-    if (attempted) return function;
-    attempted = true;
-    function = (get_native_handle_fn)dlsym(RTLD_DEFAULT, "AHardwareBuffer_getNativeHandle");
-    if (!function) {
-        void *library = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
-        if (library) function = (get_native_handle_fn)dlsym(library, "AHardwareBuffer_getNativeHandle");
-    }
-    return function;
-}
-
 static int create_and_send_host_buffers(struct trierarch_gpu_probe *probe) {
     const AHardwareBuffer_Desc requested = {
         .width = 256, .height = 256, .layers = 1,
         .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
         .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
     };
-    get_native_handle_fn native_handle = get_native_handle();
     for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
         struct host_buffer_slot *slot = &probe->host_buffers[index];
         if (AHardwareBuffer_allocate(&requested, &slot->buffer) != 0 || !slot->buffer) {
             LOGE("AHardwareBuffer_allocate failed for slot=%u", index); return -1;
         }
         AHardwareBuffer_Desc actual = {0}; AHardwareBuffer_describe(slot->buffer, &actual);
-        const struct native_handle *handle = native_handle ? native_handle(slot->buffer) : NULL;
-        if (!handle || handle->numFds < 1 || handle->data[0] < 0) {
+        const struct trierarch_adreno_native_handle *handle =
+                trierarch_adreno_ahb_native_handle(slot->buffer);
+        if (!handle || handle->num_fds < 1 || handle->data[0] < 0) {
             LOGE("Android AHardwareBuffer native handle unavailable for slot=%u", index); return -1;
         }
         LOGI("host AHardwareBuffer slot=%u: %ux%u stride=%u format=0x%x native_handle fds=%d ints=%d",
                 index, actual.width, actual.height, actual.stride, actual.format,
-                handle->numFds, handle->numInts);
+                handle->num_fds, handle->num_ints);
         int fd = dup(handle->data[0]);
         if (fd < 0) return -1;
         struct trierarch_gpu_probe_buffer buffer = {

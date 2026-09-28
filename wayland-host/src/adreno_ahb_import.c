@@ -1,4 +1,5 @@
 #include "adreno_ahb_import.h"
+#include "adreno_ahb_roundtrip.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -34,11 +35,14 @@ bool trierarch_adreno_ahb_preflight_run(uint32_t width, uint32_t height,
     result->native_handle_fds = result->layout.native_handle_fds;
     result->native_handle_ints = result->layout.native_handle_ints;
     result->metadata_bytes = result->layout.metadata_bytes;
-    result->candidate = result->layout.candidate;
+    result->donor_roundtrip = result->layout.candidate &&
+            trierarch_adreno_ahb_roundtrip_run(result->donor_format);
+    result->candidate = result->layout.candidate && result->donor_roundtrip;
     LOGI("AHB donor preflight: guest=%ux%u format=0x%x donors strides=%u/%u "
-            "fds=%d ints=%d metadata=%llu candidate=%d",
+            "fds=%d ints=%d metadata=%llu roundtrip=%d candidate=%d",
             width, height, drm_format, result->first_stride, result->second_stride,
             result->native_handle_fds, result->native_handle_ints,
-            (unsigned long long)result->metadata_bytes, result->candidate);
+            (unsigned long long)result->metadata_bytes, result->donor_roundtrip,
+            result->candidate);
     return true;
 }

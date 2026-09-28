@@ -10,6 +10,7 @@
  */
 struct trierarch_adreno_ahb_preflight {
     bool candidate;
+    bool donor_roundtrip;
     uint32_t donor_format;
     uint32_t first_stride;
     uint32_t second_stride;
