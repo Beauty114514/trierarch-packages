@@ -6,6 +6,7 @@
 
 #include <drm_fourcc.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,22 @@
 #include <unistd.h>
 
 enum { BUFFER_WIDTH = 64, BUFFER_HEIGHT = 64 };
+
+static int fill_checkerboard(struct gbm_bo *bo) {
+    uint32_t stride = 0;
+    void *map_data = NULL;
+    uint32_t *pixels = gbm_bo_map(bo, 0, 0, BUFFER_WIDTH, BUFFER_HEIGHT,
+            GBM_BO_TRANSFER_WRITE, &stride, &map_data);
+    if (!pixels)
+        return -1;
+    for (uint32_t y = 0; y < BUFFER_HEIGHT; ++y) {
+        uint32_t *row = (uint32_t *)((uint8_t *)pixels + y * stride);
+        for (uint32_t x = 0; x < BUFFER_WIDTH; ++x)
+            row[x] = ((x / 8) + (y / 8)) & 1 ? 0x00ffffffu : 0x00000000u;
+    }
+    gbm_bo_unmap(bo, map_data);
+    return 0;
+}
 
 static int connect_socket(const char *path) {
     int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
@@ -66,7 +83,7 @@ int main(int argc, char **argv) {
     device = render_fd >= 0 ? gbm_create_device(render_fd) : NULL;
     bo = device ? gbm_bo_create(device, BUFFER_WIDTH, BUFFER_HEIGHT,
             GBM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR) : NULL;
-    buffer_fd = bo ? gbm_bo_get_fd(bo) : -1;
+    buffer_fd = bo && fill_checkerboard(bo) == 0 ? gbm_bo_get_fd(bo) : -1;
     socket_fd = connect_socket(argv[1]);
     if (!bo || buffer_fd < 0 || socket_fd < 0) {
         fprintf(stderr, "guest-to-host: setup failed\n");
@@ -102,7 +119,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "guest-to-host: invalid host result\n");
         goto out;
     }
-    printf("guest-to-host: result=%u egl=0x%x format=0x%x stride=%u modifier=0x%llx\n",
+    printf("guest-to-host: checkerboard result=%u egl=0x%x format=0x%x stride=%u modifier=0x%llx\n",
             result.result, result.egl_error, buffer.drm_format, buffer.stride,
             (unsigned long long)buffer.modifier);
     status = EXIT_SUCCESS;

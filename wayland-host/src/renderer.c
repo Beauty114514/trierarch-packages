@@ -637,7 +637,12 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     int width = (int)buffer.width;
     int height = (int)buffer.height;
     const int max_edge = renderer->width < renderer->height ? renderer->width / 3 : renderer->height / 3;
-    if (width > max_edge || height > max_edge) {
+    const int probe_edge = max_edge < 256 ? max_edge : 256;
+    if (ahb_image && width < probe_edge && height < probe_edge) {
+        float scale = (float)probe_edge / (float)(width > height ? width : height);
+        width = (int)(width * scale);
+        height = (int)(height * scale);
+    } else if (width > max_edge || height > max_edge) {
         float scale = (float)max_edge / (float)(width > height ? width : height);
         width = (int)(width * scale);
         height = (int)(height * scale);
