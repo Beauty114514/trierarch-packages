@@ -1,4 +1,5 @@
 #include "adreno_ahb_layout.h"
+#include "adreno_ahb_offsets.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -96,47 +97,66 @@ static void donor_destroy(struct donor *donor) {
         AHardwareBuffer_release(donor->buffer);
 }
 
-static unsigned count_value_pairs(const uint32_t *first, const uint32_t *second,
-        size_t words, uint32_t expected_first, uint32_t expected_second) {
-    unsigned matches = 0;
-    for (size_t index = 0; index < words; ++index) {
-        if (first[index] == expected_first && second[index] == expected_second &&
-                expected_first != expected_second)
-            ++matches;
-    }
-    return matches;
-}
-
-static void populate_matches(struct trierarch_adreno_ahb_layout *result,
-        const struct donor *first, const struct donor *second) {
+static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
+        const struct donor *first, const struct donor *second, const struct donor *third) {
     size_t words = (size_t)first->metadata_bytes / sizeof(uint32_t);
-    result->blob_width_matches = count_value_pairs(first->metadata, second->metadata,
-            words, first->width, second->width);
-    result->blob_height_matches = count_value_pairs(first->metadata, second->metadata,
-            words, first->height, second->height);
-    result->blob_stride_pixels_matches = count_value_pairs(first->metadata, second->metadata,
-            words, first->stride, second->stride);
-    result->blob_stride_bytes_matches = count_value_pairs(first->metadata, second->metadata,
-            words, first->stride * 4, second->stride * 4);
-    result->blob_size_matches = count_value_pairs(first->metadata, second->metadata,
-            words, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes);
-    result->blob_exact_size_matches = count_value_pairs(first->metadata, second->metadata,
+    trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
+            words, first->width, second->width, third->width, &result->blob_width);
+    trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
+            words, first->height, second->height, third->height, &result->blob_height);
+    trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
+            words, first->stride, second->stride, third->stride, &result->blob_stride_pixels);
+    trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
+            words, first->stride * 4, second->stride * 4, third->stride * 4,
+            &result->blob_stride_bytes);
+    trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
+            words, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes,
+            (uint32_t)third->pixels_bytes, &result->blob_size);
+    trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
             words, first->stride * first->height * 4,
-            second->stride * second->height * 4);
+            second->stride * second->height * 4, third->stride * third->height * 4,
+            &result->blob_exact_size);
 
     const uint32_t *first_ints = (const uint32_t *)&first->handle->data[first->handle->num_fds];
     const uint32_t *second_ints = (const uint32_t *)&second->handle->data[second->handle->num_fds];
+    const uint32_t *third_ints = (const uint32_t *)&third->handle->data[third->handle->num_fds];
     size_t ints = (size_t)first->handle->num_ints;
-    result->handle_width_matches = count_value_pairs(first_ints, second_ints,
-            ints, first->width, second->width);
-    result->handle_height_matches = count_value_pairs(first_ints, second_ints,
-            ints, first->height, second->height);
-    result->handle_stride_pixels_matches = count_value_pairs(first_ints, second_ints,
-            ints, first->stride, second->stride);
-    result->handle_stride_bytes_matches = count_value_pairs(first_ints, second_ints,
-            ints, first->stride * 4, second->stride * 4);
-    result->handle_size_matches = count_value_pairs(first_ints, second_ints,
-            ints, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes);
+    trierarch_adreno_ahb_find_offsets(first_ints, second_ints, third_ints,
+            ints, first->width, second->width, third->width, &result->handle_width);
+    trierarch_adreno_ahb_find_offsets(first_ints, second_ints, third_ints,
+            ints, first->height, second->height, third->height, &result->handle_height);
+    trierarch_adreno_ahb_find_offsets(first_ints, second_ints, third_ints,
+            ints, first->stride, second->stride, third->stride,
+            &result->handle_stride_pixels);
+    trierarch_adreno_ahb_find_offsets(first_ints, second_ints, third_ints,
+            ints, first->stride * 4, second->stride * 4, third->stride * 4,
+            &result->handle_stride_bytes);
+    trierarch_adreno_ahb_find_offsets(first_ints, second_ints, third_ints,
+            ints, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes,
+            (uint32_t)third->pixels_bytes, &result->handle_size);
+}
+
+static void log_offsets(const struct trierarch_adreno_ahb_layout *layout) {
+    char blob_height[64], blob_stride_pixels[64], blob_stride_bytes[64], blob_size[64];
+    char handle_width[64], handle_height[64], handle_stride_pixels[64], handle_size[64];
+    LOGI("AHB blob offsets: h=%s sp=%s sb=%s size=%s",
+            trierarch_adreno_ahb_format_offsets(&layout->blob_height, blob_height,
+                    sizeof(blob_height)),
+            trierarch_adreno_ahb_format_offsets(&layout->blob_stride_pixels,
+                    blob_stride_pixels, sizeof(blob_stride_pixels)),
+            trierarch_adreno_ahb_format_offsets(&layout->blob_stride_bytes,
+                    blob_stride_bytes, sizeof(blob_stride_bytes)),
+            trierarch_adreno_ahb_format_offsets(&layout->blob_size, blob_size,
+                    sizeof(blob_size)));
+    LOGI("AHB handle offsets: w=%s h=%s sp=%s size=%s",
+            trierarch_adreno_ahb_format_offsets(&layout->handle_width, handle_width,
+                    sizeof(handle_width)),
+            trierarch_adreno_ahb_format_offsets(&layout->handle_height, handle_height,
+                    sizeof(handle_height)),
+            trierarch_adreno_ahb_format_offsets(&layout->handle_stride_pixels,
+                    handle_stride_pixels, sizeof(handle_stride_pixels)),
+            trierarch_adreno_ahb_format_offsets(&layout->handle_size, handle_size,
+                    sizeof(handle_size)));
 }
 
 bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
@@ -153,11 +173,16 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     /* These values deliberately change every relevant geometry field. */
     struct donor first = {0};
     struct donor second = {0};
+    struct donor third = {0};
     bool valid = donor_create(&first, 300, 300, ahb_format, native_handle) &&
-            donor_create(&second, 1134, 567, ahb_format, native_handle);
+            donor_create(&second, 1134, 567, ahb_format, native_handle) &&
+            donor_create(&third, 769, 127, ahb_format, native_handle);
     if (!valid || first.handle->num_ints != second.handle->num_ints ||
-            first.metadata_bytes != second.metadata_bytes) {
+            first.handle->num_ints != third.handle->num_ints ||
+            first.metadata_bytes != second.metadata_bytes ||
+            first.metadata_bytes != third.metadata_bytes) {
         LOGW("AHB layout calibration donor mismatch");
+        donor_destroy(&third);
         donor_destroy(&second);
         donor_destroy(&first);
         return false;
@@ -169,28 +194,30 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     result->metadata_bytes = first.metadata_bytes;
     result->first_stride = first.stride;
     result->second_stride = second.stride;
-    populate_matches(result, &first, &second);
+    populate_offsets(result, &first, &second, &third);
     /* Vendor layouts do not duplicate every value.  On this device width is
      * represented in handle ints but not the blob; conversely, stride bytes
      * is represented in the blob but need not occupy a separate handle int.
      * These are the fields a future, separately reviewed forge needs to
      * safely patch; optional duplicates remain diagnostic only. */
-    result->candidate = result->blob_height_matches &&
-            result->blob_stride_pixels_matches && result->blob_stride_bytes_matches &&
-            result->blob_size_matches && result->blob_exact_size_matches &&
-            result->handle_width_matches && result->handle_height_matches &&
-            result->handle_stride_pixels_matches && result->handle_size_matches;
+    result->candidate = result->blob_height.count &&
+            result->blob_stride_pixels.count && result->blob_stride_bytes.count &&
+            result->blob_size.count && result->handle_width.count &&
+            result->handle_height.count && result->handle_stride_pixels.count &&
+            result->handle_size.count;
     LOGI("AHB layout calibration: fmt=%u fds=%d ints=%d metadata=%llu candidate=%d "
             "blob(w=%u h=%u sp=%u sb=%u size=%u exact=%u) "
             "ints(w=%u h=%u sp=%u sb=%u size=%u)",
             ahb_format, result->native_handle_fds, result->native_handle_ints,
             (unsigned long long)result->metadata_bytes, result->candidate,
-            result->blob_width_matches, result->blob_height_matches,
-            result->blob_stride_pixels_matches, result->blob_stride_bytes_matches,
-            result->blob_size_matches, result->blob_exact_size_matches,
-            result->handle_width_matches,
-            result->handle_height_matches, result->handle_stride_pixels_matches,
-            result->handle_stride_bytes_matches, result->handle_size_matches);
+            result->blob_width.count, result->blob_height.count,
+            result->blob_stride_pixels.count, result->blob_stride_bytes.count,
+            result->blob_size.count, result->blob_exact_size.count,
+            result->handle_width.count, result->handle_height.count,
+            result->handle_stride_pixels.count, result->handle_stride_bytes.count,
+            result->handle_size.count);
+    log_offsets(result);
+    donor_destroy(&third);
     donor_destroy(&second);
     donor_destroy(&first);
     return true;
