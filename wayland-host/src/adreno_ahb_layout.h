@@ -23,6 +23,7 @@ struct trierarch_adreno_ahb_layout {
     unsigned blob_stride_pixels_matches;
     unsigned blob_stride_bytes_matches;
     unsigned blob_size_matches;
+    unsigned blob_exact_size_matches;
     unsigned handle_width_matches;
     unsigned handle_height_matches;
     unsigned handle_stride_pixels_matches;

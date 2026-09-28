@@ -120,6 +120,9 @@ static void populate_matches(struct trierarch_adreno_ahb_layout *result,
             words, first->stride * 4, second->stride * 4);
     result->blob_size_matches = count_value_pairs(first->metadata, second->metadata,
             words, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes);
+    result->blob_exact_size_matches = count_value_pairs(first->metadata, second->metadata,
+            words, first->stride * first->height * 4,
+            second->stride * second->height * 4);
 
     const uint32_t *first_ints = (const uint32_t *)&first->handle->data[first->handle->num_fds];
     const uint32_t *second_ints = (const uint32_t *)&second->handle->data[second->handle->num_fds];
@@ -167,18 +170,25 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     result->first_stride = first.stride;
     result->second_stride = second.stride;
     populate_matches(result, &first, &second);
-    result->candidate = result->blob_width_matches && result->blob_height_matches &&
+    /* Vendor layouts do not duplicate every value.  On this device width is
+     * represented in handle ints but not the blob; conversely, stride bytes
+     * is represented in the blob but need not occupy a separate handle int.
+     * These are the fields a future, separately reviewed forge needs to
+     * safely patch; optional duplicates remain diagnostic only. */
+    result->candidate = result->blob_height_matches &&
             result->blob_stride_pixels_matches && result->blob_stride_bytes_matches &&
-            result->blob_size_matches && result->handle_width_matches &&
-            result->handle_height_matches && result->handle_stride_pixels_matches &&
-            result->handle_stride_bytes_matches && result->handle_size_matches;
+            result->blob_size_matches && result->blob_exact_size_matches &&
+            result->handle_width_matches && result->handle_height_matches &&
+            result->handle_stride_pixels_matches && result->handle_size_matches;
     LOGI("AHB layout calibration: fmt=%u fds=%d ints=%d metadata=%llu candidate=%d "
-            "blob(w=%u h=%u sp=%u sb=%u size=%u) ints(w=%u h=%u sp=%u sb=%u size=%u)",
+            "blob(w=%u h=%u sp=%u sb=%u size=%u exact=%u) "
+            "ints(w=%u h=%u sp=%u sb=%u size=%u)",
             ahb_format, result->native_handle_fds, result->native_handle_ints,
             (unsigned long long)result->metadata_bytes, result->candidate,
             result->blob_width_matches, result->blob_height_matches,
             result->blob_stride_pixels_matches, result->blob_stride_bytes_matches,
-            result->blob_size_matches, result->handle_width_matches,
+            result->blob_size_matches, result->blob_exact_size_matches,
+            result->handle_width_matches,
             result->handle_height_matches, result->handle_stride_pixels_matches,
             result->handle_stride_bytes_matches, result->handle_size_matches);
     donor_destroy(&second);
