@@ -1,5 +1,6 @@
 #include "dmabuf_presentation.h"
 
+#include "dmabuf_fence_watch.h"
 #include "dmabuf_frame_queue.h"
 #include "server_internal.h"
 
@@ -7,7 +8,6 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #define TRIERARCH_TAG "TrierarchWayland"
 
@@ -17,24 +17,10 @@ struct dmabuf_retire_data {
     struct trierarch_explicit_release *release;
 };
 
-static void stop_pending_fence_watch(struct compositor_surface *surface) {
-    if (!surface)
-        return;
-    if (surface->dmabuf_fence_source) {
-        wl_event_source_remove(surface->dmabuf_fence_source);
-        surface->dmabuf_fence_source = NULL;
-    }
-    if (surface->dmabuf_fence_fd >= 0) {
-        close(surface->dmabuf_fence_fd);
-        surface->dmabuf_fence_fd = -1;
-    }
-}
-
-static int pending_fence_ready(int fd, uint32_t mask, void *data) {
+static void pending_fence_ready(void *data, uint32_t mask) {
     struct compositor_surface *surface = data;
     if (!surface)
-        return 0;
-    stop_pending_fence_watch(surface);
+        return;
     if (mask & (WL_EVENT_ERROR | WL_EVENT_HANGUP)) {
         __android_log_print(ANDROID_LOG_WARN, TRIERARCH_TAG,
                 "dma-buf fence event has error flags: surface=%u mask=0x%x",
@@ -42,7 +28,6 @@ static int pending_fence_ready(int fd, uint32_t mask, void *data) {
     }
     if (mask & (WL_EVENT_READABLE | WL_EVENT_ERROR | WL_EVENT_HANGUP))
         trierarch_wayland_request_render(surface->server);
-    return 0;
 }
 
 static void retire_frame(void *data) {
@@ -97,7 +82,7 @@ bool trierarch_dmabuf_surface_submit(struct compositor_surface *surface,
 void trierarch_dmabuf_surface_retire(struct compositor_surface *surface) {
     if (!surface)
         return;
-    stop_pending_fence_watch(surface);
+    trierarch_dmabuf_fence_watch_cancel(&surface->dmabuf_fence_watch);
     bool had_presented_frame = surface->dmabuf_presented_frame != NULL;
     size_t queued_frames = surface->dmabuf_frames
             ? trierarch_dmabuf_frame_queue_size(surface->dmabuf_frames) : 0;
@@ -116,23 +101,19 @@ void trierarch_dmabuf_surface_retire(struct compositor_surface *surface) {
 }
 
 void trierarch_dmabuf_surface_watch_pending_fence(struct compositor_surface *surface) {
-    if (!surface || surface->dmabuf_fence_source || !surface->server ||
+    if (!surface || trierarch_dmabuf_fence_watch_is_armed(&surface->dmabuf_fence_watch) ||
+            !surface->server ||
             !surface->server->event_loop || !surface->dmabuf_frames)
         return;
     int fd = trierarch_dmabuf_frame_queue_dup_head_readiness_fd(surface->dmabuf_frames);
     if (fd < 0)
         return;
-    struct wl_event_source *source = wl_event_loop_add_fd(surface->server->event_loop, fd,
-            WL_EVENT_READABLE | WL_EVENT_ERROR | WL_EVENT_HANGUP, pending_fence_ready, surface);
-    if (!source) {
+    if (!trierarch_dmabuf_fence_watch_arm(&surface->dmabuf_fence_watch,
+            surface->server->event_loop, fd, pending_fence_ready, surface)) {
         __android_log_print(ANDROID_LOG_WARN, TRIERARCH_TAG,
                 "unable to watch pending dma-buf fence: surface=%u: %s",
                 wl_resource_get_id(surface->wl_surface), strerror(errno));
-        close(fd);
-        return;
     }
-    surface->dmabuf_fence_fd = fd;
-    surface->dmabuf_fence_source = source;
 }
 
 void trierarch_dmabuf_surface_destroy(struct compositor_surface *surface) {
@@ -166,7 +147,7 @@ void trierarch_dmabuf_surface_latch_frames(struct wayland_server *server) {
                 trierarch_dmabuf_surface_watch_pending_fence(surface);
             continue;
         }
-        stop_pending_fence_watch(surface);
+        trierarch_dmabuf_fence_watch_cancel(&surface->dmabuf_fence_watch);
         surface->dmabuf_frame_pending = false;
         if (surface->dmabuf_presented_frame)
             trierarch_dmabuf_frame_unref(surface->dmabuf_presented_frame);

@@ -257,7 +257,7 @@ static void compositor_create_surface(struct wl_client *client,
         return;
     }
     surface->server = server;
-    surface->dmabuf_fence_fd = -1;
+    trierarch_dmabuf_fence_watch_init(&surface->dmabuf_fence_watch);
     surface->buffer_scale = 1;
     trierarch_explicit_sync_state_init(&surface->explicit_sync);
     wl_list_init(&surface->children);
