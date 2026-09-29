@@ -581,7 +581,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
         LOGI("Adreno AHB probe unavailable: EGL native-buffer entry points are absent");
     else {
         ahb_import_attempted = true;
-        if (!trierarch_adreno_ahb_guest_fd_import(buffer_fd, buffer.width, buffer.height,
+        if (!trierarch_adreno_ahb_guest_fd_import(&preflight.layout, buffer_fd,
+                buffer.width, buffer.height,
                 buffer.stride, preflight.donor_format, &ahb)) {
             LOGI("Adreno AHB guest pixel-FD was not accepted");
         } else {

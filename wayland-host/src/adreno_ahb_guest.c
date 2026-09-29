@@ -1,11 +1,13 @@
 #include "adreno_ahb_guest.h"
 
 #include "adreno_ahb_native.h"
+#include "adreno_ahb_patch.h"
 #include "adreno_ahb_wire.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 
+#include <stdlib.h>
 #include <sys/stat.h>
 
 #define TAG "TrierarchAdrenoAhb"
@@ -25,9 +27,12 @@ static uint64_t fd_size(int fd) {
             ? (uint64_t)status.st_size : 0;
 }
 
-bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t height,
-        uint32_t stride_bytes, uint32_t ahb_format, AHardwareBuffer **buffer) {
-    if (!buffer || guest_fd < 0 || !width || !height || !stride_bytes)
+bool trierarch_adreno_ahb_guest_fd_import(
+        const struct trierarch_adreno_ahb_layout *layout, int guest_fd,
+        uint32_t width, uint32_t height, uint32_t stride_bytes,
+        uint32_t ahb_format, AHardwareBuffer **buffer) {
+    if (!layout || layout->donor_format != ahb_format || !buffer || guest_fd < 0 ||
+            !width || !height || !stride_bytes)
         return false;
     *buffer = NULL;
     const AHardwareBuffer_Desc requested = {
@@ -39,6 +44,7 @@ bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t
     };
     AHardwareBuffer *donor = NULL;
     AHardwareBuffer *received = NULL;
+    struct trierarch_adreno_native_handle *patched_handle = NULL;
     bool success = false;
     if (AHardwareBuffer_allocate(&requested, &donor) != 0 || !donor)
         goto out;
@@ -55,14 +61,25 @@ bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t
     uint64_t donor_bytes = fd_size(handle->data[0]);
     bool geometry_matches = description.width == width && description.height == height &&
             description.stride <= UINT32_MAX / 4 && description.stride * 4 == stride_bytes &&
-            guest_bytes && guest_bytes == donor_bytes;
+            guest_bytes;
     LOGI("AHB geometry probe: guest=%ux%u stride=%u bytes=%llu donor=%ux%u stride=%u "
             "bytes=%llu match=%d", width, height, stride_bytes,
             (unsigned long long)guest_bytes, description.width, description.height,
-            description.stride * 4, (unsigned long long)donor_bytes, geometry_matches);
+            description.stride * 4, (unsigned long long)donor_bytes,
+            geometry_matches && guest_bytes == donor_bytes);
     if (!geometry_matches)
         goto out;
-    if (!trierarch_adreno_ahb_register_handle(&description, handle, guest_fd,
+
+    const struct trierarch_adreno_native_handle *registered_handle = handle;
+    if (guest_bytes != donor_bytes) {
+        if (!trierarch_adreno_ahb_patch_allocation_size(layout, handle, guest_bytes,
+                    &patched_handle)) {
+            LOGW("AHB guest probe refused uncalibrated allocation-size mismatch");
+            goto out;
+        }
+        registered_handle = patched_handle;
+    }
+    if (!trierarch_adreno_ahb_register_handle(&description, registered_handle, guest_fd,
                 handle->data[1], &received))
         goto out;
 
@@ -78,6 +95,7 @@ bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t
     }
 
 out:
+    free(patched_handle);
     if (received)
         AHardwareBuffer_release(received);
     if (donor)
