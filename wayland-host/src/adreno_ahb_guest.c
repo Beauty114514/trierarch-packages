@@ -6,6 +6,8 @@
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 
+#include <sys/stat.h>
+
 #define TAG "TrierarchAdrenoAhb"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
@@ -15,6 +17,12 @@ static bool describe_matches(const AHardwareBuffer_Desc *expected,
     return expected->width == actual->width && expected->height == actual->height &&
             expected->layers == actual->layers && expected->format == actual->format &&
             expected->stride == actual->stride && expected->usage == actual->usage;
+}
+
+static uint64_t fd_size(int fd) {
+    struct stat status = {0};
+    return fd >= 0 && fstat(fd, &status) == 0 && status.st_size > 0
+            ? (uint64_t)status.st_size : 0;
 }
 
 bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t height,
@@ -37,19 +45,23 @@ bool trierarch_adreno_ahb_guest_fd_import(int guest_fd, uint32_t width, uint32_t
 
     AHardwareBuffer_Desc description = {0};
     AHardwareBuffer_describe(donor, &description);
-    if (description.width != width || description.height != height ||
-            description.stride > UINT32_MAX / 4 || description.stride * 4 != stride_bytes) {
-        LOGW("AHB guest probe requires matching donor geometry: guest=%ux%u stride=%u "
-                "donor=%ux%u stride=%u", width, height, stride_bytes,
-                description.width, description.height, description.stride * 4);
-        goto out;
-    }
     const struct trierarch_adreno_native_handle *handle =
             trierarch_adreno_ahb_native_handle(donor);
     if (!handle || handle->num_fds != 2) {
         LOGW("AHB guest probe rejected donor handle");
         goto out;
     }
+    uint64_t guest_bytes = fd_size(guest_fd);
+    uint64_t donor_bytes = fd_size(handle->data[0]);
+    bool geometry_matches = description.width == width && description.height == height &&
+            description.stride <= UINT32_MAX / 4 && description.stride * 4 == stride_bytes &&
+            guest_bytes && guest_bytes == donor_bytes;
+    LOGI("AHB geometry probe: guest=%ux%u stride=%u bytes=%llu donor=%ux%u stride=%u "
+            "bytes=%llu match=%d", width, height, stride_bytes,
+            (unsigned long long)guest_bytes, description.width, description.height,
+            description.stride * 4, (unsigned long long)donor_bytes, geometry_matches);
+    if (!geometry_matches)
+        goto out;
     if (!trierarch_adreno_ahb_register_handle(&description, handle, guest_fd,
                 handle->data[1], &received))
         goto out;
