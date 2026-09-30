@@ -50,6 +50,13 @@ driver rendered into?
   the visible height, the matrix also measures one RGBA sampled donor with
   that inferred allocation height. This only compares allocation geometry;
   it neither imports the padded donor nor changes the visible image size.
+- The isolated guest-to-host probe also tries a padded donor only when its
+  stride and pixel FD capacity exactly match the guest. It registers the guest
+  FD with untouched Android donor metadata, records registration and EGLImage
+  outcomes separately, and samples only the guest's visible rows. If it fails,
+  the previous probe path remains available. Normal Wayland surfaces do not
+  use this experiment. It still runs inside the app process; probe-only scope
+  does not protect that process from a vendor graphics-driver crash.
 
 The guest program reports the actual `GL_RENDERER`, surfaceless EGL extensions,
 import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes. The host reports the Android native-handle shape,

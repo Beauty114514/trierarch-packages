@@ -3,6 +3,7 @@
 #include "adreno_ahb_import.h"
 #include "adreno_ahb_guest.h"
 #include "adreno_ahb_matrix.h"
+#include "adreno_ahb_padded.h"
 #include "dmabuf_frame_queue.h"
 #include "dmabuf_presentation.h"
 #include "gpu_probe.h"
@@ -573,6 +574,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
             buffer.width, buffer.height, buffer.drm_format, &preflight);
     bool ahb_import_attempted = false;
     bool ahb_image = false;
+    bool padded_image = false;
+    uint32_t ahb_allocation_height = buffer.height;
     AHardwareBuffer *ahb = NULL;
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
     if (!ahb_preflight_available)
@@ -584,7 +587,12 @@ static int draw_gpu_probe(struct renderer_context *renderer,
         LOGI("Adreno AHB probe unavailable: EGL native-buffer entry points are absent");
     else {
         ahb_import_attempted = true;
-        if (!trierarch_adreno_ahb_guest_fd_import(&preflight.layout, buffer_fd,
+        bool padded_import = trierarch_adreno_ahb_padded_import(buffer_fd,
+                buffer.width, buffer.height, buffer.stride,
+                preflight.donor_format, &ahb, &ahb_allocation_height);
+        if (!padded_import)
+            ahb_allocation_height = buffer.height;
+        if (!padded_import && !trierarch_adreno_ahb_guest_fd_import(&preflight.layout, buffer_fd,
                 buffer.width, buffer.height,
                 buffer.stride, preflight.donor_format, &ahb)) {
             LOGI("Adreno AHB guest pixel-FD was not accepted");
@@ -594,12 +602,18 @@ static int draw_gpu_probe(struct renderer_context *renderer,
             image = native_buffer ? renderer->create_image(renderer->display, EGL_NO_CONTEXT,
                     EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes) : EGL_NO_IMAGE_KHR;
             if (image == EGL_NO_IMAGE_KHR) {
-                LOGE("Adreno AHB probe EGLImage creation failed: 0x%x", eglGetError());
+                if (!native_buffer)
+                    LOGE("Adreno AHB probe has no EGL native client buffer");
+                else
+                    LOGE("Adreno AHB probe EGLImage creation failed: 0x%x", eglGetError());
                 AHardwareBuffer_release(ahb);
                 ahb = NULL;
             } else {
                 ahb_image = true;
-                LOGI("Adreno AHB probe created EGLImage from guest pixel FD");
+                padded_image = padded_import;
+                LOGI("Adreno AHB probe created EGLImage from guest pixel FD: "
+                        "padded=%d visible_height=%u allocation_height=%u",
+                        padded_import, buffer.height, ahb_allocation_height);
             }
         }
     }
@@ -657,7 +671,10 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     const float right = 2.0f * (x + width) / renderer->width - 1.0f;
     const float top = 1.0f - 2.0f * y / renderer->height;
     const float bottom = 1.0f - 2.0f * (y + height) / renderer->height;
-    const GLfloat vertices[] = { left,bottom,0,1, right,bottom,1,1,
+    const GLfloat texture_bottom = ahb_image
+            ? (GLfloat)buffer.height / (GLfloat)ahb_allocation_height : 1.0f;
+    const GLfloat vertices[] = { left,bottom,0,texture_bottom,
+            right,bottom,1,texture_bottom,
             left,top,0,0, right,top,1,0 };
     glUseProgram(renderer->texture_program);
     glBindTexture(GL_TEXTURE_2D, renderer->texture);
@@ -680,7 +697,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
         trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
         return 0;
     }
-    LOGI(ahb_image ? "Adreno AHB probe sampled guest pixel FD; awaiting Android swap" :
+    LOGI(padded_image ? "Adreno AHB padded probe sampled visible rows; awaiting Android swap" :
+            ahb_image ? "Adreno AHB probe sampled guest pixel FD; awaiting Android swap" :
             "gpu probe imported and drew guest buffer; awaiting Android swap");
     *result_client_fd = client_fd;
     return 1;
