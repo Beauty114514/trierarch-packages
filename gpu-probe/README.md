@@ -46,6 +46,10 @@ driver rendered into?
   expected metadata fields; it does not authorize importing or patching a
   guest buffer. Donor allocation failures are recorded and do not stop the
   existing import probe.
+- If the guest FD capacity is an integral number of stride-sized rows beyond
+  the visible height, the matrix also measures one RGBA sampled donor with
+  that inferred allocation height. This only compares allocation geometry;
+  it neither imports the padded donor nor changes the visible image size.
 
 The guest program reports the actual `GL_RENDERER`, surfaceless EGL extensions,
 import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes. The host reports the Android native-handle shape,

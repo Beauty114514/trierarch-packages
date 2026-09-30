@@ -60,10 +60,11 @@ static void measure_variant(const struct matrix_variant *variant,
     uint64_t metadata = fds >= 2 ? fd_bytes(handle->data[1]) : 0;
     uint64_t logical = (uint64_t)description.stride * 4 * height;
     uint64_t donor_stride = (uint64_t)description.stride * 4;
-    LOGI("AHB matrix %s: fmt=%u usage=0x%llx stride=%llu logical=%llu fd=%llu "
+    LOGI("AHB matrix %s: alloc=%ux%u fmt=%u usage=0x%llx stride=%llu logical=%llu fd=%llu "
             "metadata=%llu fds=%d ints=%d guest_stride_match=%d guest_fd_match=%d "
             "calibrated=%d fields=%d all_fields=%d exact=%u extent=%u+%u handle_sb=%u",
-            variant->name, variant->format, (unsigned long long)variant->usage,
+            variant->name, width, height, variant->format,
+            (unsigned long long)variant->usage,
             (unsigned long long)donor_stride, (unsigned long long)logical,
             (unsigned long long)pixels, (unsigned long long)metadata, fds, ints,
             donor_stride == guest_stride, pixels && pixels == guest_bytes,
@@ -98,4 +99,19 @@ void trierarch_adreno_ahb_matrix_run(int guest_fd, uint32_t width,
     };
     for (unsigned index = 0; index < sizeof(variants) / sizeof(variants[0]); ++index)
         measure_variant(&variants[index], width, height, stride_bytes, guest_bytes);
+
+    /* Test the capacity implied by the guest FD without changing the visible
+     * image geometry or attempting to import the padded donor. */
+    if (guest_bytes > logical && guest_bytes % stride_bytes == 0) {
+        uint64_t inferred_height = guest_bytes / stride_bytes;
+        if (inferred_height > height && inferred_height <= 4096) {
+            const struct matrix_variant padded = {
+                "rgba-padded", AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM, sampled,
+            };
+            LOGI("AHB matrix padded: visible=%ux%u inferred_alloc_height=%llu",
+                    width, height, (unsigned long long)inferred_height);
+            measure_variant(&padded, width, (uint32_t)inferred_height,
+                    stride_bytes, guest_bytes);
+        }
+    }
 }
