@@ -31,13 +31,13 @@ static uint64_t fd_size(int fd) {
 }
 
 static bool donor_create(struct donor *donor, uint32_t width, uint32_t height,
-        uint32_t format) {
+        uint32_t format, uint64_t usage) {
     const AHardwareBuffer_Desc requested = {
         .width = width,
         .height = height,
         .layers = 1,
         .format = format,
-        .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+        .usage = usage,
     };
     if (AHardwareBuffer_allocate(&requested, &donor->buffer) != 0 || !donor->buffer)
         return false;
@@ -62,6 +62,37 @@ static bool donor_create(struct donor *donor, uint32_t width, uint32_t height,
     }
     donor->metadata = mapped;
     return true;
+}
+
+static void find_extent_offsets(struct trierarch_adreno_ahb_layout *result,
+        const struct donor *first, const struct donor *second, const struct donor *third) {
+    const size_t words = (size_t)first->metadata_bytes / sizeof(uint32_t);
+    for (size_t index = 0; index < words; ++index) {
+        uint32_t values[] = {
+            first->metadata[index], second->metadata[index], third->metadata[index],
+        };
+        uint64_t sizes[] = {
+            first->pixels_bytes, second->pixels_bytes, third->pixels_bytes,
+        };
+        if (sizes[0] >= UINT32_MAX || values[0] <= sizes[0])
+            continue;
+        uint64_t delta = values[0] - sizes[0];
+        if (!delta || delta > 0x100000 ||
+                result->blob_extent.count == TRIERARCH_ADRENO_AHB_MAX_OFFSETS)
+            continue;
+        bool matches = true;
+        for (unsigned sample = 1; sample < 3; ++sample)
+            matches &= sizes[sample] < UINT32_MAX &&
+                    values[sample] > sizes[sample] &&
+                    values[sample] - sizes[sample] == delta;
+        if (!matches)
+            continue;
+        if (result->blob_extent.count && result->blob_extent_delta != delta)
+            continue;
+        result->blob_extent_delta = (uint32_t)delta;
+        result->blob_extent.values[result->blob_extent.count++] =
+                (uint32_t)(index * sizeof(uint32_t));
+    }
 }
 
 static void donor_destroy(struct donor *donor) {
@@ -90,6 +121,7 @@ static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
             words, first->stride * first->height * 4,
             second->stride * second->height * 4, third->stride * third->height * 4,
             &result->blob_exact_size);
+    find_extent_offsets(result, first, second, third);
 
     const uint32_t *first_ints = (const uint32_t *)&first->handle->data[first->handle->num_fds];
     const uint32_t *second_ints = (const uint32_t *)&second->handle->data[second->handle->num_fds];
@@ -133,7 +165,8 @@ static void log_offsets(const struct trierarch_adreno_ahb_layout *layout) {
                     sizeof(handle_size)));
 }
 
-bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
+bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
+        uint64_t usage,
         struct trierarch_adreno_ahb_layout *result) {
     if (!result)
         return false;
@@ -147,9 +180,9 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     struct donor first = {0};
     struct donor second = {0};
     struct donor third = {0};
-    bool valid = donor_create(&first, 300, 300, ahb_format) &&
-            donor_create(&second, 1134, 567, ahb_format) &&
-            donor_create(&third, 769, 127, ahb_format);
+    bool valid = donor_create(&first, 300, 300, ahb_format, usage) &&
+            donor_create(&second, 1134, 567, ahb_format, usage) &&
+            donor_create(&third, 769, 127, ahb_format, usage);
     if (!valid || first.handle->num_ints != second.handle->num_ints ||
             first.handle->num_ints != third.handle->num_ints ||
             first.metadata_bytes != second.metadata_bytes ||
@@ -162,6 +195,7 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     }
 
     result->donor_format = ahb_format;
+    result->donor_usage = usage;
     result->native_handle_fds = first.handle->num_fds;
     result->native_handle_ints = first.handle->num_ints;
     result->metadata_bytes = first.metadata_bytes;
@@ -178,14 +212,20 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
             result->blob_size.count && result->handle_width.count &&
             result->handle_height.count && result->handle_stride_pixels.count &&
             result->handle_size.count;
-    LOGI("AHB layout calibration: fmt=%u fds=%d ints=%d metadata=%llu candidate=%d "
-            "blob(w=%u h=%u sp=%u sb=%u size=%u exact=%u) "
+    result->all_fields_observed = result->candidate &&
+            result->blob_exact_size.count && result->blob_extent.count &&
+            result->handle_stride_bytes.count;
+    LOGI("AHB layout calibration: fmt=%u usage=0x%llx fds=%d ints=%d metadata=%llu "
+            "candidate=%d all_fields=%d blob(w=%u h=%u sp=%u sb=%u size=%u exact=%u extent=%u+%u) "
             "ints(w=%u h=%u sp=%u sb=%u size=%u)",
-            ahb_format, result->native_handle_fds, result->native_handle_ints,
+            ahb_format, (unsigned long long)usage, result->native_handle_fds,
+            result->native_handle_ints,
             (unsigned long long)result->metadata_bytes, result->candidate,
+            result->all_fields_observed,
             result->blob_width.count, result->blob_height.count,
             result->blob_stride_pixels.count, result->blob_stride_bytes.count,
             result->blob_size.count, result->blob_exact_size.count,
+            result->blob_extent.count, result->blob_extent_delta,
             result->handle_width.count, result->handle_height.count,
             result->handle_stride_pixels.count, result->handle_stride_bytes.count,
             result->handle_size.count);
@@ -194,4 +234,10 @@ bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
     donor_destroy(&second);
     donor_destroy(&first);
     return true;
+}
+
+bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
+        struct trierarch_adreno_ahb_layout *result) {
+    return trierarch_adreno_ahb_layout_calibrate_for_usage(ahb_format,
+            AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, result);
 }

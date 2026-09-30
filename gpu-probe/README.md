@@ -39,6 +39,13 @@ driver rendered into?
 - `guest/guest_to_host.c` exports one linear GBM DMA-BUF and sends it to the
   host. It is used to test direct Android EGL import and any experimental
   guest-DMA-BUF adapter without touching a Wayland surface.
+- For each guest-to-host packet, the host logs an allocator matrix under
+  `TrierarchAdrenoAhb`: guest FD capacity and logical image size, then Android
+  donor stride/capacity for RGBA and BGRA with sampled-only and renderable
+  usage. `all_fields` reports whether the diagnostic calibration observed the
+  expected metadata fields; it does not authorize importing or patching a
+  guest buffer. Donor allocation failures are recorded and do not stop the
+  existing import probe.
 
 The guest program reports the actual `GL_RENDERER`, surfaceless EGL extensions,
 import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes. The host reports the Android native-handle shape,

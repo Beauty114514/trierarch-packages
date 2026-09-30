@@ -18,7 +18,9 @@ struct trierarch_adreno_ahb_offsets {
 
 struct trierarch_adreno_ahb_layout {
     bool candidate;
+    bool all_fields_observed; /* diagnostic only; does not authorize handle forgery */
     uint32_t donor_format;
+    uint64_t donor_usage;
     int native_handle_fds;
     int native_handle_ints;
     uint64_t metadata_bytes;
@@ -30,6 +32,8 @@ struct trierarch_adreno_ahb_layout {
     struct trierarch_adreno_ahb_offsets blob_stride_bytes;
     struct trierarch_adreno_ahb_offsets blob_size;
     struct trierarch_adreno_ahb_offsets blob_exact_size;
+    struct trierarch_adreno_ahb_offsets blob_extent; /* allocation size + fixed delta */
+    uint32_t blob_extent_delta;
     struct trierarch_adreno_ahb_offsets handle_width;
     struct trierarch_adreno_ahb_offsets handle_height;
     struct trierarch_adreno_ahb_offsets handle_stride_pixels;
@@ -43,5 +47,7 @@ struct trierarch_adreno_ahb_layout {
  */
 bool trierarch_adreno_ahb_layout_calibrate(uint32_t ahb_format,
         struct trierarch_adreno_ahb_layout *result);
+bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
+        uint64_t usage, struct trierarch_adreno_ahb_layout *result);
 
 #endif

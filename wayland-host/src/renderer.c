@@ -2,6 +2,7 @@
 #include "server_internal.h"
 #include "adreno_ahb_import.h"
 #include "adreno_ahb_guest.h"
+#include "adreno_ahb_matrix.h"
 #include "dmabuf_frame_queue.h"
 #include "dmabuf_presentation.h"
 #include "gpu_probe.h"
@@ -565,6 +566,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     int buffer_fd = -1;
     int client_fd = -1;
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
+    trierarch_adreno_ahb_matrix_run(buffer_fd, buffer.width, buffer.height,
+            buffer.stride, buffer.drm_format, buffer.modifier);
     struct trierarch_adreno_ahb_preflight preflight;
     bool ahb_preflight_available = trierarch_adreno_ahb_preflight_run(
             buffer.width, buffer.height, buffer.drm_format, &preflight);
