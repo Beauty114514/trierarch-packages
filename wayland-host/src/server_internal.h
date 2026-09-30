@@ -43,6 +43,12 @@ struct shm_buffer {
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
+    /* A registered AHB is owned by the dma-buf record, not by one repaint.
+     * The renderer tries registration once and keeps the donor-backed handle
+     * until the last surface/frame reference to this wl_buffer retires. */
+    void *dmabuf_hardware_buffer;
+    uint32_t dmabuf_allocation_height;
+    bool dmabuf_ahb_attempted;
     /* A dma-buf may be queued or currently presented after its client has
      * detached it. Release the guest buffer only once every such use retires. */
     uint32_t dmabuf_presentation_uses;

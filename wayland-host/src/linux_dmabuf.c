@@ -1,6 +1,7 @@
 #include "server_internal.h"
 #include "dmabuf_frame_queue.h"
 
+#include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -47,6 +48,8 @@ static void dmabuf_record_destroy(void *data) {
     struct shm_buffer *buffer = data;
     if (!buffer)
         return;
+    if (buffer->dmabuf_hardware_buffer)
+        AHardwareBuffer_release(buffer->dmabuf_hardware_buffer);
     if (buffer->dmabuf_mapping)
         munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
     free(buffer);

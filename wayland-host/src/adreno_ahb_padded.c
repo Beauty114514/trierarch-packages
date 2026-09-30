@@ -24,9 +24,35 @@ static bool description_matches(const AHardwareBuffer_Desc *expected,
             expected->stride == actual->stride && expected->usage == actual->usage;
 }
 
-bool trierarch_adreno_ahb_padded_import(int guest_fd, uint32_t width,
-        uint32_t visible_height, uint32_t stride_bytes, uint32_t ahb_format,
+static bool register_matching_donor(AHardwareBuffer *donor, int guest_fd,
         AHardwareBuffer **buffer, uint32_t *allocation_height) {
+    AHardwareBuffer_Desc actual = {0};
+    AHardwareBuffer_describe(donor, &actual);
+    const struct trierarch_adreno_native_handle *handle =
+            trierarch_adreno_ahb_native_handle(donor);
+    if (!handle || handle->num_fds != 2 || handle->data[1] < 0)
+        return false;
+    AHardwareBuffer *received = NULL;
+    if (!trierarch_adreno_ahb_register_handle(&actual, handle, guest_fd,
+                handle->data[1], &received)) {
+        if (received)
+            AHardwareBuffer_release(received);
+        return false;
+    }
+    AHardwareBuffer_Desc imported = {0};
+    AHardwareBuffer_describe(received, &imported);
+    if (!description_matches(&actual, &imported)) {
+        AHardwareBuffer_release(received);
+        return false;
+    }
+    *buffer = received;
+    *allocation_height = imported.height;
+    return true;
+}
+
+static bool import_linear(int guest_fd, uint32_t width,
+        uint32_t visible_height, uint32_t stride_bytes, uint32_t ahb_format,
+        bool accept_visible, AHardwareBuffer **buffer, uint32_t *allocation_height) {
     if (!buffer || !allocation_height || guest_fd < 0 || !width ||
             !visible_height || !stride_bytes)
         return false;
@@ -35,7 +61,7 @@ bool trierarch_adreno_ahb_padded_import(int guest_fd, uint32_t width,
 
     uint64_t guest_bytes = fd_bytes(guest_fd);
     uint64_t padded_height = guest_bytes / stride_bytes;
-    if (guest_bytes <= (uint64_t)stride_bytes * visible_height ||
+    if (guest_bytes < (uint64_t)stride_bytes * visible_height ||
             guest_bytes % stride_bytes || padded_height > 4096 ||
             padded_height - visible_height > 64)
         return false;
@@ -60,14 +86,23 @@ bool trierarch_adreno_ahb_padded_import(int guest_fd, uint32_t width,
                 visible.stride * 4 == stride_bytes && visible_handle &&
                 visible_handle->num_fds >= 1 &&
                 fd_bytes(visible_handle->data[0]) == guest_bytes;
+        if (already_matches) {
+            bool imported = accept_visible && register_matching_donor(
+                    visible_donor, guest_fd, buffer, allocation_height);
+            AHardwareBuffer_release(visible_donor);
+            if (imported)
+                LOGI("AHB linear donor registration succeeded: alloc=%ux%u",
+                        width, *allocation_height);
+            return imported;
+        }
         AHardwareBuffer_release(visible_donor);
-        if (already_matches)
-            return false;
     } else if (visible_donor)
         AHardwareBuffer_release(visible_donor);
 
+    if (padded_height == visible_height)
+        return false;
+
     AHardwareBuffer *donor = NULL;
-    AHardwareBuffer *received = NULL;
     bool success = false;
     int status = AHardwareBuffer_allocate(&request, &donor);
     if (status || !donor) {
@@ -95,29 +130,31 @@ bool trierarch_adreno_ahb_padded_import(int guest_fd, uint32_t width,
         goto out;
 
     LOGI("AHB padded probe registering unmodified donor metadata");
-    if (!trierarch_adreno_ahb_register_handle(&actual, handle, guest_fd,
-                handle->data[1], &received)) {
+    if (!register_matching_donor(donor, guest_fd, buffer, allocation_height)) {
         LOGW("AHB padded probe registration failed");
-        goto out;
-    }
-    AHardwareBuffer_Desc imported = {0};
-    AHardwareBuffer_describe(received, &imported);
-    if (!description_matches(&actual, &imported)) {
-        LOGW("AHB padded probe registered description mismatch");
         goto out;
     }
 
     LOGI("AHB padded probe registration succeeded: alloc=%ux%u visible=%ux%u",
-            imported.width, imported.height, width, visible_height);
-    *buffer = received;
-    *allocation_height = imported.height;
-    received = NULL;
+            actual.width, *allocation_height, width, visible_height);
     success = true;
 
 out:
-    if (received)
-        AHardwareBuffer_release(received);
     if (donor)
         AHardwareBuffer_release(donor);
     return success;
+}
+
+bool trierarch_adreno_ahb_padded_import(int guest_fd, uint32_t width,
+        uint32_t visible_height, uint32_t stride_bytes, uint32_t ahb_format,
+        AHardwareBuffer **buffer, uint32_t *allocation_height) {
+    return import_linear(guest_fd, width, visible_height, stride_bytes, ahb_format,
+            false, buffer, allocation_height);
+}
+
+bool trierarch_adreno_ahb_linear_import(int guest_fd, uint32_t width,
+        uint32_t visible_height, uint32_t stride_bytes, uint32_t ahb_format,
+        AHardwareBuffer **buffer, uint32_t *allocation_height) {
+    return import_linear(guest_fd, width, visible_height, stride_bytes, ahb_format,
+            true, buffer, allocation_height);
 }

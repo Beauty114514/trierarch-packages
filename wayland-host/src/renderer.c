@@ -5,6 +5,7 @@
 #include "adreno_ahb_matrix.h"
 #include "adreno_ahb_padded.h"
 #include "dmabuf_frame_queue.h"
+#include "dmabuf_ahb.h"
 #include "dmabuf_presentation.h"
 #include "gpu_probe.h"
 
@@ -85,6 +86,7 @@ struct renderer_context {
     destroy_sync_fn destroy_sync;
     dup_native_fence_fd_fn dup_native_fence_fd;
     bool dmabuf_import_supported;
+    bool ahb_frame_used;
     uint64_t observed_surface_commits;
     uint64_t observed_surface_damage;
 };
@@ -418,6 +420,7 @@ static void draw_surface(struct renderer_context *renderer,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     float swizzle = 1.0f, opaque = 1.0f;
+    uint32_t texture_height = (uint32_t)buffer->height;
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
     if (buffer->android_buffer && buffer->android_hardware_buffer &&
             renderer->create_image && renderer->image_target && renderer->native_client_buffer) {
@@ -437,6 +440,36 @@ static void draw_surface(struct renderer_context *renderer,
         image = renderer->create_image(renderer->display, renderer->context,
                 EGL_WAYLAND_BUFFER_WL, (EGLClientBuffer)buffer->egl_resource, NULL);
         if (image != EGL_NO_IMAGE_KHR) { renderer->image_target(GL_TEXTURE_2D, image); swizzle = 0.0f; opaque = 0.0f; }
+    }
+    if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && source.dmabuf_fd >= 0 &&
+            renderer->create_image && renderer->destroy_image &&
+            renderer->image_target && renderer->native_client_buffer) {
+        AHardwareBuffer *ahb = trierarch_dmabuf_ahb_get(buffer, source.dmabuf_fd);
+        if (ahb) {
+            EGLClientBuffer native_buffer = renderer->native_client_buffer(ahb);
+            const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+            image = native_buffer ? renderer->create_image(renderer->display,
+                    EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, native_buffer,
+                    attributes) : EGL_NO_IMAGE_KHR;
+            if (image != EGL_NO_IMAGE_KHR) {
+                renderer->image_target(GL_TEXTURE_2D, image);
+                if (glGetError() == GL_NO_ERROR) {
+                    swizzle = 0.0f;
+                    opaque = 1.0f;
+                    texture_height = buffer->dmabuf_allocation_height;
+                    renderer->ahb_frame_used = true;
+                } else {
+                    renderer->destroy_image(renderer->display, image);
+                    image = EGL_NO_IMAGE_KHR;
+                }
+            }
+            if (image == EGL_NO_IMAGE_KHR) {
+                LOGI("normal dma-buf AHB EGL bind failed: %dx%d; EGL/CPU fallback",
+                        buffer->width, buffer->height);
+                AHardwareBuffer_release(ahb);
+                buffer->dmabuf_hardware_buffer = NULL;
+            }
+        }
     }
     if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && source.dmabuf_fd >= 0 &&
             renderer->dmabuf_import_supported) {
@@ -524,12 +557,13 @@ static void draw_surface(struct renderer_context *renderer,
     }
     glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), swizzle);
     glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), opaque);
-    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f;
+    float v1 = (float)buffer->height / (float)texture_height;
     if (surface->viewport_source_set && buffer->width > 0 && buffer->height > 0) {
         u0 = wl_fixed_to_double(surface->viewport_source_x) / buffer->width;
-        v0 = wl_fixed_to_double(surface->viewport_source_y) / buffer->height;
+        v0 = wl_fixed_to_double(surface->viewport_source_y) / texture_height;
         u1 = u0 + wl_fixed_to_double(surface->viewport_source_width) / buffer->width;
-        v1 = v0 + wl_fixed_to_double(surface->viewport_source_height) / buffer->height;
+        v1 = v0 + wl_fixed_to_double(surface->viewport_source_height) / texture_height;
     }
     const GLfloat vertices[] = { left,bottom,u0,v1, right,bottom,u1,v1,
             left,top,u0,v0, right,top,u1,v0 };
@@ -813,6 +847,7 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     renderer->observed_surface_damage = server->perf_surface_damage_generation;
     if (!eglMakeCurrent(renderer->display, renderer->surface, renderer->surface, renderer->context))
         return false;
+    renderer->ahb_frame_used = false;
     eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
     eglQuerySurface(renderer->display, renderer->surface, EGL_HEIGHT, &renderer->height);
     glViewport(0, 0, renderer->width, renderer->height);
@@ -859,6 +894,10 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     int host_gpu_probe_fence_fd = -1;
     (void)draw_host_gpu_probe(renderer, server, &host_gpu_probe_buffer_id, &host_gpu_probe_fence_fd);
     glDisable(GL_BLEND);
+    /* Until an Android read-complete fence is attached to the frame lease,
+     * finish AHB-backed reads before dispatch can retire their buffer record. */
+    if (renderer->ahb_frame_used)
+        glFinish();
     /* Snapshot only callbacks for surfaces that participated in this output
      * composition.  A later commit cannot be completed by this swap. */
     trierarch_surface_latch_frame_callbacks(server);
