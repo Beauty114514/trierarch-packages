@@ -39,6 +39,11 @@ driver rendered into?
 - `guest/guest_to_host.c` exports one linear GBM DMA-BUF and sends it to the
   host. It is used to test direct Android EGL import and any experimental
   guest-DMA-BUF adapter without touching a Wayland surface.
+- `guest/wayland_dmabuf.c` instead submits the same kind of GBM checkerboard
+  as a `wl_buffer` through the standard `zwp_linux_dmabuf_v1` and `xdg-shell`
+  protocols. It prints the exported geometry and waits briefly for a frame
+  callback. This first-stage client does not change the host's normal buffer
+  import path; host `dmabuf accepted` and render logs must be checked separately.
 - For each guest-to-host packet, the host logs an allocator matrix under
   `TrierarchAdrenoAhb`: guest FD capacity and logical image size, then Android
   donor stride/capacity for RGBA and BGRA with sampled-only and renderable
@@ -100,3 +105,23 @@ It opens `gpu-probe.sock` alongside the host Wayland socket, but does no GPU
 work unless a guest connects and sends a valid probe packet. It reuses the
 renderer’s existing EGL context rather than creating a second context for the
 Android Surface.
+
+Standard Wayland DMA-BUF submission client, cross-built on the development
+machine using the existing Debian arm64 sysroot:
+
+```sh
+bash scripts/build-wayland-dmabuf-arm64.sh
+```
+
+The output is `/tmp/trierarch-wayland-dmabuf-probe`. Run it as the guest user
+against Trierarch's parent socket, not a nested compositor's `wayland-0`:
+
+```sh
+XDG_RUNTIME_DIR=/tmp/trierarch-wayland-user \
+  /path/to/trierarch-wayland-dmabuf-probe wayland-trierarch 300 300 5
+```
+
+The final number holds the test surface for up to 5 seconds (1–30 allowed).
+This can temporarily cover part of the desktop; it does not modify KWin or
+the container. The client alone proves only standard-protocol submission and
+callback delivery, not successful Android AHB import or GPU presentation.
