@@ -3,12 +3,16 @@
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -21,6 +25,40 @@
 #define DRM_FORMAT_XBGR8888 0x34324258u
 #define DRM_FORMAT_ABGR8888 0x34324241u
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
+
+bool trierarch_dmabuf_find_main_device(dev_t *device) {
+    if (!device) return false;
+    *device = 0;
+    DIR *dir = opendir("/dev/dri");
+    if (!dir) {
+        LOGW("dma-buf feedback unavailable: /dev/dri cannot be opened: errno=%d", errno);
+        return false;
+    }
+    unsigned int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const char *suffix = entry->d_name;
+        if (strncmp(suffix, "renderD", 7) != 0) continue;
+        suffix += 7;
+        if (!*suffix || strspn(suffix, "0123456789") != strlen(suffix)) continue;
+        char path[256];
+        int length = snprintf(path, sizeof(path), "/dev/dri/%s", entry->d_name);
+        if (length < 0 || (size_t)length >= sizeof(path)) continue;
+        struct stat node;
+        if (stat(path, &node) != 0 || !S_ISCHR(node.st_mode) || !node.st_rdev)
+            continue;
+        *device = node.st_rdev;
+        count++;
+    }
+    closedir(dir);
+    if (count != 1) {
+        *device = 0;
+        LOGW("dma-buf feedback unavailable: found %u render nodes", count);
+        return false;
+    }
+    LOGI("dma-buf feedback main_device=%u:%u", major(*device), minor(*device));
+    return true;
+}
 
 #ifndef SYS_memfd_create
 #if defined(__aarch64__)
@@ -222,7 +260,7 @@ static const struct zwp_linux_dmabuf_feedback_v1_interface feedback_impl = {
     .destroy = feedback_destroy,
 };
 
-static void send_feedback(struct wl_resource *resource) {
+static void send_feedback(struct wl_resource *resource, dev_t main_device) {
     struct {
         uint32_t format;
         uint32_t padding;
@@ -251,9 +289,13 @@ static void send_feedback(struct wl_resource *resource) {
 #endif
     struct wl_array device;
     wl_array_init(&device);
-    dev_t zero = 0;
-    void *device_data = wl_array_add(&device, sizeof(zero));
-    if (device_data) memcpy(device_data, &zero, sizeof(zero));
+    void *device_data = wl_array_add(&device, sizeof(main_device));
+    if (!device_data) {
+        wl_client_post_no_memory(wl_resource_get_client(resource));
+        wl_array_release(&device);
+        return;
+    }
+    memcpy(device_data, &main_device, sizeof(main_device));
     zwp_linux_dmabuf_feedback_v1_send_main_device(resource, &device);
     zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(resource, &device);
     zwp_linux_dmabuf_feedback_v1_send_tranche_flags(resource, 0);
@@ -272,7 +314,7 @@ static void send_feedback(struct wl_resource *resource) {
 
 static void dmabuf_get_default_feedback(struct wl_client *client,
         struct wl_resource *resource, uint32_t id) {
-    (void)resource;
+    struct wayland_server *server = wl_resource_get_user_data(resource);
     struct wl_resource *feedback = wl_resource_create(client,
             &zwp_linux_dmabuf_feedback_v1_interface, 1, id);
     if (!feedback) {
@@ -280,7 +322,7 @@ static void dmabuf_get_default_feedback(struct wl_client *client,
         return;
     }
     wl_resource_set_implementation(feedback, &feedback_impl, NULL, NULL);
-    send_feedback(feedback);
+    send_feedback(feedback, server->dmabuf_main_device);
 }
 
 static void dmabuf_get_surface_feedback(struct wl_client *client,
@@ -303,7 +345,6 @@ static const struct zwp_linux_dmabuf_v1_interface dmabuf_impl = {
 
 void trierarch_dmabuf_bind(struct wl_client *client, void *data,
         uint32_t version, uint32_t id) {
-    (void)data;
     if (version > 4) version = 4;
     struct wl_resource *resource = wl_resource_create(client,
             &zwp_linux_dmabuf_v1_interface, version, id);
@@ -311,7 +352,7 @@ void trierarch_dmabuf_bind(struct wl_client *client, void *data,
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &dmabuf_impl, NULL, NULL);
+    wl_resource_set_implementation(resource, &dmabuf_impl, data, NULL);
     zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XRGB8888);
     zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ARGB8888);
     zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XBGR8888);

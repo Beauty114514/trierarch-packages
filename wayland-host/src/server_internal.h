@@ -5,6 +5,7 @@
 #include <wayland-server-protocol.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "compositor.h"
 #include "dmabuf_fence_watch.h"
@@ -180,6 +181,8 @@ struct wayland_server {
     uint32_t next_serial;
     bool valid;
     bool egl_buffer_supported;
+    dev_t dmabuf_main_device;
+    bool dmabuf_feedback_available;
     /* Test-only listener, isolated from ordinary Wayland client buffers. */
     struct trierarch_gpu_probe *gpu_probe;
     /* Output repaint state. Requests are coalesced until the next output tick,
@@ -247,6 +250,7 @@ void trierarch_dmabuf_buffer_retire_presentation(void *data);
 void trierarch_dmabuf_buffer_ref(struct shm_buffer *buffer);
 void trierarch_dmabuf_buffer_unref(struct shm_buffer *buffer);
 void trierarch_dmabuf_bind(struct wl_client *, void *, uint32_t, uint32_t);
+bool trierarch_dmabuf_find_main_device(dev_t *device);
 struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resource,
         struct wayland_server *server);
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource);
