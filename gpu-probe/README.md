@@ -155,3 +155,20 @@ accepted` with FourCC, modifier, stride, offset and FD capacity, or no such
 entry (meaning this guest EGL path selected SHM instead). Neither outcome
 enables the experimental importer; this is only the stage-three contract
 measurement.
+
+### Implicit-modifier donor comparison
+
+For a separately rebuilt host, an app-owned marker can enable a stricter
+diagnostic for the standard DMA-BUF path:
+
+```sh
+adb shell 'run-as app.trierarch touch \
+  files/wayland/runtime/adreno-ahb-donor-probe.enable'
+```
+
+For an implicit modifier, the host allocates an Android donor with the same
+visible geometry and compares stride, pixel-FD capacity, handle shape, and
+metadata-FD capacity. It immediately releases that donor. It does **not**
+register the guest FD, construct an EGLImage, or alter CPU fallback. The
+marker is accepted only when owned by the Android app UID, so a guest client
+cannot enable it by writing to the runtime bind mount.
