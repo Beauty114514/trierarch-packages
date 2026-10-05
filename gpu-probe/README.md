@@ -37,8 +37,9 @@ driver rendered into?
   only the first FD after logging its complete shape. `renderer.c` samples the
   original Android allocation as a temporary overlay after the guest replies.
 - `guest/guest_to_host.c` exports one linear GBM DMA-BUF and sends it to the
-  host. It is used to test direct Android EGL import and any experimental
-  guest-DMA-BUF adapter without touching a Wayland surface.
+  host. Its optional `require-ahb` mode forbids raw EGL dma-buf fallback, so
+  an OK result proves the experimental guest-DMA-BUF-to-AHardwareBuffer path
+  created and sampled an Android EGLImage without touching a Wayland surface.
 - `guest/wayland_dmabuf.c` instead submits the same kind of GBM checkerboard
   as a `wl_buffer` through the standard `zwp_linux_dmabuf_v1` and `xdg-shell`
   protocols. It prints the exported geometry and waits briefly for a frame
@@ -92,12 +93,17 @@ Guest-to-host import probe, cross-built with the same Debian arm64 sysroot
 used by the other Trierarch test clients:
 
 ```sh
-aarch64-linux-gnu-gcc -O2 -Wall -Wextra -Werror -std=c11 -I. \
-  -I../wayland-ime-bridge/.sysroot/debian-bookworm-arm64/usr/include \
-  -I../wayland-ime-bridge/.sysroot/debian-bookworm-arm64/usr/include/libdrm \
-  guest/guest_to_host.c -L../wayland-ime-bridge/.sysroot/debian-bookworm-arm64/usr/lib/aarch64-linux-gnu \
-  -Wl,-rpath-link,../wayland-ime-bridge/.sysroot/debian-bookworm-arm64/usr/lib/aarch64-linux-gnu \
-  -lgbm -ldrm -o guest-to-host-probe
+bash scripts/build-guest-to-host-arm64.sh
+```
+
+The default output is `/tmp/trierarch-guest-to-host-probe`.  The `require-ahb`
+mode disables the raw `EGL_EXT_image_dma_buf_import` fallback.  A successful
+result therefore means the test-only guest-FD AHB registration and Android
+EGLImage sampling path completed:
+
+```sh
+/tmp/trierarch-guest-to-host-probe \
+  /tmp/trierarch-wayland-host/gpu-probe.sock 192 144 require-ahb
 ```
 
 The Android listener is compiled by the normal `wayland-host` Android build.

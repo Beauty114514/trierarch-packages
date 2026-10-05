@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,14 +84,19 @@ static int send_message_with_fd(int socket_fd,
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2 && argc != 4) {
-        fprintf(stderr, "usage: %s /path/to/gpu-probe.sock [width height]\n", argv[0]);
+    if (argc != 2 && argc != 4 && argc != 5) {
+        fprintf(stderr, "usage: %s /path/to/gpu-probe.sock [width height [require-ahb]]\n", argv[0]);
         return EXIT_FAILURE;
     }
     uint32_t width = DEFAULT_WIDTH;
     uint32_t height = DEFAULT_HEIGHT;
-    if (argc == 4 && (parse_dimension(argv[2], &width) || parse_dimension(argv[3], &height))) {
+    if (argc >= 4 && (parse_dimension(argv[2], &width) || parse_dimension(argv[3], &height))) {
         fprintf(stderr, "guest-to-host: dimensions must be between 1 and %u\n", MAX_DIMENSION);
+        return EXIT_FAILURE;
+    }
+    bool require_ahb = argc == 5 && !strcmp(argv[4], "require-ahb");
+    if (argc == 5 && !require_ahb) {
+        fputs("guest-to-host: optional mode must be require-ahb\n", stderr);
         return EXIT_FAILURE;
     }
     int status = EXIT_FAILURE;
@@ -126,6 +132,7 @@ int main(int argc, char **argv) {
         .drm_format = DRM_FORMAT_XRGB8888,
         .stride = gbm_bo_get_stride(bo),
         .modifier = gbm_bo_get_modifier(bo),
+        .flags = require_ahb ? TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB : 0,
     };
     if (send(socket_fd, &hello, sizeof(hello), 0) != (ssize_t)sizeof(hello) ||
             send_message_with_fd(socket_fd, &buffer, buffer_fd) != 0) {
@@ -140,9 +147,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "guest-to-host: invalid host result\n");
         goto out;
     }
-    printf("guest-to-host: %ux%u checkerboard result=%u egl=0x%x format=0x%x stride=%u modifier=0x%llx\n",
+    printf("guest-to-host: %ux%u checkerboard result=%u egl=0x%x format=0x%x stride=%u modifier=0x%llx require-ahb=%d\n",
             buffer.width, buffer.height, result.result, result.egl_error, buffer.drm_format, buffer.stride,
-            (unsigned long long)buffer.modifier);
+            (unsigned long long)buffer.modifier, require_ahb);
     status = EXIT_SUCCESS;
 
 out:

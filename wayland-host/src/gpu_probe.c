@@ -157,11 +157,13 @@ static int receive_guest_buffer(struct trierarch_gpu_probe *probe) {
     memcpy(&probe->buffer_fd, CMSG_DATA(cmsg), sizeof(probe->buffer_fd));
     if (probe->buffer.magic != TRIERARCH_GPU_PROBE_MAGIC || probe->buffer.version != TRIERARCH_GPU_PROBE_VERSION ||
             probe->buffer.type != TRIERARCH_GPU_PROBE_GUEST_BUFFER || !probe->buffer.width ||
-            !probe->buffer.height || !probe->buffer.stride || probe->buffer_fd < 0) return -1;
+            !probe->buffer.height || !probe->buffer.stride || probe->buffer_fd < 0 ||
+            (probe->buffer.flags & ~TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB)) return -1;
     probe->pending = true;
-    LOGI("received guest dma-buf: %ux%u format=0x%x stride=%u modifier=0x%llx", probe->buffer.width,
+    LOGI("received guest dma-buf: %ux%u format=0x%x stride=%u modifier=0x%llx require-ahb=%d", probe->buffer.width,
             probe->buffer.height, probe->buffer.drm_format, probe->buffer.stride,
-            (unsigned long long)probe->buffer.modifier);
+            (unsigned long long)probe->buffer.modifier,
+            !!(probe->buffer.flags & TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB));
     return 1;
 }
 

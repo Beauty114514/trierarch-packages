@@ -1,13 +1,11 @@
 #include "adreno_ahb_guest.h"
 
 #include "adreno_ahb_native.h"
-#include "adreno_ahb_patch.h"
 #include "adreno_ahb_wire.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 
-#include <stdlib.h>
 #include <sys/stat.h>
 
 #define TAG "TrierarchAdrenoAhb"
@@ -44,7 +42,6 @@ bool trierarch_adreno_ahb_guest_fd_import(
     };
     AHardwareBuffer *donor = NULL;
     AHardwareBuffer *received = NULL;
-    struct trierarch_adreno_native_handle *patched_handle = NULL;
     bool success = false;
     if (AHardwareBuffer_allocate(&requested, &donor) != 0 || !donor)
         goto out;
@@ -59,27 +56,23 @@ bool trierarch_adreno_ahb_guest_fd_import(
     }
     uint64_t guest_bytes = fd_size(guest_fd);
     uint64_t donor_bytes = fd_size(handle->data[0]);
+    uint64_t logical_bytes = (uint64_t)stride_bytes * height;
     bool geometry_matches = description.width == width && description.height == height &&
             description.stride <= UINT32_MAX / 4 && description.stride * 4 == stride_bytes &&
-            guest_bytes;
-    LOGI("AHB geometry probe: guest=%ux%u stride=%u bytes=%llu donor=%ux%u stride=%u "
-            "bytes=%llu match=%d", width, height, stride_bytes,
+            donor_bytes >= logical_bytes && guest_bytes >= donor_bytes;
+    LOGI("AHB geometry probe: guest=%ux%u stride=%u logical=%llu bytes=%llu donor=%ux%u "
+            "stride=%u bytes=%llu tail=%lld match=%d", width, height, stride_bytes,
+            (unsigned long long)logical_bytes,
             (unsigned long long)guest_bytes, description.width, description.height,
             description.stride * 4, (unsigned long long)donor_bytes,
-            geometry_matches && guest_bytes == donor_bytes);
+            (long long)guest_bytes - (long long)donor_bytes, geometry_matches);
     if (!geometry_matches)
         goto out;
 
-    const struct trierarch_adreno_native_handle *registered_handle = handle;
-    if (guest_bytes != donor_bytes) {
-        if (!trierarch_adreno_ahb_patch_allocation_size(layout, handle, guest_bytes,
-                    &patched_handle)) {
-            LOGW("AHB guest probe refused uncalibrated allocation-size mismatch");
-            goto out;
-        }
-        registered_handle = patched_handle;
-    }
-    if (!trierarch_adreno_ahb_register_handle(&description, registered_handle, guest_fd,
+    /* A GBM dma-buf may carry a page-alignment tail beyond the visible rows.
+     * Keep donor metadata and handle ints untouched: they describe logical
+     * image geometry, while the guest FD merely provides at least that range. */
+    if (!trierarch_adreno_ahb_register_handle(&description, handle, guest_fd,
                 handle->data[1], &received))
         goto out;
 
@@ -95,7 +88,6 @@ bool trierarch_adreno_ahb_guest_fd_import(
     }
 
 out:
-    free(patched_handle);
     if (received)
         AHardwareBuffer_release(received);
     if (donor)

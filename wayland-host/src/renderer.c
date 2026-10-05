@@ -601,6 +601,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     int buffer_fd = -1;
     int client_fd = -1;
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
+    const bool require_ahb =
+            (buffer.flags & TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB) != 0;
     trierarch_adreno_ahb_matrix_run(buffer_fd, buffer.width, buffer.height,
             buffer.stride, buffer.drm_format, buffer.modifier);
     struct trierarch_adreno_ahb_preflight preflight;
@@ -651,7 +653,7 @@ static int draw_gpu_probe(struct renderer_context *renderer,
             }
         }
     }
-    if (image == EGL_NO_IMAGE_KHR && renderer->dmabuf_import_supported) {
+    if (image == EGL_NO_IMAGE_KHR && !require_ahb && renderer->dmabuf_import_supported) {
         const EGLint basic_attributes[] = {
             EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
             EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
@@ -677,6 +679,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     close(buffer_fd);
     if (image == EGL_NO_IMAGE_KHR) {
         EGLint error = eglGetError();
+        if (require_ahb)
+            LOGI("gpu probe required AHB import; raw dma-buf fallback was disabled");
         LOGE("gpu probe EGL import failed: format=0x%x modifier=0x%llx error=0x%x",
                 buffer.drm_format, (unsigned long long)buffer.modifier, error);
         trierarch_gpu_probe_report(client_fd, ahb_import_attempted ?

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define TRIERARCH_GPU_PROBE_MAGIC 0x54524750u /* TRGP */
-#define TRIERARCH_GPU_PROBE_VERSION 4u
+#define TRIERARCH_GPU_PROBE_VERSION 5u
 
 enum trierarch_gpu_probe_message_type {
     TRIERARCH_GPU_PROBE_HELLO = 1,
@@ -24,6 +24,12 @@ enum trierarch_gpu_probe_result {
     TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE = 2,
     TRIERARCH_GPU_PROBE_IMPORT_FAILED = 3,
     TRIERARCH_GPU_PROBE_DRAW_FAILED = 4,
+};
+
+/* A guest-to-host probe may require the Android AHardwareBuffer path.  The
+ * flag belongs to the private test protocol; it is not a Wayland extension. */
+enum trierarch_gpu_probe_buffer_flags {
+    TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB = 1u << 0,
 };
 
 struct trierarch_gpu_probe_hello {
@@ -46,7 +52,7 @@ struct trierarch_gpu_probe_buffer {
     uint32_t stride;
     uint64_t modifier;
     uint32_t buffer_id;
-    uint32_t reserved;
+    uint32_t flags;
 };
 
 struct trierarch_gpu_probe_result_message {

@@ -7,7 +7,8 @@
 #include <stdint.h>
 #include <android/hardware_buffer.h>
 
-/* Test-only: replace an otherwise unchanged donor pixel FD with guest DMA-BUF. */
+/* Test-only: replace an unchanged donor pixel FD with a guest DMA-BUF whose
+ * capacity is at least the donor's logical allocation. */
 bool trierarch_adreno_ahb_guest_fd_import(
         const struct trierarch_adreno_ahb_layout *layout, int guest_fd,
         uint32_t width, uint32_t height, uint32_t stride_bytes,
