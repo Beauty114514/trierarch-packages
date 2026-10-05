@@ -65,7 +65,8 @@ static bool donor_create(struct donor *donor, uint32_t width, uint32_t height,
 }
 
 static void find_extent_offsets(struct trierarch_adreno_ahb_layout *result,
-        const struct donor *first, const struct donor *second, const struct donor *third) {
+        const struct donor *first, const struct donor *second, const struct donor *third,
+        const struct donor *validation) {
     const size_t words = (size_t)first->metadata_bytes / sizeof(uint32_t);
     for (size_t index = 0; index < words; ++index) {
         uint32_t values[] = {
@@ -85,6 +86,9 @@ static void find_extent_offsets(struct trierarch_adreno_ahb_layout *result,
             matches &= sizes[sample] < UINT32_MAX &&
                     values[sample] > sizes[sample] &&
                     values[sample] - sizes[sample] == delta;
+        matches &= validation->pixels_bytes < UINT32_MAX &&
+                validation->metadata[index] > validation->pixels_bytes &&
+                validation->metadata[index] - validation->pixels_bytes == delta;
         if (!matches)
             continue;
         if (result->blob_extent.count && result->blob_extent_delta != delta)
@@ -103,7 +107,8 @@ static void donor_destroy(struct donor *donor) {
 }
 
 static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
-        const struct donor *first, const struct donor *second, const struct donor *third) {
+        const struct donor *first, const struct donor *second, const struct donor *third,
+        const struct donor *validation) {
     size_t words = (size_t)first->metadata_bytes / sizeof(uint32_t);
     trierarch_adreno_ahb_find_offsets(first->metadata, second->metadata, third->metadata,
             words, first->width, second->width, third->width, &result->blob_width);
@@ -121,7 +126,7 @@ static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
             words, first->stride * first->height * 4,
             second->stride * second->height * 4, third->stride * third->height * 4,
             &result->blob_exact_size);
-    find_extent_offsets(result, first, second, third);
+    find_extent_offsets(result, first, second, third, validation);
 
     const uint32_t *first_ints = (const uint32_t *)&first->handle->data[first->handle->num_fds];
     const uint32_t *second_ints = (const uint32_t *)&second->handle->data[second->handle->num_fds];
@@ -140,6 +145,29 @@ static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
     trierarch_adreno_ahb_find_offsets(first_ints, second_ints, third_ints,
             ints, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes,
             (uint32_t)third->pixels_bytes, &result->handle_size);
+
+    const size_t blob_words = (size_t)validation->metadata_bytes / sizeof(uint32_t);
+    const uint32_t *validation_ints =
+            (const uint32_t *)&validation->handle->data[validation->handle->num_fds];
+#define VALIDATE_BLOB(field, expected) \
+    trierarch_adreno_ahb_validate_offsets(&result->field, validation->metadata, \
+            blob_words, (uint32_t)(expected))
+#define VALIDATE_HANDLE(field, expected) \
+    trierarch_adreno_ahb_validate_offsets(&result->field, validation_ints, ints, \
+            (uint32_t)(expected))
+    VALIDATE_BLOB(blob_width, validation->width);
+    VALIDATE_BLOB(blob_height, validation->height);
+    VALIDATE_BLOB(blob_stride_pixels, validation->stride);
+    VALIDATE_BLOB(blob_stride_bytes, validation->stride * 4);
+    VALIDATE_BLOB(blob_size, validation->pixels_bytes);
+    VALIDATE_BLOB(blob_exact_size, validation->stride * validation->height * 4);
+    VALIDATE_HANDLE(handle_width, validation->width);
+    VALIDATE_HANDLE(handle_height, validation->height);
+    VALIDATE_HANDLE(handle_stride_pixels, validation->stride);
+    VALIDATE_HANDLE(handle_stride_bytes, validation->stride * 4);
+    VALIDATE_HANDLE(handle_size, validation->pixels_bytes);
+#undef VALIDATE_HANDLE
+#undef VALIDATE_BLOB
 }
 
 static void log_offsets(const struct trierarch_adreno_ahb_layout *layout) {
@@ -180,14 +208,19 @@ bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
     struct donor first = {0};
     struct donor second = {0};
     struct donor third = {0};
+    struct donor validation = {0};
     bool valid = donor_create(&first, 300, 300, ahb_format, usage) &&
             donor_create(&second, 1134, 567, ahb_format, usage) &&
-            donor_create(&third, 769, 127, ahb_format, usage);
+            donor_create(&third, 769, 127, ahb_format, usage) &&
+            donor_create(&validation, 513, 947, ahb_format, usage);
     if (!valid || first.handle->num_ints != second.handle->num_ints ||
             first.handle->num_ints != third.handle->num_ints ||
+            first.handle->num_ints != validation.handle->num_ints ||
             first.metadata_bytes != second.metadata_bytes ||
-            first.metadata_bytes != third.metadata_bytes) {
+            first.metadata_bytes != third.metadata_bytes ||
+            first.metadata_bytes != validation.metadata_bytes) {
         LOGW("AHB layout calibration donor mismatch");
+        donor_destroy(&validation);
         donor_destroy(&third);
         donor_destroy(&second);
         donor_destroy(&first);
@@ -201,7 +234,8 @@ bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
     result->metadata_bytes = first.metadata_bytes;
     result->first_stride = first.stride;
     result->second_stride = second.stride;
-    populate_offsets(result, &first, &second, &third);
+    result->validated_samples = 4;
+    populate_offsets(result, &first, &second, &third, &validation);
     /* Vendor layouts do not duplicate every value.  On this device width is
      * represented in handle ints but not the blob; conversely, stride bytes
      * is represented in the blob but need not occupy a separate handle int.
@@ -215,10 +249,10 @@ bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
     result->all_fields_observed = result->candidate &&
             result->blob_exact_size.count && result->blob_extent.count &&
             result->handle_stride_bytes.count;
-    LOGI("AHB layout calibration: fmt=%u usage=0x%llx fds=%d ints=%d metadata=%llu "
+    LOGI("AHB layout calibration: samples=%u fmt=%u usage=0x%llx fds=%d ints=%d metadata=%llu "
             "candidate=%d all_fields=%d blob(w=%u h=%u sp=%u sb=%u size=%u exact=%u extent=%u+%u) "
             "ints(w=%u h=%u sp=%u sb=%u size=%u)",
-            ahb_format, (unsigned long long)usage, result->native_handle_fds,
+            result->validated_samples, ahb_format, (unsigned long long)usage, result->native_handle_fds,
             result->native_handle_ints,
             (unsigned long long)result->metadata_bytes, result->candidate,
             result->all_fields_observed,
@@ -230,6 +264,7 @@ bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
             result->handle_stride_pixels.count, result->handle_stride_bytes.count,
             result->handle_size.count);
     log_offsets(result);
+    donor_destroy(&validation);
     donor_destroy(&third);
     donor_destroy(&second);
     donor_destroy(&first);

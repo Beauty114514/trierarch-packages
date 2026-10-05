@@ -19,6 +19,7 @@ struct trierarch_adreno_ahb_offsets {
 struct trierarch_adreno_ahb_layout {
     bool candidate;
     bool all_fields_observed; /* diagnostic only; does not authorize handle forgery */
+    unsigned validated_samples;
     uint32_t donor_format;
     uint64_t donor_usage;
     int native_handle_fds;

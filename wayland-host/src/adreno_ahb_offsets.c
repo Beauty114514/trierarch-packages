@@ -19,6 +19,22 @@ void trierarch_adreno_ahb_find_offsets(const uint32_t *first,
     }
 }
 
+void trierarch_adreno_ahb_validate_offsets(
+        struct trierarch_adreno_ahb_offsets *offsets,
+        const uint32_t *validation, size_t words, uint32_t expected) {
+    if (!offsets || !validation)
+        return;
+    unsigned retained = 0;
+    for (unsigned index = 0; index < offsets->count; ++index) {
+        uint32_t offset = offsets->values[index];
+        if (offset % sizeof(uint32_t) || offset / sizeof(uint32_t) >= words)
+            continue;
+        if (validation[offset / sizeof(uint32_t)] == expected)
+            offsets->values[retained++] = offset;
+    }
+    offsets->count = retained;
+}
+
 const char *trierarch_adreno_ahb_format_offsets(
         const struct trierarch_adreno_ahb_offsets *offsets,
         char *buffer, size_t buffer_size) {

@@ -11,6 +11,11 @@ void trierarch_adreno_ahb_find_offsets(const uint32_t *first,
         uint32_t expected_first, uint32_t expected_second, uint32_t expected_third,
         struct trierarch_adreno_ahb_offsets *result);
 
+/* Retain only offsets whose value also matches an independent donor. */
+void trierarch_adreno_ahb_validate_offsets(
+        struct trierarch_adreno_ahb_offsets *offsets,
+        const uint32_t *validation, size_t words, uint32_t expected);
+
 const char *trierarch_adreno_ahb_format_offsets(
         const struct trierarch_adreno_ahb_offsets *offsets,
         char *buffer, size_t buffer_size);
