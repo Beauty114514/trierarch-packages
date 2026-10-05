@@ -9,12 +9,16 @@ case ${1:---help} in
         "$root_dir/scripts/verify-source-lock.sh"
         printf '%s\n' 'mesa-adreno: Arch aarch64 target contract is ready; build steps are not implemented yet.'
         ;;
+    --prepare-source)
+        "$root_dir/scripts/prepare-source.sh" --prepare
+        ;;
     --help)
         cat <<'EOF'
-Usage: arch-aarch64.sh --check
+Usage: arch-aarch64.sh --check | --prepare-source
 
 Validates the source provenance required before an Arch Linux ARM bundle can
-be built.  This script deliberately has no build mode yet.
+be built.  --prepare-source creates an isolated source worktree; this script
+deliberately has no build mode yet.
 EOF
         ;;
     *)

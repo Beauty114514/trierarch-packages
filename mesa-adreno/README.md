@@ -28,6 +28,12 @@ This is intentionally not the nearby stock Mesa 26.2.3 checkout or the moving
 `adreno-main` branch.  Every build entry point must first run
 `scripts/verify-source-lock.sh`; it rejects an incomplete or malformed lock.
 
+`scripts/prepare-source.sh --prepare` then clones/fetches only that locked tag
+into the ignored `cache/` directory and creates a detached source worktree in
+the ignored `work/` directory.  It refuses a moved tag or pre-existing
+worktree with a different commit.  Preparing sources does not apply patches or
+compile anything.
+
 ## Targets
 
 Only `arch-aarch64` is planned first because the validated runtime artifact is
