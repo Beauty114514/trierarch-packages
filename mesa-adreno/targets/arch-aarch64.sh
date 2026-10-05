@@ -12,9 +12,25 @@ case ${1:---help} in
     --prepare-source)
         "$root_dir/scripts/prepare-source.sh" --prepare
         ;;
+    --inspect-release)
+        [[ $# -eq 2 ]] || {
+            printf '%s\n' 'usage: arch-aarch64.sh --inspect-release <release-archive.tar>' >&2
+            exit 64
+        }
+        "$root_dir/scripts/inspect-arch-release.sh" "$2"
+        ;;
+    --show-reference-options)
+        awk '
+            /^\[reference_build\]/ { printing = 1 }
+            printing && printed && /^\[/ { exit }
+            printing { print; printed = 1 }
+        ' "$root_dir/targets/arch-aarch64.toml"
+        ;;
     --help)
         cat <<'EOF'
 Usage: arch-aarch64.sh --check | --prepare-source
+       arch-aarch64.sh --inspect-release <release-archive.tar>
+       arch-aarch64.sh --show-reference-options
 
 Validates the source provenance required before an Arch Linux ARM bundle can
 be built.  --prepare-source creates an isolated source worktree; this script

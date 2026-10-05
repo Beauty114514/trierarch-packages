@@ -1,0 +1,67 @@
+# Build and bundle contract derived from the locked Arch Linux ARM release.
+# This describes the first target; it does not instruct makepkg or Meson yet.
+schema = 1
+state = "specified-not-buildable"
+
+[target]
+id = "arch-aarch64"
+distro_id = "arch"
+architecture = "aarch64"
+build_environment = "native Arch Linux ARM guest"
+
+[input]
+runtime_archive = "mesa-for-android-container_26.3.0-devel-20260824_archlinux_arm64.tar"
+packages = ["mesa", "vulkan-freedreno"]
+
+[reference_build]
+# These flags come from lfdevs' public development guide.  The guide is on a
+# newer branch than the locked release tag, so the first build must validate
+# every option with Meson instead of assuming historical byte-for-byte parity.
+documentation = "https://github.com/lfdevs/mesa-for-android-container/blob/adreno-main/.github/docs/common/development.md"
+state = "reference-must-validate"
+meson_options = [
+  "-Dplatforms=x11,wayland",
+  "-Dgallium-drivers=freedreno,zink,virgl,llvmpipe",
+  "-Dgallium-va=disabled",
+  "-Dgallium-mediafoundation=disabled",
+  "-Dvulkan-drivers=freedreno",
+  "-Dvulkan-layers=",
+  "-Degl=enabled",
+  "-Dgles2=enabled",
+  "-Dglvnd=enabled",
+  "-Dglx=dri",
+  "-Dlibunwind=disabled",
+  "-Dintel-rt=disabled",
+  "-Dmicrosoft-clc=disabled",
+  "-Dvalgrind=disabled",
+  "-Dgles1=disabled",
+  "-Dfreedreno-kmds=kgsl",
+  "-Dbuildtype=release",
+]
+
+[bundle]
+prefix = "/opt/trierarch/mesa/adreno/<bundle-id>"
+must_not_replace = ["/usr/lib/libGL.so", "/usr/lib/libEGL.so", "/usr/lib/libGLX.so"]
+
+[bundle.mesa]
+required = [
+  "lib/libEGL_mesa.so.0",
+  "lib/libGLX_mesa.so.0",
+  "lib/libgbm.so.1",
+  "lib/dri/kgsl_dri.so",
+  "lib/dri/libdril_dri.so",
+  "lib/gbm/dri_gbm.so",
+  "share/glvnd/egl_vendor.d/50_mesa.json",
+]
+
+[bundle.vulkan]
+required = [
+  "lib/libvulkan_freedreno.so",
+  "share/vulkan/icd.d/freedreno_icd.aarch64.json",
+]
+
+[runtime]
+# libglvnd remains owned by the guest distribution.  Trierarch selects only
+# Mesa implementation libraries and driver paths for a renderer launch.
+uses_guest_glvnd = true
+fallback = "existing-renderer"

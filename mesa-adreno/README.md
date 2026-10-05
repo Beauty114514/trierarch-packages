@@ -34,6 +34,25 @@ the ignored `work/` directory.  It refuses a moved tag or pre-existing
 worktree with a different commit.  Preparing sources does not apply patches or
 compile anything.
 
+## Arch Linux ARM contract
+
+`targets/arch-aarch64.toml` defines the first bundle boundary from the locked
+Arch Linux ARM release.  It intentionally includes Mesa implementation
+libraries, KGSL/Freedreno drivers, and the Freedreno Vulkan ICD, while leaving
+the guest distribution's libglvnd dispatch libraries in place.  This lets the
+renderer select a private implementation without replacing `/usr/lib`.
+
+Use `targets/arch-aarch64.sh --inspect-release <archive>` to verify a release
+archive against both the source lock and this file contract.  It only reads the
+archive; it does not extract it into a guest rootfs or install packages.
+
+The target profile also records the public KGSL/Freedreno Meson baseline from
+the upstream project's current development guide.  That guide was added after
+the locked release tag, so the fields are explicitly a reference rather than a
+claim that the historical release used byte-identical options.  The first
+native Arch ARM build must validate the list with `meson setup` before any
+Trierarch patch is applied.
+
 ## Targets
 
 Only `arch-aarch64` is planned first because the validated runtime artifact is
