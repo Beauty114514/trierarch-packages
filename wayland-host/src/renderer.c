@@ -5,6 +5,7 @@
 #include "adreno_ahb_guest.h"
 #include "adreno_ahb_matrix.h"
 #include "adreno_ahb_padded.h"
+#include "adreno_ahb_roundtrip.h"
 #include "dmabuf_frame_queue.h"
 #include "dmabuf_ahb.h"
 #include "dmabuf_presentation.h"
@@ -612,6 +613,9 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     struct trierarch_adreno_ahb_preflight preflight;
     bool ahb_preflight_available = trierarch_adreno_ahb_preflight_run(
             buffer.width, buffer.height, buffer.drm_format, &preflight);
+    bool cross_donor_accepted = !require_ahb ||
+            (ahb_preflight_available && trierarch_adreno_ahb_cross_donor_run(
+                    preflight.donor_format, buffer.width, buffer.height));
     bool ahb_import_attempted = false;
     bool ahb_image = false;
     bool padded_image = false;
@@ -620,6 +624,8 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
     if (!ahb_preflight_available)
         LOGI("Adreno AHB preflight unavailable for this guest buffer");
+    else if (!cross_donor_accepted)
+        LOGI("Adreno AHB cross-donor control was rejected; guest import skipped");
     else if (!preflight.candidate)
         LOGI("Adreno AHB preflight did not validate this allocator layout");
     else if (!renderer->create_image || !renderer->destroy_image ||
