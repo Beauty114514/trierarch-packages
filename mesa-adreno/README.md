@@ -53,6 +53,16 @@ claim that the historical release used byte-identical options.  The first
 native Arch ARM build must validate the list with `meson setup` before any
 Trierarch patch is applied.
 
+`targets/arch-aarch64.sh --configure <source> <build> <prefix>` performs that
+validation on a native Arch aarch64 guest.  It refuses an existing build
+directory, invokes only `meson setup`, and installs nothing.  `ninja` remains
+a later, separately authorized step.
+
+Before that validation, run
+`dependencies/install-arch-aarch64.sh --install` in the native Arch guest.
+It installs only build tools and headers; it never installs or replaces the
+guest `mesa` or `vulkan-freedreno` packages.
+
 ## Targets
 
 Only `arch-aarch64` is planned first because the validated runtime artifact is

@@ -26,11 +26,19 @@ case ${1:---help} in
             printing { print; printed = 1 }
         ' "$root_dir/targets/arch-aarch64.toml"
         ;;
+    --configure)
+        [[ $# -eq 4 ]] || {
+            printf '%s\n' 'usage: arch-aarch64.sh --configure <source-dir> <build-dir> <private-prefix>' >&2
+            exit 64
+        }
+        "$root_dir/scripts/configure-arch-aarch64.sh" "$2" "$3" "$4"
+        ;;
     --help)
         cat <<'EOF'
 Usage: arch-aarch64.sh --check | --prepare-source
        arch-aarch64.sh --inspect-release <release-archive.tar>
        arch-aarch64.sh --show-reference-options
+       arch-aarch64.sh --configure <source-dir> <build-dir> <private-prefix>
 
 Validates the source provenance required before an Arch Linux ARM bundle can
 be built.  --prepare-source creates an isolated source worktree; this script
