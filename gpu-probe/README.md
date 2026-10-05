@@ -125,3 +125,33 @@ The final number holds the test surface for up to 5 seconds (1–30 allowed).
 This can temporarily cover part of the desktop; it does not modify KWin or
 the container. The client alone proves only standard-protocol submission and
 callback delivery, not successful Android AHB import or GPU presentation.
+
+### Native guest GLES submission probe
+
+`guest/wayland_egl_probe.c` is deliberately different from the GBM
+checkerboard client: Mesa owns the Wayland EGL surface and renders six GLES
+frames with `eglSwapBuffers()`. It prints the actual guest `GL_RENDERER` and
+therefore confirms which guest Mesa runtime created the submitted buffers.
+It has no Trierarch-private protocol and is not packaged into the app.
+
+Build it *inside the selected guest*, where that guest's private Mesa runtime
+and Wayland/EGL development libraries are present:
+
+```sh
+bash scripts/build-wayland-egl-probe.sh
+```
+
+Then use the parent Trierarch socket (not KWin's `wayland-0`):
+
+```sh
+XDG_RUNTIME_DIR=/tmp/trierarch-wayland-user \
+WAYLAND_DISPLAY=wayland-trierarch \
+/tmp/trierarch-wayland-egl-probe
+```
+
+The guest output must identify the intended renderer, such as a KGSL-backed
+Freedreno/Turnip path. Android logcat must then contain either `dmabuf
+accepted` with FourCC, modifier, stride, offset and FD capacity, or no such
+entry (meaning this guest EGL path selected SHM instead). Neither outcome
+enables the experimental importer; this is only the stage-three contract
+measurement.

@@ -121,6 +121,9 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
         return NULL;
     }
     size_t end = (size_t)params->offset + (size_t)params->stride * (size_t)height;
+    struct stat fd_status = {0};
+    uint64_t fd_bytes = fstat(params->fd, &fd_status) == 0 && fd_status.st_size > 0
+            ? (uint64_t)fd_status.st_size : 0;
     void *mapping = mmap(NULL, end, PROT_READ, MAP_SHARED, params->fd, 0);
     if (mapping == MAP_FAILED) {
         LOGW("dmabuf CPU fallback mmap failed: fd=%d size=%zu errno=%d",
@@ -162,9 +165,10 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     }
     wl_resource_set_implementation(buffer->resource, &dmabuf_buffer_impl,
             buffer, dmabuf_buffer_destroy);
-    LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx cpu-fallback=%s",
-            width, height, format, params->stride,
-            (unsigned long long)params->modifier, mapping ? "ready" : "unavailable");
+    LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u offset=%u mod=0x%llx fd-bytes=%llu "
+            "cpu-fallback=%s", width, height, format, params->stride, params->offset,
+            (unsigned long long)params->modifier, (unsigned long long)fd_bytes,
+            mapping ? "ready" : "unavailable");
     return buffer;
 }
 
