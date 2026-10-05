@@ -21,17 +21,12 @@ without containing paths or distribution-specific environment variables.
 
 ## Source lock before patches
 
-`sources.lock.toml` is deliberately unresolved at this stage.  The currently
-tested guest runtime identifies itself as
-`mesa-for-android-container_26.3.0-devel-20260824_archlinux_arm64.tar`, but
-the corresponding source revision and archive hash have not yet been proven.
-Applying a patch to the nearby stock Mesa 26.2.3 checkout, or to the moving
-`adreno-main` branch, could produce a binary incompatible with that runtime.
-
-Every build entry point must first run `scripts/verify-source-lock.sh`.  It
-refuses to build until the exact upstream revision and source archive SHA-256
-are recorded.  Resolving that provenance is the next task; it is not optional
-metadata.
+`sources.lock.toml` locks the validated guest runtime
+`mesa-for-android-container_26.3.0-devel-20260824_archlinux_arm64.tar` to its
+upstream release tag, exact source commit, and published archive SHA-256.
+This is intentionally not the nearby stock Mesa 26.2.3 checkout or the moving
+`adreno-main` branch.  Every build entry point must first run
+`scripts/verify-source-lock.sh`; it rejects an incomplete or malformed lock.
 
 ## Targets
 

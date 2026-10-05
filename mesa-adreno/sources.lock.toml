@@ -1,12 +1,12 @@
-# Do not replace these sentinels with a guessed branch or stock Mesa version.
-# This lock becomes buildable only after the exact source provenance for the
-# tested runtime archive is established.
+# This lock identifies the exact upstream source revision and the published
+# release archive from which the validated Arch Linux ARM runtime was obtained.
 schema = 1
-state = "unresolved"
+state = "resolved"
 
 [mesa_for_android_container]
 remote = "https://github.com/lfdevs/mesa-for-android-container.git"
+tag = "mesa-26.3.0-devel-20260824"
 runtime_artifact = "mesa-for-android-container_26.3.0-devel-20260824_archlinux_arm64.tar"
 runtime_version = "26.3.0-devel-20260824"
-revision = "UNRESOLVED"
-source_sha256 = "UNRESOLVED"
+revision = "98f3d6229d61452cef80f8563af7c56ae599dc14"
+release_artifact_sha256 = "75b7638829b211c20c26b6110e525ca23ab28980ce58af824ab16c8e7afcfa26"

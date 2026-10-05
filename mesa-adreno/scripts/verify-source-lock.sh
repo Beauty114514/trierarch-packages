@@ -12,13 +12,13 @@ value() {
 
 state=$(value state)
 revision=$(value revision)
-source_sha256=$(value source_sha256)
+release_artifact_sha256=$(value release_artifact_sha256)
 
-if [[ $state != "resolved" || ! $revision =~ ^[[:xdigit:]]{40}$ || ! $source_sha256 =~ ^[[:xdigit:]]{64}$ ]]; then
+if [[ $state != "resolved" || ! $revision =~ ^[[:xdigit:]]{40}$ || ! $release_artifact_sha256 =~ ^[[:xdigit:]]{64}$ ]]; then
     cat >&2 <<EOF
-mesa-adreno: source lock is intentionally unresolved.
-Record the exact mesa-for-android-container revision and source SHA-256 for
-the tested runtime artifact in $lock_file before building a bundle.
+mesa-adreno: source lock is invalid.
+Record the exact mesa-for-android-container revision and published release
+archive SHA-256 in $lock_file before building a bundle.
 EOF
     exit 2
 fi

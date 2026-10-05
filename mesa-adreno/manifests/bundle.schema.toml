@@ -12,7 +12,7 @@ required = [
   "guest.glibc",
   "mesa.remote",
   "mesa.revision",
-  "mesa.source_sha256",
+  "mesa.release_artifact_sha256",
   "bridge.abi",
   "files.sha256",
 ]
