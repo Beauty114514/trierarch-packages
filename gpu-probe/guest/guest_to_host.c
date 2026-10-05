@@ -4,6 +4,8 @@
 
 #include <gbm.h>
 
+#include <xf86drm.h>
+
 #include <drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -65,6 +67,28 @@ static int connect_socket(const char *path) {
     return fd;
 }
 
+static const char *environment_or_unset(const char *name) {
+    const char *value = getenv(name);
+    return value && *value ? value : "unset";
+}
+
+static void log_gbm_identity(int render_fd, struct gbm_device *device) {
+    drmVersionPtr version = drmGetVersion(render_fd);
+    if (version) {
+        fprintf(stderr, "guest-to-host: DRM driver=%s version=%d.%d.%d\n",
+                version->name ? version->name : "unknown", version->version_major,
+                version->version_minor, version->version_patchlevel);
+        drmFreeVersion(version);
+    } else {
+        fputs("guest-to-host: DRM driver=unavailable\n", stderr);
+    }
+    const char *backend = gbm_device_get_backend_name(device);
+    fprintf(stderr, "guest-to-host: GBM backend=%s mesa-override=%s gallium=%s\n",
+            backend ? backend : "unknown",
+            environment_or_unset("MESA_LOADER_DRIVER_OVERRIDE"),
+            environment_or_unset("GALLIUM_DRIVER"));
+}
+
 static int send_message_with_fd(int socket_fd,
         const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
     char control[CMSG_SPACE(sizeof(buffer_fd))] = {0};
@@ -108,6 +132,8 @@ int main(int argc, char **argv) {
 
     render_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
     device = render_fd >= 0 ? gbm_create_device(render_fd) : NULL;
+    if (device)
+        log_gbm_identity(render_fd, device);
     bo = device ? gbm_bo_create(device, width, height,
             GBM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR) : NULL;
     buffer_fd = bo && fill_checkerboard(bo, width, height) == 0 ? gbm_bo_get_fd(bo) : -1;
