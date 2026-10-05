@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+case ${1:---help} in
+    --check)
+        "$root_dir/scripts/verify-source-lock.sh"
+        printf '%s\n' 'mesa-adreno: Arch aarch64 target contract is ready; build steps are not implemented yet.'
+        ;;
+    --help)
+        cat <<'EOF'
+Usage: arch-aarch64.sh --check
+
+Validates the source provenance required before an Arch Linux ARM bundle can
+be built.  This script deliberately has no build mode yet.
+EOF
+        ;;
+    *)
+        printf 'unknown argument: %s\n' "$1" >&2
+        exit 64
+        ;;
+esac

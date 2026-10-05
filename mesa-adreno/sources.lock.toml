@@ -1,0 +1,12 @@
+# Do not replace these sentinels with a guessed branch or stock Mesa version.
+# This lock becomes buildable only after the exact source provenance for the
+# tested runtime archive is established.
+schema = 1
+state = "unresolved"
+
+[mesa_for_android_container]
+remote = "https://github.com/lfdevs/mesa-for-android-container.git"
+runtime_artifact = "mesa-for-android-container_26.3.0-devel-20260824_archlinux_arm64.tar"
+runtime_version = "26.3.0-devel-20260824"
+revision = "UNRESOLVED"
+source_sha256 = "UNRESOLVED"

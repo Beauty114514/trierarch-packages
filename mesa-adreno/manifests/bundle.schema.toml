@@ -1,0 +1,23 @@
+# Documentation schema for a generated bundle manifest.toml.
+# Values below identify required fields and are not themselves a bundle.
+schema = 1
+
+[bundle]
+required = [
+  "bundle.id",
+  "bundle.target",
+  "guest.distro_id",
+  "guest.distro_version",
+  "guest.architecture",
+  "guest.glibc",
+  "mesa.remote",
+  "mesa.revision",
+  "mesa.source_sha256",
+  "bridge.abi",
+  "files.sha256",
+]
+
+[compatibility]
+# Runtime must reject a bundle whose distro identity, architecture, glibc ABI,
+# Mesa source revision, or bridge ABI does not match its manifest.
+on_mismatch = "fallback-renderer"
