@@ -106,6 +106,65 @@ static void donor_destroy(struct donor *donor) {
         AHardwareBuffer_release(donor->buffer);
 }
 
+static bool donor_layout_matches(const struct donor *reference,
+        const struct donor *candidate) {
+    return candidate->handle &&
+            reference->handle->num_fds == candidate->handle->num_fds &&
+            reference->handle->num_ints == candidate->handle->num_ints &&
+            reference->metadata_bytes == candidate->metadata_bytes;
+}
+
+static void validate_extent_offsets(struct trierarch_adreno_ahb_layout *result,
+        const struct donor *donor) {
+    unsigned retained = 0;
+    const size_t words = (size_t)donor->metadata_bytes / sizeof(uint32_t);
+
+    for (unsigned index = 0; index < result->blob_extent.count; ++index) {
+        uint32_t offset = result->blob_extent.values[index];
+        if (offset % sizeof(uint32_t) || offset / sizeof(uint32_t) >= words ||
+                donor->pixels_bytes >= UINT32_MAX)
+            continue;
+        uint32_t value = donor->metadata[offset / sizeof(uint32_t)];
+        if (value > donor->pixels_bytes &&
+                value - donor->pixels_bytes == result->blob_extent_delta)
+            result->blob_extent.values[retained++] = offset;
+    }
+    result->blob_extent.count = retained;
+}
+
+/*
+ * These checks only discard ambiguous offset candidates.  They do not infer
+ * new metadata fields, and they never modify a donor or a guest dma-buf.
+ */
+static void validate_offsets_for_donor(struct trierarch_adreno_ahb_layout *result,
+        const struct donor *donor) {
+    const size_t blob_words = (size_t)donor->metadata_bytes / sizeof(uint32_t);
+    const uint32_t *ints =
+            (const uint32_t *)&donor->handle->data[donor->handle->num_fds];
+    const size_t int_words = (size_t)donor->handle->num_ints;
+
+#define VALIDATE_BLOB(field, expected) \
+    trierarch_adreno_ahb_validate_offsets(&result->field, donor->metadata, \
+            blob_words, (uint32_t)(expected))
+#define VALIDATE_HANDLE(field, expected) \
+    trierarch_adreno_ahb_validate_offsets(&result->field, ints, int_words, \
+            (uint32_t)(expected))
+    VALIDATE_BLOB(blob_width, donor->width);
+    VALIDATE_BLOB(blob_height, donor->height);
+    VALIDATE_BLOB(blob_stride_pixels, donor->stride);
+    VALIDATE_BLOB(blob_stride_bytes, donor->stride * 4);
+    VALIDATE_BLOB(blob_size, donor->pixels_bytes);
+    VALIDATE_BLOB(blob_exact_size, donor->stride * donor->height * 4);
+    VALIDATE_HANDLE(handle_width, donor->width);
+    VALIDATE_HANDLE(handle_height, donor->height);
+    VALIDATE_HANDLE(handle_stride_pixels, donor->stride);
+    VALIDATE_HANDLE(handle_stride_bytes, donor->stride * 4);
+    VALIDATE_HANDLE(handle_size, donor->pixels_bytes);
+#undef VALIDATE_HANDLE
+#undef VALIDATE_BLOB
+    validate_extent_offsets(result, donor);
+}
+
 static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
         const struct donor *first, const struct donor *second, const struct donor *third,
         const struct donor *validation) {
@@ -146,28 +205,7 @@ static void populate_offsets(struct trierarch_adreno_ahb_layout *result,
             ints, (uint32_t)first->pixels_bytes, (uint32_t)second->pixels_bytes,
             (uint32_t)third->pixels_bytes, &result->handle_size);
 
-    const size_t blob_words = (size_t)validation->metadata_bytes / sizeof(uint32_t);
-    const uint32_t *validation_ints =
-            (const uint32_t *)&validation->handle->data[validation->handle->num_fds];
-#define VALIDATE_BLOB(field, expected) \
-    trierarch_adreno_ahb_validate_offsets(&result->field, validation->metadata, \
-            blob_words, (uint32_t)(expected))
-#define VALIDATE_HANDLE(field, expected) \
-    trierarch_adreno_ahb_validate_offsets(&result->field, validation_ints, ints, \
-            (uint32_t)(expected))
-    VALIDATE_BLOB(blob_width, validation->width);
-    VALIDATE_BLOB(blob_height, validation->height);
-    VALIDATE_BLOB(blob_stride_pixels, validation->stride);
-    VALIDATE_BLOB(blob_stride_bytes, validation->stride * 4);
-    VALIDATE_BLOB(blob_size, validation->pixels_bytes);
-    VALIDATE_BLOB(blob_exact_size, validation->stride * validation->height * 4);
-    VALIDATE_HANDLE(handle_width, validation->width);
-    VALIDATE_HANDLE(handle_height, validation->height);
-    VALIDATE_HANDLE(handle_stride_pixels, validation->stride);
-    VALIDATE_HANDLE(handle_stride_bytes, validation->stride * 4);
-    VALIDATE_HANDLE(handle_size, validation->pixels_bytes);
-#undef VALIDATE_HANDLE
-#undef VALIDATE_BLOB
+    validate_offsets_for_donor(result, validation);
 }
 
 static void log_offsets(const struct trierarch_adreno_ahb_layout *layout) {
@@ -234,8 +272,44 @@ bool trierarch_adreno_ahb_layout_calibrate_for_usage(uint32_t ahb_format,
     result->metadata_bytes = first.metadata_bytes;
     result->first_stride = first.stride;
     result->second_stride = second.stride;
-    result->validated_samples = 4;
     populate_offsets(result, &first, &second, &third, &validation);
+    result->validated_samples = 4;
+
+    /*
+     * The calibration donors above deliberately change both dimensions.  Add
+     * orthogonal checks so a value that merely happens to correlate with the
+     * original shapes cannot be labeled width, height, stride, or size.
+     * 320/513/769 x 257 isolates width and stride changes; 513 x 127 is
+     * paired with the existing 513 x 947 validation donor to isolate height.
+     */
+    const struct {
+        uint32_t width;
+        uint32_t height;
+    } semantic_shapes[] = {
+        {320, 257},
+        {513, 257},
+        {769, 257},
+        {513, 127},
+    };
+    for (size_t index = 0; index < sizeof(semantic_shapes) / sizeof(semantic_shapes[0]);
+            ++index) {
+        struct donor semantic = {0};
+        if (!donor_create(&semantic, semantic_shapes[index].width,
+                semantic_shapes[index].height, ahb_format, usage) ||
+                !donor_layout_matches(&first, &semantic)) {
+            LOGW("AHB semantic donor mismatch at %ux%u",
+                    semantic_shapes[index].width, semantic_shapes[index].height);
+            donor_destroy(&semantic);
+            donor_destroy(&validation);
+            donor_destroy(&third);
+            donor_destroy(&second);
+            donor_destroy(&first);
+            return false;
+        }
+        validate_offsets_for_donor(result, &semantic);
+        ++result->validated_samples;
+        donor_destroy(&semantic);
+    }
     /* Vendor layouts do not duplicate every value.  On this device width is
      * represented in handle ints but not the blob; conversely, stride bytes
      * is represented in the blob but need not occupy a separate handle int.
