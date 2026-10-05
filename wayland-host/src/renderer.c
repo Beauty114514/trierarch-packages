@@ -8,6 +8,7 @@
 #include "adreno_ahb_roundtrip.h"
 #include "dmabuf_frame_queue.h"
 #include "dmabuf_ahb.h"
+#include "dmabuf_identity.h"
 #include "dmabuf_presentation.h"
 #include "gpu_probe.h"
 
@@ -605,6 +606,10 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
     const bool require_ahb =
             (buffer.flags & TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB) != 0;
+    if (require_ahb) {
+        trierarch_dmabuf_log_process_identity();
+        trierarch_dmabuf_log_identity("guest-probe", buffer_fd);
+    }
     if (require_ahb)
         trierarch_adreno_ahb_census_run(AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
                 AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE);

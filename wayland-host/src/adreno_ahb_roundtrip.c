@@ -2,6 +2,7 @@
 
 #include "adreno_ahb_native.h"
 #include "adreno_ahb_wire.h"
+#include "dmabuf_identity.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -91,6 +92,10 @@ bool trierarch_adreno_ahb_cross_donor_run(uint32_t ahb_format,
         LOGW("AHB cross-donor rejected donor layouts");
         goto out;
     }
+    trierarch_dmabuf_log_identity("android-metadata-donor-pixel",
+            metadata_handle->data[0]);
+    trierarch_dmabuf_log_identity("android-pixel-donor-pixel",
+            pixel_handle->data[0]);
 
     AHardwareBuffer_Desc description = {0};
     AHardwareBuffer_Desc pixel_description = {0};
