@@ -106,6 +106,27 @@ EGLImage sampling path completed:
   /tmp/trierarch-wayland-host/gpu-probe.sock 192 144 require-ahb
 ```
 
+### Host AHardwareBuffer through standard Wayland
+
+`host_ahb_wayland.c` receives an Android-owned AHardwareBuffer pixel FD from
+the reverse probe listener, then makes a normal `zwp_linux_dmabuf_v1`
+`wl_buffer` with that exact FD and submits it to the parent Trierarch Wayland
+socket. It does not render itself; the separate reverse probe already verifies
+that the guest Freedreno driver can render into the same kind of host-owned
+buffer. This client isolates the remaining standard-Wayland leg without
+changing KWin or Mesa.
+
+```sh
+bash scripts/build-host-ahb-wayland-arm64.sh
+XDG_RUNTIME_DIR=/tmp/trierarch-wayland-host \
+  /tmp/trierarch-host-ahb-wayland-probe \
+  /tmp/trierarch-wayland-host/gpu-probe.sock wayland-trierarch
+```
+
+Success requires both a Wayland frame callback and `wl_buffer.release`. Host
+logs must also contain `dmabuf accepted` and `dma-buf presentation retired`.
+This is a test-only client, not a production host-buffer protocol.
+
 The Android listener is compiled by the normal `wayland-host` Android build.
 It opens `gpu-probe.sock` alongside the host Wayland socket, but does no GPU
 work unless a guest connects and sends a valid probe packet. It reuses the
