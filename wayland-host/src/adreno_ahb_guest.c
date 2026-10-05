@@ -1,5 +1,6 @@
 #include "adreno_ahb_guest.h"
 
+#include "adreno_ahb_forge.h"
 #include "adreno_ahb_native.h"
 #include "adreno_ahb_wire.h"
 
@@ -42,6 +43,7 @@ bool trierarch_adreno_ahb_guest_fd_import(
     };
     AHardwareBuffer *donor = NULL;
     AHardwareBuffer *received = NULL;
+    struct trierarch_adreno_native_handle *prepared = NULL;
     bool success = false;
     if (AHardwareBuffer_allocate(&requested, &donor) != 0 || !donor)
         goto out;
@@ -69,11 +71,16 @@ bool trierarch_adreno_ahb_guest_fd_import(
     if (!geometry_matches)
         goto out;
 
-    /* A GBM dma-buf may carry a page-alignment tail beyond the visible rows.
-     * Keep donor metadata and handle ints untouched: they describe logical
-     * image geometry, while the guest FD merely provides at least that range. */
-    if (!trierarch_adreno_ahb_register_handle(&description, handle, guest_fd,
-                handle->data[1], &received))
+    /* The guest's KGSL allocation can include a page-alignment tail.  Patch
+     * every calibrated allocation field, including the vendor extent, before
+     * relaying this one-shot donor.  The original donor is never visible. */
+    if (!trierarch_adreno_ahb_forge_prepare(layout, handle, width, height,
+                stride_bytes, guest_bytes, &prepared)) {
+        LOGW("AHB full donor patch is unavailable for this allocator layout");
+        goto out;
+    }
+    if (!trierarch_adreno_ahb_register_handle(&description, prepared, guest_fd,
+                prepared->data[1], &received))
         goto out;
 
     AHardwareBuffer_Desc received_description = {0};
@@ -88,6 +95,7 @@ bool trierarch_adreno_ahb_guest_fd_import(
     }
 
 out:
+    trierarch_adreno_ahb_forge_destroy(prepared);
     if (received)
         AHardwareBuffer_release(received);
     if (donor)
