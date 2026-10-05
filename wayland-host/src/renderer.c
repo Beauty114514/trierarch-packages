@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "server_internal.h"
 #include "adreno_ahb_import.h"
+#include "adreno_ahb_census.h"
 #include "adreno_ahb_guest.h"
 #include "adreno_ahb_matrix.h"
 #include "adreno_ahb_padded.h"
@@ -603,6 +604,9 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
     const bool require_ahb =
             (buffer.flags & TRIERARCH_GPU_PROBE_BUFFER_REQUIRE_AHB) != 0;
+    if (require_ahb)
+        trierarch_adreno_ahb_census_run(AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+                AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE);
     trierarch_adreno_ahb_matrix_run(buffer_fd, buffer.width, buffer.height,
             buffer.stride, buffer.drm_format, buffer.modifier);
     struct trierarch_adreno_ahb_preflight preflight;
