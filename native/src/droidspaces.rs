@@ -526,7 +526,7 @@ impl DroidspacesSpec {
             )
         };
         format!(
-            "#!/bin/sh\nlog={log}\n{{\n  printf '%s\\n' 'Trierarch KWin Adreno bootstrap'\n  env | grep -E '^(KDEWM|KWIN_COMPOSE|QT_QUICK_BACKEND|TRIERARCH_ADRENO_MESA|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|GBM_BACKENDS_PATH|MESA_LOADER_DRIVER_OVERRIDE|GALLIUM_DRIVER|FD_FORCE_KGSL|KWIN_RENDER_NODES|PATH)=' || true\n  printf '%s\\n' 'KWin stderr follows:'\n}} > \"$log\"\nexec {loader} --library-path {library_path}{preload} /usr/bin/kwin_wayland \"$@\" >> \"$log\" 2>&1\n",
+            "#!/bin/sh\nlog={log}\n{{\n  printf '%s\\n' 'Trierarch KWin Adreno bootstrap'\n  env | grep -E '^(KDEWM|KWIN_COMPOSE|QT_QUICK_BACKEND|TRIERARCH_ADRENO_MESA|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|GBM_BACKENDS_PATH|MESA_LOADER_DRIVER_OVERRIDE|GALLIUM_DRIVER|FD_FORCE_KGSL|KWIN_RENDER_NODES|PATH)=' || true\n  printf '%s\\n' 'KWin stderr follows:'\n}} > \"$log\"\nQT_DEBUG_PLUGINS=1 exec {loader} --library-path {library_path}{preload} /usr/bin/kwin_wayland \"$@\" >> \"$log\" 2>&1\n",
             log = privileged::shell_quote(GUEST_KWIN_BOOTSTRAP_LOG),
             loader = privileged::shell_quote(GUEST_GLIBC_LOADER),
             library_path = privileged::shell_quote(&library_path),
@@ -646,6 +646,7 @@ mod tests {
         assert!(launcher.contains("/tmp/trierarch-compat/libtrierarch-udev-compat.so"));
         assert!(launcher.contains("KWIN_COMPOSE"));
         assert!(launcher.contains("kwin-wayland-bootstrap.log"));
+        assert!(launcher.contains("QT_DEBUG_PLUGINS=1"));
         assert!(launcher.contains("/usr/bin/kwin_wayland \"$@\""));
         assert!(wrapper.contains("/usr/bin/kwin_wayland_wrapper \"$@\""));
         assert!(command.contains("export PATH=/tmp/trierarch-compat/bin:$PATH;"));
