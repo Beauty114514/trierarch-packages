@@ -33,12 +33,20 @@ case ${1:---help} in
         }
         "$root_dir/scripts/configure-arch-aarch64.sh" "$2" "$3" "$4"
         ;;
+    --stage)
+        [[ $# -eq 4 ]] || {
+            printf '%s\n' 'usage: arch-aarch64.sh --stage <build-dir> <bundle-id> <stage-dir>' >&2
+            exit 64
+        }
+        "$root_dir/scripts/stage-arch-aarch64-bundle.sh" "$2" "$3" "$4"
+        ;;
     --help)
         cat <<'EOF'
 Usage: arch-aarch64.sh --check | --prepare-source
        arch-aarch64.sh --inspect-release <release-archive.tar>
        arch-aarch64.sh --show-reference-options
        arch-aarch64.sh --configure <source-dir> <build-dir> <private-prefix>
+       arch-aarch64.sh --stage <build-dir> <bundle-id> <stage-dir>
 
 Validates the source provenance required before an Arch Linux ARM bundle can
 be built.  --prepare-source creates an isolated source worktree; this script

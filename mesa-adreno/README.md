@@ -58,6 +58,28 @@ validation on a native Arch aarch64 guest.  It refuses an existing build
 directory, invokes only `meson setup`, and installs nothing.  `ninja` remains
 a later, separately authorized step.
 
+After an authorized `ninja`, use `targets/arch-aarch64.sh --stage <build>
+<bundle-id> <stage-dir>` to produce a disposable staging tree.  The build must
+already have been configured with the exact prefix
+`/opt/trierarch/mesa/adreno/<bundle-id>`; staging refuses an inconsistent
+prefix.  It writes `manifest.toml` and `files.sha256` into the staged bundle.
+
+`scripts/deploy-private-bundle.sh <stage-dir> <bundle-id>` is the only step
+that copies a bundle to `/opt/trierarch/mesa/adreno/<bundle-id>`.  It refuses
+an existing destination, verifies every staged file before the final rename,
+and does not change `current` by default.  Passing `--activate` atomically
+changes only this stable selector.  This is also how an already installed
+bundle is activated: it is re-verified, never overwritten.
+
+```text
+/opt/trierarch/mesa/adreno/current -> <bundle-id>
+```
+
+The future `renderer = "adreno"` runtime will resolve that selector, not a
+versioned path compiled into the Android application or native launcher.  A
+failed candidate can remain installed but inactive, or `current` can be
+switched back without touching `/usr` or the system Mesa packages.
+
 Before that validation, run
 `dependencies/install-arch-aarch64.sh --install` in the native Arch guest.
 It installs only build tools and headers; it never installs or replaces the
