@@ -22,6 +22,7 @@ const GUEST_COMPATIBILITY_LIBRARY: &str = "/tmp/trierarch-compat/libtrierarch-ud
 const GUEST_KWIN_WRAPPER: &str = "/tmp/trierarch-compat/kwin-wayland-wrapper";
 const GUEST_KWIN_CHILD_DIRECTORY: &str = "/tmp/trierarch-compat/bin";
 const GUEST_KWIN_CHILD_LAUNCHER: &str = "/tmp/trierarch-compat/bin/kwin_wayland";
+const GUEST_KWIN_BOOTSTRAP_LOG: &str = "/tmp/trierarch-compat/kwin-wayland-bootstrap.log";
 const GUEST_GLIBC_LOADER: &str = "/lib/ld-linux-aarch64.so.1";
 
 #[derive(Clone, Debug)]
@@ -509,7 +510,8 @@ impl DroidspacesSpec {
             )
         };
         format!(
-            "#!/bin/sh\nexec {loader} --library-path {library_path}{preload} /usr/bin/kwin_wayland \"$@\"\n",
+            "#!/bin/sh\nlog={log}\n{{\n  printf '%s\\n' 'Trierarch KWin Adreno bootstrap'\n  env | grep -E '^(KDEWM|KWIN_COMPOSE|QT_QUICK_BACKEND|TRIERARCH_ADRENO_MESA|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|GBM_BACKENDS_PATH|MESA_LOADER_DRIVER_OVERRIDE|GALLIUM_DRIVER|FD_FORCE_KGSL|KWIN_RENDER_NODES|PATH)=' || true\n  printf '%s\\n' 'KWin stderr follows:'\n}} > \"$log\"\nexec {loader} --library-path {library_path}{preload} /usr/bin/kwin_wayland \"$@\" >> \"$log\" 2>&1\n",
+            log = privileged::shell_quote(GUEST_KWIN_BOOTSTRAP_LOG),
             loader = privileged::shell_quote(GUEST_GLIBC_LOADER),
             library_path = privileged::shell_quote(&library_path),
         )
@@ -618,6 +620,8 @@ mod tests {
         assert!(launcher.contains("/opt/trierarch/mesa/adreno/current/lib:/usr/lib"));
         assert!(launcher.contains("--preload"));
         assert!(launcher.contains("/tmp/trierarch-compat/libtrierarch-udev-compat.so"));
+        assert!(launcher.contains("KWIN_COMPOSE"));
+        assert!(launcher.contains("kwin-wayland-bootstrap.log"));
         assert!(launcher.contains("/usr/bin/kwin_wayland \"$@\""));
     }
 
