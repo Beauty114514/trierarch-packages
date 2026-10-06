@@ -21,8 +21,11 @@ const GUEST_COMPATIBILITY_DIRECTORY: &str = "/tmp/trierarch-compat";
 const GUEST_COMPATIBILITY_LIBRARY: &str = "/tmp/trierarch-compat/libtrierarch-udev-compat.so";
 const GUEST_KWIN_WRAPPER: &str = "/tmp/trierarch-compat/kwin-wayland-wrapper";
 const GUEST_KWIN_CHILD_DIRECTORY: &str = "/tmp/trierarch-compat/bin";
+const GUEST_KWIN_PATH_SHIM: &str = "/tmp/trierarch-compat/bin/kwin_wayland_wrapper";
 const GUEST_KWIN_CHILD_LAUNCHER: &str = "/tmp/trierarch-compat/bin/kwin_wayland";
-const GUEST_KWIN_BOOTSTRAP_LOG: &str = "/tmp/trierarch-compat/kwin-wayland-bootstrap.log";
+// The compatibility directory is created as container root. KWin runs as the
+// configured guest user, so diagnostics belong in that user's runtime dir.
+const GUEST_KWIN_BOOTSTRAP_LOG: &str = "/tmp/trierarch-wayland-user/kwin-wayland-bootstrap.log";
 const GUEST_GLIBC_LOADER: &str = "/lib/ld-linux-aarch64.so.1";
 
 #[derive(Clone, Debug)]
@@ -317,11 +320,12 @@ impl DroidspacesSpec {
         } else {
             shell_words(&self.launch_argv)
         };
+        let adreno_kwin_path_prelude = self.adreno_kwin_path_prelude();
         let script = if start_ime_bridge.is_empty() {
-            format!("{prepare_runtime}exec {launch}")
+            format!("{adreno_kwin_path_prelude}{prepare_runtime}exec {launch}")
         } else {
             format!(
-                "{prepare_runtime}{start_ime_bridge}{start_session_supervisor}{launch}; status=$?; kill $ime_bridge $session_supervisor >/dev/null 2>&1 || true; wait $ime_bridge $session_supervisor >/dev/null 2>&1 || true; rm -f {socket}; exit $status",
+                "{adreno_kwin_path_prelude}{prepare_runtime}{start_ime_bridge}{start_session_supervisor}{launch}; status=$?; kill $ime_bridge $session_supervisor >/dev/null 2>&1 || true; wait $ime_bridge $session_supervisor >/dev/null 2>&1 || true; rm -f {socket}; exit $status",
                 socket = GUEST_WAYLAND_IME_SOCKET,
             )
         };
@@ -404,7 +408,12 @@ impl DroidspacesSpec {
     /// only when a profile opted into Trierarch's private Adreno Mesa runtime.
     fn wayland_graphics_environment(&self) -> Vec<String> {
         let mut environment = self.guest_graphics_environment();
-        if self.needs_kwin_bootstrap() {
+        // Plasma Wayland's classic boot ignores KDEWM and invokes
+        // `kwin_wayland_wrapper` by program name.  The private Mesa path is
+        // installed as a PATH shim by wayland_command() instead.
+        if self.private_adreno_mesa_root().ok().flatten().is_none()
+            && !self.udev_compatibility_library.is_empty()
+        {
             environment.push(format!("KDEWM={GUEST_KWIN_WRAPPER}"));
         }
         environment
@@ -473,7 +482,7 @@ impl DroidspacesSpec {
 
     fn adreno_kwin_prelude(&self, private_mesa: &str) -> String {
         let child_launcher = self.kwin_child_launcher(private_mesa);
-        let wrapper = Self::adreno_kwin_wrapper();
+        let shim = Self::adreno_kwin_path_shim();
         let install_library = if self.udev_compatibility_library.is_empty() {
             String::new()
         } else {
@@ -484,24 +493,25 @@ impl DroidspacesSpec {
             )
         };
         format!(
-            "install -d -m 755 {directory} {child_directory} || exit $?; {install_library} printf '%s' {child_launcher} > {child_launcher_path} && chmod 755 {child_launcher_path} && printf '%s' {wrapper} > {kwin_wrapper} && chmod 755 {kwin_wrapper};",
+            "install -d -m 755 {directory} {child_directory} || exit $?; {install_library} printf '%s' {child_launcher} > {child_launcher_path} && chmod 755 {child_launcher_path} && printf '%s' {shim} > {path_shim} && chmod 755 {path_shim};",
             directory = GUEST_COMPATIBILITY_DIRECTORY,
             child_directory = GUEST_KWIN_CHILD_DIRECTORY,
             install_library = install_library,
             child_launcher = privileged::shell_quote(&child_launcher),
             child_launcher_path = GUEST_KWIN_CHILD_LAUNCHER,
-            wrapper = privileged::shell_quote(&wrapper),
-            kwin_wrapper = GUEST_KWIN_WRAPPER,
+            shim = privileged::shell_quote(&shim),
+            path_shim = GUEST_KWIN_PATH_SHIM,
         )
     }
 
-    fn adreno_kwin_wrapper() -> String {
-        // Arch's kwin_wayland_wrapper launches its sibling kwin_wayland by an
-        // absolute path, so a PATH-level interception never reaches the
-        // private Mesa loader. The Adreno-only wrapper must execute it itself.
+    fn adreno_kwin_path_shim() -> String {
+        // plasma_session classic boot starts `kwin_wayland_wrapper` by name.
+        // Keep the distribution wrapper so it continues to create and retain
+        // the nested Wayland socket.  That wrapper starts `kwin_wayland` by
+        // name, which the same PATH resolves to our private-Mesa launcher.
         format!(
-            "#!/bin/sh\nexec {child_launcher_path} \"$@\"\n",
-            child_launcher_path = privileged::shell_quote(GUEST_KWIN_CHILD_LAUNCHER),
+            "#!/bin/sh\nexec {system_wrapper} \"$@\"\n",
+            system_wrapper = privileged::shell_quote("/usr/bin/kwin_wayland_wrapper"),
         )
     }
 
@@ -521,6 +531,14 @@ impl DroidspacesSpec {
             loader = privileged::shell_quote(GUEST_GLIBC_LOADER),
             library_path = privileged::shell_quote(&library_path),
         )
+    }
+
+    fn adreno_kwin_path_prelude(&self) -> String {
+        if self.private_adreno_mesa_root().ok().flatten().is_some() {
+            format!("export PATH={GUEST_KWIN_CHILD_DIRECTORY}:$PATH; ")
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -616,12 +634,11 @@ mod tests {
         );
 
         let launcher = spec.kwin_child_launcher("/opt/trierarch/mesa/adreno/current");
-        let wrapper = DroidspacesSpec::adreno_kwin_wrapper();
+        let wrapper = DroidspacesSpec::adreno_kwin_path_shim();
         let environment = spec.wayland_graphics_environment();
+        let command = spec.wayland_command();
 
-        assert!(
-            environment.contains(&format!("KDEWM={GUEST_KWIN_WRAPPER}"))
-        );
+        assert!(!environment.contains(&format!("KDEWM={GUEST_KWIN_WRAPPER}")));
         assert!(launcher.contains("/lib/ld-linux-aarch64.so.1"));
         assert!(launcher.contains("--library-path"));
         assert!(launcher.contains("/opt/trierarch/mesa/adreno/current/lib:/usr/lib"));
@@ -630,8 +647,8 @@ mod tests {
         assert!(launcher.contains("KWIN_COMPOSE"));
         assert!(launcher.contains("kwin-wayland-bootstrap.log"));
         assert!(launcher.contains("/usr/bin/kwin_wayland \"$@\""));
-        assert!(wrapper.contains("/tmp/trierarch-compat/bin/kwin_wayland \"$@\""));
-        assert!(!wrapper.contains("kwin_wayland_wrapper"));
+        assert!(wrapper.contains("/usr/bin/kwin_wayland_wrapper \"$@\""));
+        assert!(command.contains("export PATH=/tmp/trierarch-compat/bin:$PATH;"));
     }
 
     #[test]
