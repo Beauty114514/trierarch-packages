@@ -451,24 +451,36 @@ static void draw_surface(struct renderer_context *renderer,
         if (ahb) {
             EGLClientBuffer native_buffer = renderer->native_client_buffer(ahb);
             const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
-            image = native_buffer ? renderer->create_image(renderer->display,
-                    EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, native_buffer,
-                    attributes) : EGL_NO_IMAGE_KHR;
+            if (!native_buffer) {
+                LOGE("dmabuf import stage=egl-image result=rejected "
+                        "source=ahardwarebuffer reason=no-native-client-buffer");
+            } else {
+                image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                        EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes);
+                if (image == EGL_NO_IMAGE_KHR)
+                    LOGE("dmabuf import stage=egl-image result=rejected "
+                            "source=ahardwarebuffer egl-error=0x%x size=%dx%d",
+                            eglGetError(), buffer->width, buffer->height);
+            }
             if (image != EGL_NO_IMAGE_KHR) {
                 renderer->image_target(GL_TEXTURE_2D, image);
-                if (glGetError() == GL_NO_ERROR) {
+                GLenum gl_error = glGetError();
+                if (gl_error == GL_NO_ERROR) {
                     swizzle = 0.0f;
                     opaque = 1.0f;
                     texture_height = buffer->dmabuf_allocation_height;
                     renderer->ahb_frame_used = true;
+                    LOGI("dmabuf import stage=egl-image result=ready source=ahardwarebuffer "
+                            "size=%dx%d allocation-height=%u",
+                            buffer->width, buffer->height, texture_height);
                 } else {
+                    LOGE("dmabuf import stage=egl-texture-bind result=rejected gl-error=0x%x "
+                            "size=%dx%d", gl_error, buffer->width, buffer->height);
                     renderer->destroy_image(renderer->display, image);
                     image = EGL_NO_IMAGE_KHR;
                 }
             }
             if (image == EGL_NO_IMAGE_KHR) {
-                LOGI("normal dma-buf AHB EGL bind failed: %dx%d; EGL/CPU fallback",
-                        buffer->width, buffer->height);
                 AHardwareBuffer_release(ahb);
                 buffer->dmabuf_hardware_buffer = NULL;
             }

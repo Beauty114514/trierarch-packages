@@ -15,7 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define TAG "TrierarchAdrenoAhb"
+#define TAG "TrierarchDmaBuf"
 #define DRM_FORMAT_XRGB8888 0x34325258u
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 
@@ -64,7 +64,8 @@ static bool preflight_for_xrgb(const struct shm_buffer *buffer, uint32_t *donor_
         format = preflight.donor_format;
         checked = true;
         __android_log_print(ANDROID_LOG_INFO, TAG,
-                "normal dma-buf AHB preflight: usable=%d", usable);
+                "dmabuf import stage=ahb-preflight result=%s",
+                usable ? "ready" : "unavailable");
     }
     if (usable && donor_format)
         *donor_format = format;
@@ -99,7 +100,7 @@ AHardwareBuffer *trierarch_dmabuf_ahb_get(struct shm_buffer *buffer, int frame_f
     const char *reason = import_gate_reason(buffer, frame_fd);
     if (reason) {
         __android_log_print(ANDROID_LOG_INFO, TAG,
-                "normal dma-buf AHB skipped: reason=%s fmt=0x%x mod=0x%llx "
+                "dmabuf import stage=eligibility result=skipped reason=%s fmt=0x%x mod=0x%llx "
                 "offset=%u size=%dx%d stride=%d",
                 reason, buffer->format, (unsigned long long)buffer->dmabuf_modifier,
                 buffer->dmabuf_offset, buffer->width, buffer->height, buffer->stride);
@@ -118,14 +119,14 @@ AHardwareBuffer *trierarch_dmabuf_ahb_get(struct shm_buffer *buffer, int frame_f
                 (uint32_t)buffer->height, (uint32_t)buffer->stride, donor_format,
                 &imported, &allocation_height)) {
         __android_log_print(ANDROID_LOG_INFO, TAG,
-                "normal dma-buf AHB import rejected: %dx%d stride=%d; EGL/CPU fallback",
+                "dmabuf import stage=ahb-register result=rejected size=%dx%d stride=%d",
                 buffer->width, buffer->height, buffer->stride);
         return NULL;
     }
     buffer->dmabuf_hardware_buffer = imported;
     buffer->dmabuf_allocation_height = allocation_height;
     __android_log_print(ANDROID_LOG_INFO, TAG,
-            "normal dma-buf AHB import ready: %dx%d allocation-height=%u stride=%d",
+            "dmabuf import stage=ahb-register result=ready size=%dx%d allocation-height=%u stride=%d",
             buffer->width, buffer->height, allocation_height, buffer->stride);
     return imported;
 }
