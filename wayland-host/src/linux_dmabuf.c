@@ -38,8 +38,15 @@ bool trierarch_dmabuf_find_main_device(dev_t *device) {
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         const char *suffix = entry->d_name;
-        if (strncmp(suffix, "renderD", 7) != 0) continue;
-        suffix += 7;
+        /*
+         * linux-dmabuf v4 feedback identifies a DRM *device*, not merely a
+         * render-node character device.  Mesa resolves that dev_t through
+         * libdrm and needs a primary node for the device.  Android's
+         * /dev/dri/renderD128 proxy has no card* peer, so advertising its
+         * dev_t makes Wayland EGL fail before a client can submit a buffer.
+         */
+        if (strncmp(suffix, "card", 4) != 0) continue;
+        suffix += 4;
         if (!*suffix || strspn(suffix, "0123456789") != strlen(suffix)) continue;
         char path[256];
         int length = snprintf(path, sizeof(path), "/dev/dri/%s", entry->d_name);
@@ -53,7 +60,7 @@ bool trierarch_dmabuf_find_main_device(dev_t *device) {
     closedir(dir);
     if (count != 1) {
         *device = 0;
-        LOGW("dma-buf feedback unavailable: found %u render nodes", count);
+        LOGW("dma-buf feedback unavailable: found %u primary DRM nodes", count);
         return false;
     }
     LOGI("dma-buf feedback main_device=%u:%u", major(*device), minor(*device));
