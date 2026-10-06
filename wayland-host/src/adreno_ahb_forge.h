@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 /*
- * Prepare a private, one-shot donor handle for the strict gpu probe.  The
+ * Prepare a private, one-shot donor handle for GPU import.  The
  * donor must not be shared with a visible surface: its metadata fd is patched
  * in place before being sent through the GraphicBuffer wire format.
  */

@@ -53,7 +53,7 @@ bool trierarch_adreno_ahb_guest_fd_import(
     const struct trierarch_adreno_native_handle *handle =
             trierarch_adreno_ahb_native_handle(donor);
     if (!handle || handle->num_fds != 2) {
-        LOGW("AHB guest probe rejected donor handle");
+        LOGW("AHB patched donor rejected handle");
         goto out;
     }
     uint64_t guest_bytes = fd_size(guest_fd);
@@ -62,7 +62,7 @@ bool trierarch_adreno_ahb_guest_fd_import(
     bool geometry_matches = description.width == width && description.height == height &&
             description.stride <= UINT32_MAX / 4 && description.stride * 4 == stride_bytes &&
             donor_bytes >= logical_bytes && guest_bytes >= donor_bytes;
-    LOGI("AHB geometry probe: guest=%ux%u stride=%u logical=%llu bytes=%llu donor=%ux%u "
+    LOGI("AHB patched donor geometry: guest=%ux%u stride=%u logical=%llu bytes=%llu donor=%ux%u "
             "stride=%u bytes=%llu tail=%lld match=%d", width, height, stride_bytes,
             (unsigned long long)logical_bytes,
             (unsigned long long)guest_bytes, description.width, description.height,
@@ -86,7 +86,7 @@ bool trierarch_adreno_ahb_guest_fd_import(
     AHardwareBuffer_Desc received_description = {0};
     AHardwareBuffer_describe(received, &received_description);
     success = describe_matches(&description, &received_description);
-    LOGI("AHB guest pixel-FD import: success=%d %ux%u stride=%u format=%u",
+    LOGI("AHB patched donor import: success=%d %ux%u stride=%u format=%u",
             success, received_description.width, received_description.height,
             received_description.stride, received_description.format);
     if (success) {
@@ -101,6 +101,6 @@ out:
     if (donor)
         AHardwareBuffer_release(donor);
     if (!success)
-        LOGW("AHB guest pixel-FD import failed");
+        LOGW("AHB patched donor import failed");
     return success;
 }

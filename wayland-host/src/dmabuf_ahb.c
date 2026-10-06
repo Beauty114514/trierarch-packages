@@ -1,5 +1,6 @@
 #include "dmabuf_ahb.h"
 
+#include "adreno_ahb_guest.h"
 #include "adreno_ahb_import.h"
 #include "adreno_ahb_padded.h"
 #include "server_internal.h"
@@ -40,22 +41,21 @@ static const char *import_gate_reason(const struct shm_buffer *buffer, int frame
     return NULL;
 }
 
-static bool preflight_for_bgra(const struct shm_buffer *buffer, uint32_t *donor_format) {
+static bool preflight_for_bgra(const struct shm_buffer *buffer,
+        struct trierarch_adreno_ahb_preflight *result) {
     static bool checked;
     static bool usable;
-    static uint32_t format;
+    static struct trierarch_adreno_ahb_preflight cached;
     if (!checked) {
-        struct trierarch_adreno_ahb_preflight preflight = {0};
         usable = trierarch_adreno_ahb_preflight_run(buffer->width, buffer->height,
-                buffer->format, &preflight) && preflight.candidate;
-        format = preflight.donor_format;
+                buffer->format, &cached) && cached.candidate;
         checked = true;
         __android_log_print(ANDROID_LOG_INFO, TAG,
                 "dmabuf import stage=ahb-preflight result=%s",
                 usable ? "ready" : "unavailable");
     }
-    if (usable && donor_format)
-        *donor_format = format;
+    if (usable && result)
+        *result = cached;
     return usable;
 }
 
@@ -76,24 +76,32 @@ AHardwareBuffer *trierarch_dmabuf_ahb_get(struct shm_buffer *buffer, int frame_f
         return NULL;
     }
 
-    static uint32_t donor_format;
-    if (!preflight_for_bgra(buffer, &donor_format))
+    struct trierarch_adreno_ahb_preflight preflight = {0};
+    if (!preflight_for_bgra(buffer, &preflight))
         return NULL;
 
     AHardwareBuffer *imported = NULL;
     uint32_t allocation_height = 0;
+    const char *path = "matching-donor";
     if (!trierarch_adreno_ahb_linear_import(frame_fd, (uint32_t)buffer->width,
-                (uint32_t)buffer->height, (uint32_t)buffer->stride, donor_format,
+                (uint32_t)buffer->height, (uint32_t)buffer->stride, preflight.donor_format,
                 &imported, &allocation_height)) {
-        __android_log_print(ANDROID_LOG_INFO, TAG,
-                "dmabuf import stage=ahb-register result=rejected size=%dx%d stride=%d",
-                buffer->width, buffer->height, buffer->stride);
-        return NULL;
+        path = "patched-donor";
+        allocation_height = (uint32_t)buffer->height;
+        if (!trierarch_adreno_ahb_guest_fd_import(&preflight.layout, frame_fd,
+                    (uint32_t)buffer->width, (uint32_t)buffer->height,
+                    (uint32_t)buffer->stride, preflight.donor_format, &imported)) {
+            __android_log_print(ANDROID_LOG_INFO, TAG,
+                    "dmabuf import stage=ahb-register result=rejected size=%dx%d stride=%d",
+                    buffer->width, buffer->height, buffer->stride);
+            return NULL;
+        }
     }
     buffer->dmabuf_hardware_buffer = imported;
     buffer->dmabuf_allocation_height = allocation_height;
     __android_log_print(ANDROID_LOG_INFO, TAG,
-            "dmabuf import stage=ahb-register result=ready size=%dx%d allocation-height=%u stride=%d",
-            buffer->width, buffer->height, allocation_height, buffer->stride);
+            "dmabuf import stage=ahb-register result=ready path=%s size=%dx%d "
+            "allocation-height=%u stride=%d",
+            path, buffer->width, buffer->height, allocation_height, buffer->stride);
     return imported;
 }
