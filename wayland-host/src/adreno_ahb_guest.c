@@ -34,9 +34,23 @@ bool trierarch_adreno_ahb_guest_fd_import(
             !width || !height || !stride_bytes)
         return false;
     *buffer = NULL;
-    const AHardwareBuffer_Desc requested = {
+    if (stride_bytes % 4)
+        return false;
+    const AHardwareBuffer_Desc target = {
         .width = width,
         .height = height,
+        .stride = stride_bytes / 4,
+        .layers = 1,
+        .format = ahb_format,
+        .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+    };
+    /* The donor is metadata only.  Keep it tiny and patch its private
+     * geometry before relaying it with the guest's pixel FD; reusing a
+     * target-sized allocation leaves allocator-specific capacity state that
+     * Android rejects when the guest allocation has a different tail. */
+    const AHardwareBuffer_Desc donor_request = {
+        .width = 4,
+        .height = 4,
         .layers = 1,
         .format = ahb_format,
         .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
@@ -45,7 +59,7 @@ bool trierarch_adreno_ahb_guest_fd_import(
     AHardwareBuffer *received = NULL;
     struct trierarch_adreno_native_handle *prepared = NULL;
     bool success = false;
-    if (AHardwareBuffer_allocate(&requested, &donor) != 0 || !donor)
+    if (AHardwareBuffer_allocate(&donor_request, &donor) != 0 || !donor)
         goto out;
 
     AHardwareBuffer_Desc description = {0};
@@ -59,15 +73,15 @@ bool trierarch_adreno_ahb_guest_fd_import(
     uint64_t guest_bytes = fd_size(guest_fd);
     uint64_t donor_bytes = fd_size(handle->data[0]);
     uint64_t logical_bytes = (uint64_t)stride_bytes * height;
-    bool geometry_matches = description.width == width && description.height == height &&
-            description.stride <= UINT32_MAX / 4 && description.stride * 4 == stride_bytes &&
-            donor_bytes >= logical_bytes && guest_bytes >= donor_bytes;
+    bool geometry_matches = description.width == donor_request.width &&
+            description.height == donor_request.height && donor_bytes > 0 &&
+            guest_bytes >= logical_bytes;
     LOGI("AHB patched donor geometry: guest=%ux%u stride=%u logical=%llu bytes=%llu donor=%ux%u "
-            "stride=%u bytes=%llu tail=%lld match=%d", width, height, stride_bytes,
+            "stride=%u bytes=%llu usable=%d", width, height, stride_bytes,
             (unsigned long long)logical_bytes,
             (unsigned long long)guest_bytes, description.width, description.height,
             description.stride * 4, (unsigned long long)donor_bytes,
-            (long long)guest_bytes - (long long)donor_bytes, geometry_matches);
+            geometry_matches);
     if (!geometry_matches)
         goto out;
 
@@ -79,13 +93,13 @@ bool trierarch_adreno_ahb_guest_fd_import(
         LOGW("AHB full donor patch is unavailable for this allocator layout");
         goto out;
     }
-    if (!trierarch_adreno_ahb_register_handle(&description, prepared, guest_fd,
+    if (!trierarch_adreno_ahb_register_handle(&target, prepared, guest_fd,
                 prepared->data[1], &received))
         goto out;
 
     AHardwareBuffer_Desc received_description = {0};
     AHardwareBuffer_describe(received, &received_description);
-    success = describe_matches(&description, &received_description);
+    success = describe_matches(&target, &received_description);
     LOGI("AHB patched donor import: success=%d %ux%u stride=%u format=%u",
             success, received_description.width, received_description.height,
             received_description.stride, received_description.format);

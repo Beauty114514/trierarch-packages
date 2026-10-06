@@ -3,6 +3,7 @@
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -46,10 +47,15 @@ bool trierarch_adreno_ahb_register_handle(const AHardwareBuffer_Desc *descriptio
     int fds[2] = { dup(pixel_fd), dup(metadata_fd) };
     int sockets[2] = { -1, -1 };
     int32_t *wire = NULL;
+    int send_result = -1;
+    int receive_result = -1;
+    int saved_errno = 0;
     bool success = false;
     if (fds[0] < 0 || fds[1] < 0 ||
-            socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) != 0)
+            socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) != 0) {
+        saved_errno = errno;
         goto out;
+    }
 
     const size_t wire_ints = GRAPHIC_BUFFER_HEADER_INTS + (size_t)handle->num_ints;
     wire = calloc(wire_ints, sizeof(*wire));
@@ -73,8 +79,17 @@ bool trierarch_adreno_ahb_register_handle(const AHardwareBuffer_Desc *descriptio
     wire[12] = (int32_t)(description->usage >> 32);
     memcpy(wire + GRAPHIC_BUFFER_HEADER_INTS, &handle->data[handle->num_fds],
             (size_t)handle->num_ints * sizeof(int));
-    success = send_graphic_buffer(sockets[0], wire, wire_ints * sizeof(*wire), fds) == 0 &&
-            AHardwareBuffer_recvHandleFromUnixSocket(sockets[1], received) == 0 && *received;
+    send_result = send_graphic_buffer(sockets[0], wire, wire_ints * sizeof(*wire), fds);
+    if (send_result != 0) {
+        saved_errno = errno;
+        goto out;
+    }
+    receive_result = AHardwareBuffer_recvHandleFromUnixSocket(sockets[1], received);
+    if (receive_result != 0 || !*received) {
+        saved_errno = errno;
+        goto out;
+    }
+    success = true;
 
 out:
     free(wire);
@@ -87,6 +102,7 @@ out:
     if (fds[1] >= 0)
         close(fds[1]);
     if (!success)
-        LOGW("AHB GB01 handle registration failed");
+        LOGW("AHB GB01 handle registration failed: send=%d receive=%d errno=%d",
+                send_result, receive_result, saved_errno);
     return success;
 }
