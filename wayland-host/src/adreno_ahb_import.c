@@ -9,8 +9,11 @@
 #define TAG "TrierarchAdrenoAhb"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
-#define DRM_FORMAT_ABGR8888 0x34324241u
+#define DRM_FORMAT_ARGB8888 0x34325241u
 #define DRM_FORMAT_XRGB8888 0x34325258u
+/* HAL_PIXEL_FORMAT_BGRA_8888.  It is a framework pixel format omitted from
+ * the public AHardwareBuffer_Format enum, but is accepted by gralloc. */
+#define HAL_PIXEL_FORMAT_BGRA_8888 5u
 
 bool trierarch_adreno_ahb_preflight_run(uint32_t width, uint32_t height,
         uint32_t drm_format, struct trierarch_adreno_ahb_preflight *result) {
@@ -20,13 +23,13 @@ bool trierarch_adreno_ahb_preflight_run(uint32_t width, uint32_t height,
 
     /* The probe clients use one-plane 32-bit RGB buffers. Pixel conversion
      * is not part of the read-only allocator-layout calibration. */
-    if (drm_format != DRM_FORMAT_ABGR8888 && drm_format != DRM_FORMAT_XRGB8888) {
+    if (drm_format != DRM_FORMAT_ARGB8888 && drm_format != DRM_FORMAT_XRGB8888) {
         LOGI("preflight skipped for unsupported DRM format=0x%x", drm_format);
         return false;
     }
 
     if (!trierarch_adreno_ahb_layout_calibrate(
-                AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM, &result->layout))
+                HAL_PIXEL_FORMAT_BGRA_8888, &result->layout))
         return false;
 
     result->donor_format = result->layout.donor_format;
