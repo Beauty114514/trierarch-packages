@@ -473,11 +473,7 @@ impl DroidspacesSpec {
 
     fn adreno_kwin_prelude(&self, private_mesa: &str) -> String {
         let child_launcher = self.kwin_child_launcher(private_mesa);
-        let wrapper = format!(
-            "#!/bin/sh\nexport PATH={child_directory}:$PATH\nif [ -x /usr/bin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/kwin_wayland_wrapper \"$@\"\nfi\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec {child_launcher_path} \"$@\"\n",
-            child_directory = privileged::shell_quote(GUEST_KWIN_CHILD_DIRECTORY),
-            child_launcher_path = privileged::shell_quote(GUEST_KWIN_CHILD_LAUNCHER),
-        );
+        let wrapper = Self::adreno_kwin_wrapper();
         let install_library = if self.udev_compatibility_library.is_empty() {
             String::new()
         } else {
@@ -496,6 +492,16 @@ impl DroidspacesSpec {
             child_launcher_path = GUEST_KWIN_CHILD_LAUNCHER,
             wrapper = privileged::shell_quote(&wrapper),
             kwin_wrapper = GUEST_KWIN_WRAPPER,
+        )
+    }
+
+    fn adreno_kwin_wrapper() -> String {
+        // Arch's kwin_wayland_wrapper launches its sibling kwin_wayland by an
+        // absolute path, so a PATH-level interception never reaches the
+        // private Mesa loader. The Adreno-only wrapper must execute it itself.
+        format!(
+            "#!/bin/sh\nexec {child_launcher_path} \"$@\"\n",
+            child_launcher_path = privileged::shell_quote(GUEST_KWIN_CHILD_LAUNCHER),
         )
     }
 
@@ -610,6 +616,7 @@ mod tests {
         );
 
         let launcher = spec.kwin_child_launcher("/opt/trierarch/mesa/adreno/current");
+        let wrapper = DroidspacesSpec::adreno_kwin_wrapper();
         let environment = spec.wayland_graphics_environment();
 
         assert!(
@@ -623,6 +630,8 @@ mod tests {
         assert!(launcher.contains("KWIN_COMPOSE"));
         assert!(launcher.contains("kwin-wayland-bootstrap.log"));
         assert!(launcher.contains("/usr/bin/kwin_wayland \"$@\""));
+        assert!(wrapper.contains("/tmp/trierarch-compat/bin/kwin_wayland \"$@\""));
+        assert!(!wrapper.contains("kwin_wayland_wrapper"));
     }
 
     #[test]
