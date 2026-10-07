@@ -1,6 +1,7 @@
 #include "server_internal.h"
 #include "gpu_probe.h"
 #include "adreno_buffer_bridge.h"
+#include "presenter_bridge.h"
 #include "xdg-shell-server-protocol.h"
 
 #include <errno.h>
@@ -123,6 +124,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     server->gpu_probe = trierarch_gpu_probe_create(server, server->runtime_dir);
     server->adreno_buffer_bridge = trierarch_adreno_buffer_bridge_create(server,
             server->runtime_dir);
+    server->presenter_bridge = trierarch_presenter_bridge_create(server,
+            server->runtime_dir);
     wl_global_create(server->display, &wl_compositor_interface, 4, server,
             trierarch_surface_bind);
     wl_global_create(server->display, &wl_subcompositor_interface, 1, server,
@@ -174,6 +177,8 @@ void trierarch_wayland_destroy(wayland_server_t *server) {
     server->gpu_probe = NULL;
     trierarch_adreno_buffer_bridge_destroy(server->adreno_buffer_bridge);
     server->adreno_buffer_bridge = NULL;
+    trierarch_presenter_bridge_destroy(server->presenter_bridge);
+    server->presenter_bridge = NULL;
     if (server->display) wl_display_destroy(server->display);
     if (server->wake_fd >= 0) close(server->wake_fd);
     if (server->telemetry_fd >= 0) close(server->telemetry_fd);

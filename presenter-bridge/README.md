@@ -18,5 +18,7 @@ The lifecycle is:
 if the backend disconnects, rejects the request, or fails to return it.  A
 guest backend must drop every imported buffer on `RESET` or disconnect.
 
-Version 1 only defines the wire ABI.  It intentionally starts no socket and
-does not alter the existing SHM or linux-dmabuf rendering paths.
+The Android host currently exposes this contract at
+`$XDG_RUNTIME_DIR/trierarch-presenter.sock`.  It validates a `HELLO` handshake
+only; Android buffer dequeue/queue and guest rendering are deliberately not
+active yet, so existing SHM and linux-dmabuf rendering remain unchanged.
