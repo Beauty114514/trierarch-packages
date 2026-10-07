@@ -43,8 +43,8 @@ because that mount is normally `noexec`.
 
 ## Guest contract
 
-For a DroidSpaces profile with `graphics.renderer = "virgl"`, the app exposes
-a per-session vtest socket and launches the guest with the equivalent of:
+For a profile with `graphics.renderer = "virgl"`, the app exposes a
+per-session vtest socket and launches the guest with the equivalent of:
 
 ```bash
 GALLIUM_DRIVER=virpipe
@@ -56,3 +56,11 @@ VTEST_RENDERER_SOCKET_NAME=/path/to/vtest.sock
 
 Qt Quick then sees a normal EGL/OpenGL implementation. It does not need a
 VirGL-specific Qt backend.
+
+`graphics.renderer = "venus"` starts the same vtest transport in its Vulkan
+Venus mode.  The guest must provide its own Venus Vulkan ICD and choose it
+with `VK_DRIVER_FILES`; Trierarch deliberately does not hard-code an
+Arch-, Debian-, or Kali-specific ICD path.  The guest environment receives
+`VN_DEBUG=vtest` plus the same socket variables.  This is experimental: a
+ready socket proves only that the Android Vulkan renderer started, not that a
+given guest Mesa build or Wayland WSI can present successfully.

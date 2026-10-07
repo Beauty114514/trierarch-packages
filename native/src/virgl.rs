@@ -15,9 +15,32 @@ use std::time::{Duration, Instant};
 const SOCKET_NAME: &str = "vtest.sock";
 const SERVER_NAME: &str = "virgl_test_server_android";
 
-static CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+/// The vtest protocol can expose either Gallium VirGL or Vulkan Venus.  They
+/// use incompatible renderer initialisation, so a single host process must
+/// never silently serve one mode to a session that requested the other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    Virgl,
+    Venus,
+}
 
-fn child_slot() -> &'static Mutex<Option<Child>> {
+impl Mode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Virgl => "virgl",
+            Self::Venus => "venus",
+        }
+    }
+}
+
+struct HostProcess {
+    child: Child,
+    mode: Mode,
+}
+
+static CHILD: OnceLock<Mutex<Option<HostProcess>>> = OnceLock::new();
+
+fn child_slot() -> &'static Mutex<Option<HostProcess>> {
     CHILD.get_or_init(|| Mutex::new(None))
 }
 
@@ -25,13 +48,21 @@ pub fn start(
     runtime_directory: &Path,
     payload_directory: &Path,
     native_library_directory: &Path,
+    mode: Mode,
 ) -> io::Result<()> {
     let mut slot = child_slot()
         .lock()
         .map_err(|_| io::Error::other("VirGL host state lock poisoned"))?;
-    if let Some(child) = slot.as_mut() {
-        if child.try_wait()?.is_none() && socket_path(runtime_directory).is_socket() {
-            return Ok(());
+    if let Some(host) = slot.as_mut() {
+        if host.child.try_wait()?.is_none() && socket_path(runtime_directory).is_socket() {
+            if host.mode == mode {
+                return Ok(());
+            }
+            return Err(io::Error::other(format!(
+                "vtest host is already running in {} mode; stop its sessions before starting {} mode",
+                host.mode.name(),
+                mode.name(),
+            )));
         }
     }
     *slot = None;
@@ -67,8 +98,6 @@ pub fn start(
     let mut command = Command::new(linker);
     command
         .arg(&server)
-        .arg("--use-egl-surfaceless")
-        .arg("--use-gles")
         .arg("--socket-path")
         .arg(&socket)
         .current_dir(runtime_directory)
@@ -88,6 +117,25 @@ pub fn start(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    match mode {
+        Mode::Virgl => {
+            command.arg("--use-egl-surfaceless").arg("--use-gles");
+        }
+        Mode::Venus => {
+            let vulkan_library = if cfg!(target_pointer_width = "64") {
+                "/system/lib64/libvulkan.so"
+            } else {
+                "/system/lib/libvulkan.so"
+            };
+            // Android's public Vulkan loader lives outside the app's extracted
+            // payload.  Preloading it makes the renderer's Vulkan dispatch
+            // resolve in the platform linker namespace.
+            command
+                .arg("--venus")
+                .arg("--no-virgl")
+                .env("LD_PRELOAD", vulkan_library);
+        }
+    }
     // virglrenderer creates the vtest socket with mode 0777.  Android apps
     // normally inherit a restrictive umask, which made it inaccessible to the
     // guest UID even after the directory was bind-mounted.  0111 yields a
@@ -103,7 +151,7 @@ pub fn start(
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if socket.is_socket() {
-            *slot = Some(child);
+            *slot = Some(HostProcess { child, mode });
             return Ok(());
         }
         if let Some(status) = child.try_wait()? {
@@ -123,9 +171,9 @@ pub fn start(
 
 pub fn stop() {
     if let Ok(mut slot) = child_slot().lock() {
-        if let Some(mut child) = slot.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut host) = slot.take() {
+            let _ = host.child.kill();
+            let _ = host.child.wait();
         }
     }
 }

@@ -257,12 +257,18 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_startVirg
     runtime_directory: JString,
     payload_directory: JString,
     native_library_directory: JString,
+    venus: jboolean,
 ) {
     let result = (|| {
         crate::virgl::start(
             &PathBuf::from(java_string(&mut env, runtime_directory)?),
             &PathBuf::from(java_string(&mut env, payload_directory)?),
             &PathBuf::from(java_string(&mut env, native_library_directory)?),
+            if venus != 0 {
+                crate::virgl::Mode::Venus
+            } else {
+                crate::virgl::Mode::Virgl
+            },
         )
         .map_err(|error| error.to_string())
     })();
