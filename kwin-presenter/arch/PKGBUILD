@@ -1,0 +1,67 @@
+# Maintainer: Trierarch contributors
+# KWin 6.7.5 rebuilt with the Trierarch presenter handshake probe.
+
+pkgname=kwin
+pkgver=6.7.5
+pkgrel=1.1
+pkgdesc='An easy to use, but flexible, Wayland compositor (Trierarch presenter probe)'
+arch=('aarch64')
+url='https://kde.org/plasma-desktop/'
+license=('LGPL-2.0-or-later')
+
+depends=(
+  aurorae breeze glibc iio-sensor-proxy plasma-activities kauth kcmutils
+  kcolorscheme kconfig kcoreaddons kcrash kdbusaddons kdeclarative
+  kdecoration kglobalaccel kglobalacceld kguiaddons ki18n kidletime kirigami
+  kitemmodels knewstuff knighttime knotifications kpackage kquickcharts
+  kscreenlocker kservice ksvg kwayland kwidgetsaddons kwindowsystem kxmlgui
+  lcms2 libcanberra libdisplay-info libdrm libei libepoxy libevdev libgcc
+  libinput libpipewire libqaccessibilityclient-qt6 libstdc++ libxcb libxcvt
+  libxkbcommon mesa milou pipewire-session-manager libplasma qt6-5compat
+  qt6-base qt6-declarative qt6-svg qt6-tools systemd-libs vulkan-icd-loader
+  wayland xcb-util-keysyms xcb-util-wm
+)
+makedepends=(
+  cmake extra-cmake-modules kdoctools krunner ninja plasma-wayland-protocols
+  python vulkan-headers wayland-protocols xorg-xwayland
+)
+optdepends=('plasma-keyboard: virtual keyboard')
+source=(
+  "kwin-${pkgver}.tar.xz::https://download.kde.org/stable/plasma/${pkgver}/kwin-${pkgver}.tar.xz"
+  'kwin.patch'
+  'trierarch-overlay.tar'
+)
+noextract=('trierarch-overlay.tar')
+sha256sums=(
+  'SKIP'
+  'SKIP'
+  'SKIP'
+)
+
+prepare() {
+  local tree="$srcdir/kwin-$pkgver"
+  [[ "$(uname -m)" == 'aarch64' && "${CARCH:-}" == 'aarch64' ]] || {
+    error 'this package must be built natively on Arch Linux ARM (aarch64)'
+    return 1
+  }
+  [[ -d "$tree" ]] || { error 'KWin source tree is missing'; return 1; }
+  tar -xf "$srcdir/trierarch-overlay.tar" -C "$srcdir"
+  [[ -f "$tree/src/backends/trierarch/trierarch_presenter_probe.cpp" ]] || {
+    error 'Trierarch presenter overlay is missing'; return 1;
+  }
+  patch -Np1 -d "$tree" -i "$srcdir/kwin.patch"
+}
+
+build() {
+  local tree="$srcdir/kwin-$pkgver"
+  cmake -S "$tree" -B "$tree/build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_TESTING=OFF
+  cmake --build "$tree/build" --parallel "${JOBS:-$(nproc)}"
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install "$srcdir/kwin-$pkgver/build"
+}

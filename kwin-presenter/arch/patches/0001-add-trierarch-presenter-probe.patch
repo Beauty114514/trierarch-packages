@@ -1,11 +1,11 @@
-diff --git a/src/backends/CMakeLists.txt b/src/backends/CMakeLists.txt
---- a/src/backends/CMakeLists.txt
-+++ b/src/backends/CMakeLists.txt
-@@ -1,3 +1,4 @@
-+add_subdirectory(trierarch)
- add_subdirectory(drm)
- add_subdirectory(fakeinput)
- add_subdirectory(libinput)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -409,1 +409,4 @@
+ add_executable(kwin_wayland main_wayland.cpp)
++target_sources(kwin_wayland PRIVATE
++    backends/trierarch/trierarch_presenter_probe.cpp
++)
 diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
 --- a/src/main_wayland.cpp
 +++ b/src/main_wayland.cpp

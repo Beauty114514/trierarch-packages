@@ -27,3 +27,11 @@ The script copies the overlay and protocol header, then applies the patch.  It
 fails without modifying the source further if the tree is not the expected
 KWin layout.  Building or installing the patched KWin is intentionally a
 separate, explicit step.
+
+## Arch package build
+
+For the tested Arch ARM KWin `6.7.5-1`, `arch/scripts/build-arch-package.sh`
+creates an unsigned local `kwin-6.7.5-1.1-aarch64.pkg.tar.*` package with
+`makepkg`.  It downloads the matching upstream source, resolves build
+dependencies through normal Arch packaging, and does **not** install the
+result.  Installation remains a separate recovery-sensitive action.
