@@ -1,0 +1,56 @@
+diff --git a/src/backends/CMakeLists.txt b/src/backends/CMakeLists.txt
+--- a/src/backends/CMakeLists.txt
++++ b/src/backends/CMakeLists.txt
+@@ -1,3 +1,4 @@
++add_subdirectory(trierarch)
+ add_subdirectory(drm)
+ add_subdirectory(fakeinput)
+ add_subdirectory(libinput)
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "config-kwin.h"
+ 
++#include "backends/trierarch/trierarch_presenter_probe.h"
+ #include "backends/drm/drm_backend.h"
+ #include "backends/virtual/virtual_backend.h"
+ #include "backends/wayland/wayland_backend.h"
+@@ -378,6 +379,8 @@
+                                      i18n("Exits this instance so it can be restarted by kwin_wayland_wrapper."));
+ 
+     QCommandLineOption drmOption(QStringLiteral("drm"), i18n("Render through drm node."));
++    QCommandLineOption trierarchPresenterProbeOption(QStringLiteral("trierarch-presenter-probe"),
++                                                     i18n("Connect to a Trierarch presenter socket without changing the output backend."), i18n("socket"));
+     QCommandLineOption locale1Option(QStringLiteral("locale1"), i18n("Extract locale information from locale1 rather than the user's configuration"));
+ 
+     QCommandLineParser parser;
+@@ -401,6 +404,7 @@
+     parser.addOption(scaleOption);
+     parser.addOption(outputCountOption);
+     parser.addOption(drmOption);
++    parser.addOption(trierarchPresenterProbeOption);
+     parser.addOption(locale1Option);
+     parser.addOption(fullscreenOption);
+ 
+@@ -441,6 +445,19 @@
+     parser.process(a);
+     a.processCommandLine(&parser);
+ 
++    std::unique_ptr<KWin::TrierarchPresenterProbe> trierarchPresenterProbe;
++    const QString trierarchPresenterSocket = parser.isSet(trierarchPresenterProbeOption)
++        ? parser.value(trierarchPresenterProbeOption)
++        : qEnvironmentVariable("TRIERARCH_PRESENTER_PROBE_SOCKET");
++    if (!trierarchPresenterSocket.isEmpty()) {
++        trierarchPresenterProbe = std::make_unique<KWin::TrierarchPresenterProbe>();
++        QString presenterError;
++        if (!trierarchPresenterProbe->connectTo(trierarchPresenterSocket, &presenterError)) {
++            qWarning() << "Unable to connect Trierarch presenter probe:" << presenterError;
++            return 1;
++        }
++    }
++
+ #if KWIN_BUILD_ACTIVITIES
+     if (parser.isSet(noActivitiesOption)) {
+         a.setUseKActivities(false);
