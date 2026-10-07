@@ -22,3 +22,23 @@ The Android host currently exposes this contract at
 `$XDG_RUNTIME_DIR/trierarch-presenter.sock`.  It validates a `HELLO` handshake
 only; Android buffer dequeue/queue and guest rendering are deliberately not
 active yet, so existing SHM and linux-dmabuf rendering remain unchanged.
+
+## Handshake verifier
+
+`guest/hello_client.c` is a temporary protocol verifier, not a compositor
+backend and not an APK asset.  Cross-build it on the development machine:
+
+```sh
+bash scripts/build-hello-client-arm64.sh
+```
+
+After placing the resulting binary in the guest's existing Trierarch runtime
+bind mount, run it as the guest user:
+
+```sh
+/tmp/trierarch-wayland-host/trierarch-presenter-hello \
+  /tmp/trierarch-wayland-host/trierarch-presenter.sock 15
+```
+
+Success prints `host kept the handshake open`; Android logcat must contain
+`presenter peer handshake complete`.  The verifier sends no FD or frame data.
