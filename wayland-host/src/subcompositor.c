@@ -2,6 +2,16 @@
 
 #include <stdlib.h>
 
+/* The sibling in wl_subsurface.place_* may be the parent surface itself, or
+ * another subsurface of that same parent.  Nested KWin uses the former when
+ * placing its first EGL output layer above the output surface. */
+static bool subsurface_has_valid_sibling(const struct compositor_surface *surface,
+        const struct compositor_surface *sibling) {
+    if (!surface || !sibling || !surface->parent || surface == sibling)
+        return false;
+    return sibling == surface->parent || sibling->parent == surface->parent;
+}
+
 /* KWin uses this global for nested helper and cursor surfaces. */
 static void subsurface_destroy_request(struct wl_client *client,
         struct wl_resource *resource) {
@@ -24,14 +34,18 @@ static void subsurface_place_above(struct wl_client *client,
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     struct compositor_surface *sibling_surface =
             trierarch_surface_from_resource(sibling);
-    if (!surface || !sibling_surface || !surface->parent ||
-            surface->parent != sibling_surface->parent) {
+    if (!subsurface_has_valid_sibling(surface, sibling_surface)) {
         wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
                 "surface and sibling must share a parent");
         return;
     }
     wl_list_remove(&surface->subsurface_link);
-    wl_list_insert(sibling_surface->subsurface_link.next, &surface->subsurface_link);
+    if (sibling_surface == surface->parent) {
+        /* The first child drawn after the parent is immediately above it. */
+        wl_list_insert(&surface->parent->children, &surface->subsurface_link);
+    } else {
+        wl_list_insert(sibling_surface->subsurface_link.next, &surface->subsurface_link);
+    }
 }
 
 static void subsurface_place_below(struct wl_client *client,
@@ -40,14 +54,20 @@ static void subsurface_place_below(struct wl_client *client,
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     struct compositor_surface *sibling_surface =
             trierarch_surface_from_resource(sibling);
-    if (!surface || !sibling_surface || !surface->parent ||
-            surface->parent != sibling_surface->parent) {
+    if (!subsurface_has_valid_sibling(surface, sibling_surface)) {
         wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
                 "surface and sibling must share a parent");
         return;
     }
     wl_list_remove(&surface->subsurface_link);
-    wl_list_insert(&sibling_surface->subsurface_link, &surface->subsurface_link);
+    if (sibling_surface == surface->parent) {
+        /* This host currently draws one child stack after its parent. Keep the
+         * link in that stack rather than attaching it to the parent's own
+         * standalone list link. */
+        wl_list_insert(surface->parent->children.prev, &surface->subsurface_link);
+    } else {
+        wl_list_insert(&sibling_surface->subsurface_link, &surface->subsurface_link);
+    }
 }
 
 static void subsurface_set_sync(struct wl_client *client,
