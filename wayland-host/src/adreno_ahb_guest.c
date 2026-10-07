@@ -85,11 +85,11 @@ bool trierarch_adreno_ahb_guest_fd_import(
     if (!geometry_matches)
         goto out;
 
-    /* The guest's KGSL allocation can include a page-alignment tail.  Patch
-     * every calibrated allocation field, including the vendor extent, before
-     * relaying this one-shot donor.  The original donor is never visible. */
+    /* The guest's KGSL allocation can include a page-alignment tail.  Relay
+     * the whole pixel FD, but describe only the visible stride × height image
+     * to gralloc; the tail is capacity, not image geometry. */
     if (!trierarch_adreno_ahb_forge_prepare(layout, handle, width, height,
-                stride_bytes, guest_bytes, &prepared)) {
+                stride_bytes, logical_bytes, &prepared)) {
         LOGW("AHB full donor patch is unavailable for this allocator layout");
         goto out;
     }
