@@ -32,7 +32,10 @@ This is intentionally not the nearby stock Mesa 26.2.3 checkout or the moving
 into the ignored `cache/` directory and creates a detached source worktree in
 the ignored `work/` directory.  It refuses a moved tag or pre-existing
 worktree with a different commit.  Preparing sources does not apply patches or
-compile anything.
+compile anything.  Apply the tracked patch series explicitly with
+`scripts/apply-patches.sh <worktree>`; this makes an experimental bundle's
+Mesa source changes reproducible rather than leaving untracked edits in
+`work/`.
 
 ## Arch Linux ARM contract
 

@@ -1,0 +1,39 @@
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -2553,11 +2553,24 @@ static const __DRIextension *kopper_loader_extensions[] = {
+    NULL,
+ };
+ 
++/* Trierarch's host-owned Android allocation currently has one portable
++ * four-channel layout: DRM_FORMAT_ABGR8888.  This opt-in gate is a narrow
++ * feasibility switch for the private Mesa bundle.  Keeping it disabled
++ * preserves upstream Wayland config selection exactly. */
++static bool
++trierarch_adreno_bridge_format_gate_enabled(void)
++{
++   const char *value = getenv("TRIERARCH_ADRENO_BRIDGE_FORMAT_GATE");
++
++   return value && strcmp(value, "1") == 0;
++}
++
+ static void
+ dri2_wl_add_configs_for_visuals(_EGLDisplay *disp)
+ {
+    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+    unsigned int format_count[ARRAY_SIZE(dri2_wl_visuals)] = {0};
++   const bool bridge_format_gate = trierarch_adreno_bridge_format_gate_enabled();
+ 
+    /* Try to create an EGLConfig for every config the driver declares */
+    for (unsigned i = 0; dri2_dpy->driver_configs[i]; i++) {
+@@ -2567,6 +2580,10 @@ dri2_wl_add_configs_for_visuals(_EGLDisplay *disp)
+       if (idx < 0)
+          continue;
+ 
++      if (bridge_format_gate &&
++          dri2_wl_visuals[idx].wl_drm_format != DRM_FORMAT_ABGR8888)
++         continue;
++
+       /* Check if the server natively supports the colour buffer format */
+       if (!server_supports_format(&dri2_dpy->formats, idx)) {
+          if (dri2_dpy->fd_render_gpu == dri2_dpy->fd_display_gpu) {
