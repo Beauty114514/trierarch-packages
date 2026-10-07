@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "android_presenter_probe.h"
 #include "server_internal.h"
 #include "adreno_ahb_import.h"
 #include "adreno_ahb_census.h"
@@ -253,6 +254,8 @@ static GLuint make_program(const char *fragment) {
 struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
         struct wayland_server *server) {
     if (!window) return NULL;
+    /* This runs before eglCreateWindowSurface() owns the ANativeWindow. */
+    trierarch_android_presenter_probe(window);
     struct renderer_context *renderer = calloc(1, sizeof(*renderer));
     if (!renderer) return NULL;
     renderer->display = EGL_NO_DISPLAY;
