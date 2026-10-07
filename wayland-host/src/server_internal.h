@@ -61,6 +61,7 @@ struct shm_buffer {
 };
 
 struct trierarch_gpu_probe;
+struct trierarch_adreno_buffer_bridge;
 struct trierarch_dmabuf_record;
 struct trierarch_dmabuf_frame;
 struct trierarch_dmabuf_frame_queue;
@@ -185,6 +186,8 @@ struct wayland_server {
     bool dmabuf_feedback_available;
     /* Test-only listener, isolated from ordinary Wayland client buffers. */
     struct trierarch_gpu_probe *gpu_probe;
+    /* Local service used only by the opt-in private Adreno Mesa bundle. */
+    struct trierarch_adreno_buffer_bridge *adreno_buffer_bridge;
     /* Output repaint state. Requests are coalesced until the next output tick,
      * so a burst of commits produces at most one composition. */
     bool repaint_needed;
