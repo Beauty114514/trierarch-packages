@@ -11,6 +11,8 @@ wayland_commit="87cc8a8728a923fc57938faa81ba0e74f34ecdc7"
 protocols_repo="https://gitlab.freedesktop.org/wayland/wayland-protocols.git"
 protocols_commit="ee78491a237eaff9389a0ccf8680521d074407d3"
 libffi_version="3.4.6"
+adrenotools_repo="https://github.com/bylaws/libadrenotools.git"
+adrenotools_commit="8fae8ce254dfc1344527e05301e43f37dea2df80"
 
 fetch_source() {
     local name="$1" repo="$2" commit="$3"
@@ -34,6 +36,18 @@ command -v git >/dev/null 2>&1 || {
 
 fetch_source wayland "$wayland_repo" "$wayland_commit"
 fetch_source wayland-protocols "$protocols_repo" "$protocols_commit"
+
+echo "Fetching libadrenotools at $adrenotools_commit"
+adrenotools_checkout="$tmp_dir/libadrenotools"
+git clone --filter=blob:none --recurse-submodules "$adrenotools_repo" "$adrenotools_checkout"
+git -C "$adrenotools_checkout" checkout --detach "$adrenotools_commit"
+git -C "$adrenotools_checkout" submodule update --init --recursive
+rm -rf "$adrenotools_checkout/.git"
+mkdir -p "$source_dir"
+rm -rf "$source_dir/libadrenotools"
+mv "$adrenotools_checkout" "$source_dir/libadrenotools"
+printf '%s\n' "$adrenotools_commit" > "$source_dir/libadrenotools/.trierarch-source-commit"
+
 command -v curl >/dev/null 2>&1 || { echo "Missing required tool: curl" >&2; exit 1; }
 libffi_dir="$source_dir/libffi"
 if [[ ! -d "$libffi_dir" ]]; then
