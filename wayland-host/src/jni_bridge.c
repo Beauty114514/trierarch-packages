@@ -1,4 +1,5 @@
 #include "compositor.h"
+#include "adreno_driver_probe.h"
 #include "keycode_map.h"
 #include "renderer.h"
 
@@ -8,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 static pthread_mutex_t server_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t command_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -194,6 +196,29 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object
     pthread_mutex_unlock(&server_mutex);
     (*env)->ReleaseStringUTFChars(env, runtime_directory, runtime);
     return started ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeProbeAdrenoDriver(JNIEnv *env, jobject object,
+        jstring hook_library_dir, jstring driver_dir, jstring driver_name) {
+    (void)object;
+    const char *hook = (*env)->GetStringUTFChars(env, hook_library_dir, NULL);
+    const char *directory = (*env)->GetStringUTFChars(env, driver_dir, NULL);
+    const char *name = (*env)->GetStringUTFChars(env, driver_name, NULL);
+    if (!hook || !directory || !name) {
+        if (hook) (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
+        if (directory) (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
+        if (name) (*env)->ReleaseStringUTFChars(env, driver_name, name);
+        return (*env)->NewStringUTF(env, "result=error stage=read-arguments\n");
+    }
+    char *probe = trierarch_adreno_probe_driver(hook, directory, name);
+    (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
+    (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
+    (*env)->ReleaseStringUTFChars(env, driver_name, name);
+    jstring result = (*env)->NewStringUTF(env,
+            probe ? probe : "result=error stage=allocate-result\n");
+    free(probe);
+    return result;
 }
 
 JNIEXPORT void JNICALL
