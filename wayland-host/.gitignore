@@ -2,6 +2,7 @@
 /sources/wayland/
 /sources/wayland-protocols/
 /sources/libffi/
+/sources/libadrenotools/
 
 # Native build and package output
 /build/

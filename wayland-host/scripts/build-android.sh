@@ -35,7 +35,14 @@ toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64"
 clang="$toolchain/bin/aarch64-linux-android26-clang"
 [[ -x "$clang" ]] || { echo "NDK toolchain not found: $clang" >&2; exit 1; }
 
-for command_name in cmake meson ninja make wayland-scanner; do
+cmake_bin="$(command -v cmake || true)"
+if [[ -z "$cmake_bin" ]]; then
+    sdk_dir="$(dirname "$(dirname "$ndk")")"
+    cmake_bin="$(find "$sdk_dir/cmake" -type f -name cmake -perm -111 2>/dev/null | sort -V | tail -1 || true)"
+fi
+[[ -x "$cmake_bin" ]] || { echo "Missing required tool: cmake" >&2; exit 1; }
+
+for command_name in meson ninja make wayland-scanner; do
     command -v "$command_name" >/dev/null || { echo "Missing required tool: $command_name" >&2; exit 1; }
 done
 pkgconfig="$(command -v pkg-config)"
@@ -71,12 +78,12 @@ meson install -C "$wayland_build"
 cp -a "$ffi_prefix/lib/libffi.so"* "$wayland_prefix/lib/"
 
 rm -rf "$adrenotools_build" "$adrenotools_prefix"
-cmake -S "$adrenotools_src" -B "$adrenotools_build" -G Ninja \
+"$cmake_bin" -S "$adrenotools_src" -B "$adrenotools_build" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
     -DGEN_INSTALL_TARGET=ON -DCMAKE_INSTALL_PREFIX="$adrenotools_prefix"
-cmake --build "$adrenotools_build" --target install -j"$(nproc)"
+"$cmake_bin" --build "$adrenotools_build" --target install -j"$(nproc)"
 
 rm -rf "$protocol_dir"
 mkdir -p "$protocol_dir"
