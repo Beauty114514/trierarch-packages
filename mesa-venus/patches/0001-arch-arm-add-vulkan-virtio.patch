@@ -1,0 +1,90 @@
+diff --git a/extra/mesa/PKGBUILD b/extra/mesa/PKGBUILD
+index 0b3498b..a681e0c 100644
+--- a/extra/mesa/PKGBUILD
++++ b/extra/mesa/PKGBUILD
+@@ -12,6 +12,7 @@ pkgbase=mesa
+ pkgname=(
+   mesa
+   vulkan-freedreno
++  vulkan-virtio
+   vulkan-mesa-implicit-layers
+   vulkan-mesa-layers
+   mesa-docs
+@@ -87,15 +88,20 @@ options=(
+ )
+ source=(
+   "mesa::git+https://github.com/lfdevs/mesa-for-android-container.git#tag=mesa-26.3.0-devel-20260824"
++  "venus-protocol::git+https://gitlab.freedesktop.org/virgl/venus-protocol.git#commit=e94b12f301b9eb27ebead757128a18420b4f7994"
+ )
+ 
+-b2sums=('SKIP')
++b2sums=('SKIP'
++        'SKIP')
+ 
+-sha256sums=('SKIP')
++sha256sums=('SKIP'
++            'SKIP')
+ 
+ prepare() {
+   cd mesa
+ 
++  ln -s "$srcdir/venus-protocol" subprojects/venus-protocol-1.1
++
+   # Include package release in version string so Chromium invalidates
+   # its GPU cache; otherwise it can cause pages to render incorrectly.
+   # https://bugs.launchpad.net/ubuntu/+source/chromium-browser/+bug/2020604
+@@ -121,7 +127,7 @@ build() {
+     -D sysprof=false
+     -D valgrind=disabled
+     -D video-codecs=all
+-    -D vulkan-drivers=freedreno
++    -D vulkan-drivers=freedreno,virtio
+     -D vulkan-layers=device-select,overlay,screenshot,vram-report-limit
+     -D egl=enabled
+     -D gles2=enabled
+@@ -196,6 +202,9 @@ package_mesa() {
+     _pick vkfdreno $libdir/libvulkan_freedreno.so
+     _pick vkfdreno usr/share/vulkan/icd.d/freedreno_icd.*.json
+ 
++    _pick vkvirtio $libdir/libvulkan_virtio.so
++    _pick vkvirtio usr/share/vulkan/icd.d/virtio_icd.*.json
++
+     _pick vkdevice $libdir/libVkLayer_MESA_device_select.so
+     _pick vkdevice usr/share/vulkan/implicit_layer.d
+ 
+@@ -241,6 +250,35 @@ package_vulkan-freedreno() {
+   install -Dm644 mesa/docs/license.rst -t "$pkgdir/usr/share/licenses/$pkgname"
+ }
+ 
++package_vulkan-virtio() {
++  pkgdesc="Open-source Vulkan Venus driver"
++  depends=(
++    expat
++    glibc
++    libdisplay-info
++    libdrm
++    libgcc
++    libstdc++
++    libx11
++    libxcb
++    libxshmfence
++    spirv-tools
++    systemd-libs
++    vulkan-icd-loader
++    vulkan-mesa-implicit-layers
++    wayland
++    xcb-util-keysyms
++    zlib
++    zstd
++  )
++  optdepends=("vulkan-mesa-layers: additional vulkan layers")
++  provides=(vulkan-driver)
++
++  mv vkvirtio/* "$pkgdir"
++
++  install -Dm644 mesa/docs/license.rst -t "$pkgdir/usr/share/licenses/$pkgname"
++}
++
+ package_vulkan-mesa-implicit-layers() {
+   pkgdesc="Mesa's implicit Vulkan layers"
+   depends=(
