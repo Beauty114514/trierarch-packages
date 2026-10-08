@@ -263,6 +263,7 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 
 void trierarch_surface_commit(struct compositor_surface *surface) {
     if (!surface) return;
+    const bool committing_dmabuf = surface->pending && surface->pending->dmabuf;
     surface->perf_commits++;
     surface->server->perf_surface_commits++;
     surface->server->perf_surface_commit_generation++;
@@ -296,6 +297,14 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
     trierarch_wayland_request_render(surface->server);
+    if (committing_dmabuf) {
+        static unsigned int trace_count;
+        if (trace_count++ < 3) {
+            __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                    "dmabuf trace stage=commit mapped=%d size=%dx%d",
+                    surface->mapped, surface->width, surface->height);
+        }
+    }
 }
 
 static bool surface_participates_in_output(const struct wayland_server *server,

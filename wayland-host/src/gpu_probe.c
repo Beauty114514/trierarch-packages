@@ -325,6 +325,10 @@ AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *pro
         static unsigned copy_failures;
         if (copy_failures++ < 3)
             LOGE("Adreno dma-buf copy rejected: %s", error);
+    } else {
+        static unsigned copy_successes;
+        if (copy_successes++ < 3)
+            LOGI("Adreno dma-buf copy accepted: %ux%u", buffer->width, buffer->height);
     }
     return output;
 }

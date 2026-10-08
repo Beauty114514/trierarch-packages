@@ -336,6 +336,14 @@ static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
     struct shm_buffer *buffer = surface->current;
     if (!buffer) return;
+    if (buffer->dmabuf) {
+        static unsigned int trace_count;
+        if (trace_count++ < 3) {
+            LOGI("dmabuf trace stage=draw mapped=%d importer=%d size=%dx%d",
+                    surface->mapped, surface->server && surface->server->gpu_probe,
+                    buffer->width, buffer->height);
+        }
+    }
     int scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
     int width = surface->viewport_destination_set ? surface->viewport_destination_width : buffer->width / scale;
     int height = surface->viewport_destination_set ? surface->viewport_destination_height : buffer->height / scale;
@@ -776,6 +784,12 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     uint64_t render_started_ns = monotonic_ns();
     bool surface_updated = renderer->observed_surface_commits != server->perf_surface_commit_generation
             || renderer->observed_surface_damage != server->perf_surface_damage_generation;
+    if (surface_updated) {
+        static unsigned int trace_count;
+        if (trace_count++ < 3)
+            LOGI("dmabuf trace stage=render surface-commit-generation=%llu",
+                    (unsigned long long)server->perf_surface_commit_generation);
+    }
     renderer->observed_surface_commits = server->perf_surface_commit_generation;
     renderer->observed_surface_damage = server->perf_surface_damage_generation;
     if (!eglMakeCurrent(renderer->display, renderer->surface, renderer->surface, renderer->context))
