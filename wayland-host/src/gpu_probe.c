@@ -313,13 +313,19 @@ AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *pro
     struct trierarch_adreno_imported_image *image = trierarch_adreno_importer_import(
             probe->adreno_importer, &descriptor, error, sizeof(error));
     if (!image) {
-        LOGE("Adreno dma-buf probe import rejected before copy: %s", error);
+        static unsigned import_failures;
+        if (import_failures++ < 3)
+            LOGE("Adreno dma-buf import rejected before copy: %s", error);
         return NULL;
     }
     AHardwareBuffer *output = trierarch_adreno_imported_image_copy_to_ahardware_buffer(
             image, error, sizeof(error));
     trierarch_adreno_imported_image_destroy(image);
-    LOGI("Adreno dma-buf probe copy %s: %s", output ? "accepted" : "rejected", error);
+    if (!output) {
+        static unsigned copy_failures;
+        if (copy_failures++ < 3)
+            LOGE("Adreno dma-buf copy rejected: %s", error);
+    }
     return output;
 }
 
