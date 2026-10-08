@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 const SOCKET_NAME: &str = "vtest.sock";
 const SERVER_NAME: &str = "virgl_test_server_android";
+const RENDER_SERVER_NAME: &str = "virgl_render_server";
 
 static CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 
@@ -25,6 +26,7 @@ pub fn start(
     runtime_directory: &Path,
     payload_directory: &Path,
     native_library_directory: &Path,
+    venus: bool,
 ) -> io::Result<()> {
     let mut slot = child_slot()
         .lock()
@@ -41,6 +43,16 @@ pub fn start(
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("VirGL host executable is missing: {}", server.display()),
+        ));
+    }
+    let render_server = payload_directory.join("bin").join(RENDER_SERVER_NAME);
+    if venus && !render_server.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "Venus render server executable is missing: {}",
+                render_server.display()
+            ),
         ));
     }
     fs::create_dir_all(runtime_directory)?;
@@ -88,6 +100,15 @@ pub fn start(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    if venus {
+        // The vtest server advertises the Venus capset and libvirglrenderer
+        // then starts this companion through its proxy.  It must be an
+        // explicit APK-private path rather than virglrenderer's build-time
+        // libexec location.
+        command
+            .arg("--venus")
+            .env("RENDER_SERVER_EXEC_PATH", &render_server);
+    }
     // virglrenderer creates the vtest socket with mode 0777.  Android apps
     // normally inherit a restrictive umask, which made it inaccessible to the
     // guest UID even after the directory was bind-mounted.  0111 yields a
