@@ -12,6 +12,8 @@ const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const GUEST_WAYLAND_IME_DIRECTORY: &str = "/tmp/trierarch-wayland-ime-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarch-dmabuf-device-report";
+const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/dmabuf-feedback.sock";
 const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.sock";
 const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.log";
 const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
@@ -62,6 +64,7 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     let virgl = !spec.virgl_runtime_directory.as_os_str().is_empty();
     let udev_compatibility = prepare_udev_compatibility_library(spec)?;
     let wayland_ime_bridge = prepare_wayland_ime_bridge(spec)?;
+    let wayland_dmabuf_device_report = prepare_wayland_dmabuf_device_report(spec)?;
     if x11 {
         let host_socket = spec.x11_socket_directory.join("X0");
         let guest_directory = spec.rootfs.join("tmp/.X11-unix");
@@ -100,6 +103,14 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             GUEST_WAYLAND_IME_DIRECTORY,
             "Wayland IME",
         )?;
+        bind_socket(
+            &mut argv,
+            &spec.rootfs,
+            &spec.wayland_runtime_directory.join("dmabuf-feedback.sock"),
+            GUEST_WAYLAND_IME_DIRECTORY,
+            "dmabuf-feedback.sock",
+            "dma-buf feedback",
+        )?;
     }
     if virgl {
         bind_socket(
@@ -121,7 +132,8 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             shell_words(&spec.launch_argv)
         };
         let script = format!(
-            "rm -f {socket}; ime_marker={runtime}/.trierarch-ime-start-$$; : > \"$ime_marker\"; \
+            "{reporter} --socket {feedback_socket} >/tmp/trierarch-dmabuf-device-report.log 2>&1 || true; \
+             rm -f {socket}; ime_marker={runtime}/.trierarch-ime-start-$$; : > \"$ime_marker\"; \
              ( ime_wait=0; while [ \"$ime_wait\" -lt 200 ]; do \
                    [ -S {runtime}/{nested_socket} ] && [ {runtime}/{nested_socket} -nt \"$ime_marker\" ] && break; \
                    sleep 0.05; ime_wait=$((ime_wait + 1)); \
@@ -131,6 +143,8 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
              trap 'rm -f \"$ime_marker\"; kill ${{ime_bridge:-}} >/dev/null 2>&1 || true' EXIT HUP INT TERM; \
              {launch}; status=$?; kill $ime_bridge >/dev/null 2>&1 || true; wait $ime_bridge >/dev/null 2>&1 || true; rm -f \"$ime_marker\" {socket}; exit $status",
             runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
+            reporter = if wayland_dmabuf_device_report { GUEST_DMABUF_DEVICE_REPORT } else { "/bin/true" },
+            feedback_socket = GUEST_DMABUF_FEEDBACK_SOCKET,
             nested_socket = NESTED_WAYLAND_SOCKET,
             bridge = GUEST_WAYLAND_IME_BRIDGE,
             socket = GUEST_WAYLAND_IME_SOCKET,
@@ -267,6 +281,30 @@ fn prepare_wayland_ime_bridge(spec: &ProotSpec) -> Result<bool> {
         .with_context(|| format!("mark guest IME bridge executable: {}", temporary.display()))?;
     std::fs::rename(&temporary, &destination).with_context(|| {
         format!("install guest IME bridge at {}", destination.display())
+    })?;
+    Ok(true)
+}
+
+fn prepare_wayland_dmabuf_device_report(spec: &ProotSpec) -> Result<bool> {
+    if spec.wayland_ime_bridge.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    let source = spec.wayland_ime_bridge.parent()
+        .map(|parent| parent.join("trierarch-dmabuf-device-report"))
+        .context("Wayland IME bridge path has no parent directory")?;
+    anyhow::ensure!(source.is_file(), "dma-buf device reporter is missing: {}", source.display());
+    let destination = spec.rootfs.join(GUEST_DMABUF_DEVICE_REPORT.trim_start_matches('/'));
+    let parent = destination.parent().expect("dma-buf device reporter has a parent");
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create guest dma-buf reporter directory: {}", parent.display()))?;
+    let temporary = destination.with_extension("tmp");
+    std::fs::copy(&source, &temporary).with_context(|| {
+        format!("copy guest dma-buf reporter to {}", temporary.display())
+    })?;
+    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("mark guest dma-buf reporter executable: {}", temporary.display()))?;
+    std::fs::rename(&temporary, &destination).with_context(|| {
+        format!("install guest dma-buf reporter at {}", destination.display())
     })?;
     Ok(true)
 }

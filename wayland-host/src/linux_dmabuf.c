@@ -1,4 +1,5 @@
 #include "server_internal.h"
+#include "dmabuf_feedback_device.h"
 
 #include <android/log.h>
 #include <errno.h>
@@ -205,7 +206,7 @@ static const struct zwp_linux_dmabuf_feedback_v1_interface feedback_impl = {
     .destroy = feedback_destroy,
 };
 
-static void send_feedback(struct wl_resource *resource) {
+static void send_feedback(struct wl_resource *resource, struct wayland_server *server) {
     struct {
         uint32_t format;
         uint32_t padding;
@@ -234,9 +235,14 @@ static void send_feedback(struct wl_resource *resource) {
 #endif
     struct wl_array device;
     wl_array_init(&device);
-    dev_t zero = 0;
-    void *device_data = wl_array_add(&device, sizeof(zero));
-    if (device_data) memcpy(device_data, &zero, sizeof(zero));
+    dev_t main_device;
+    if (!trierarch_dmabuf_feedback_device_get(server->dmabuf_feedback_device, &main_device)) {
+        LOGW("linux-dmabuf v4 feedback requested before a guest render node was reported");
+        wl_array_release(&device);
+        return;
+    }
+    void *device_data = wl_array_add(&device, sizeof(main_device));
+    if (device_data) memcpy(device_data, &main_device, sizeof(main_device));
     zwp_linux_dmabuf_feedback_v1_send_main_device(resource, &device);
     zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(resource, &device);
     zwp_linux_dmabuf_feedback_v1_send_tranche_flags(resource, 0);
@@ -255,7 +261,7 @@ static void send_feedback(struct wl_resource *resource) {
 
 static void dmabuf_get_default_feedback(struct wl_client *client,
         struct wl_resource *resource, uint32_t id) {
-    (void)resource;
+    struct wayland_server *server = wl_resource_get_user_data(resource);
     struct wl_resource *feedback = wl_resource_create(client,
             &zwp_linux_dmabuf_feedback_v1_interface, 1, id);
     if (!feedback) {
@@ -263,7 +269,7 @@ static void dmabuf_get_default_feedback(struct wl_client *client,
         return;
     }
     wl_resource_set_implementation(feedback, &feedback_impl, NULL, NULL);
-    send_feedback(feedback);
+    send_feedback(feedback, server);
 }
 
 static void dmabuf_get_surface_feedback(struct wl_client *client,
@@ -286,20 +292,30 @@ static const struct zwp_linux_dmabuf_v1_interface dmabuf_impl = {
 
 void trierarch_dmabuf_bind(struct wl_client *client, void *data,
         uint32_t version, uint32_t id) {
-    (void)data;
+    struct wayland_server *server = data;
     if (version > 4) version = 4;
+    /* KWin's nested backend uses v4 feedback to select a render device. Never
+     * fabricate a zero dev_t: before the guest reports a real render node we
+     * intentionally expose the established v3 path instead. */
+    dev_t main_device;
+    if (version >= 4 && !trierarch_dmabuf_feedback_device_get(
+            server->dmabuf_feedback_device, &main_device)) {
+        version = 3;
+    }
     struct wl_resource *resource = wl_resource_create(client,
             &zwp_linux_dmabuf_v1_interface, version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &dmabuf_impl, NULL, NULL);
-    zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XRGB8888);
-    zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ARGB8888);
-    zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XBGR8888);
-    zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ABGR8888);
-    if (version >= 3) {
+    wl_resource_set_implementation(resource, &dmabuf_impl, server, NULL);
+    if (version < 4) {
+        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XRGB8888);
+        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ARGB8888);
+        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XBGR8888);
+        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ABGR8888);
+    }
+    if (version >= 3 && version < 4) {
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XRGB8888, 0, 0);
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ARGB8888, 0, 0);
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XBGR8888, 0, 0);
@@ -313,7 +329,8 @@ void trierarch_dmabuf_bind(struct wl_client *client, void *data,
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ABGR8888,
                 (uint32_t)(DRM_FORMAT_MOD_INVALID >> 32), (uint32_t)DRM_FORMAT_MOD_INVALID);
     }
-    LOGI("linux-dmabuf bound at version %u", version);
+    LOGI("linux-dmabuf bound at version %u%s", version,
+            version >= 4 ? " with guest main-device feedback" : "");
 }
 
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource) {

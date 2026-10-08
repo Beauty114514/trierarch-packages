@@ -11,6 +11,8 @@ const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/tmp/trierarch-wayland-host/ime/trierarch-wayland-ime-bridge";
+const GUEST_DMABUF_DEVICE_REPORT: &str = "/tmp/trierarch-wayland-host/ime/trierarch-dmabuf-device-report";
+const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
 const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
 const GUEST_SESSION_SUPERVISOR: &str = "/tmp/trierarch-wayland-host/ime/trierarch-session-supervisor";
 const GUEST_SESSION_SUPERVISOR_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-session-supervisor.log";
@@ -285,6 +287,18 @@ impl DroidspacesSpec {
             host = GUEST_WAYLAND_HOST_DIRECTORY,
             socket = WAYLAND_SOCKET,
         );
+        // Report the guest-visible render-node identity before the desktop
+        // connects. A missing node is normal on software-only sessions, so it
+        // is diagnostic only and must not prevent a Wayland launch.
+        let report_dmabuf_device = if self.wayland_ime_bridge.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{reporter} --socket {socket} >/tmp/trierarch-dmabuf-device-report.log 2>&1 || true; ",
+                reporter = GUEST_DMABUF_DEVICE_REPORT,
+                socket = GUEST_DMABUF_FEEDBACK_SOCKET,
+            )
+        };
         let start_ime_bridge = if self.wayland_ime_bridge.is_empty() {
             String::new()
         } else {
@@ -313,10 +327,10 @@ impl DroidspacesSpec {
             shell_words(&self.launch_argv)
         };
         let script = if start_ime_bridge.is_empty() {
-            format!("{prepare_runtime}exec {launch}")
+            format!("{prepare_runtime}{report_dmabuf_device}exec {launch}")
         } else {
             format!(
-                "{prepare_runtime}{start_ime_bridge}{start_session_supervisor}{launch}; status=$?; kill $ime_bridge $session_supervisor >/dev/null 2>&1 || true; wait $ime_bridge $session_supervisor >/dev/null 2>&1 || true; rm -f {socket}; exit $status",
+                "{prepare_runtime}{report_dmabuf_device}{start_ime_bridge}{start_session_supervisor}{launch}; status=$?; kill $ime_bridge $session_supervisor >/dev/null 2>&1 || true; wait $ime_bridge $session_supervisor >/dev/null 2>&1 || true; rm -f {socket}; exit $status",
                 socket = GUEST_WAYLAND_IME_SOCKET,
             )
         };

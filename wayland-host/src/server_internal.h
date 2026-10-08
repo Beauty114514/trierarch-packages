@@ -44,6 +44,7 @@ struct shm_buffer {
 };
 
 struct trierarch_gpu_probe;
+struct trierarch_dmabuf_feedback_device;
 
 struct compositor_surface {
     struct wl_list link;
@@ -152,6 +153,8 @@ struct wayland_server {
     bool egl_buffer_supported;
     /* Test-only listener, isolated from ordinary Wayland client buffers. */
     struct trierarch_gpu_probe *gpu_probe;
+    /* Guest-reported render-node identity for future v4 dma-buf feedback. */
+    struct trierarch_dmabuf_feedback_device *dmabuf_feedback_device;
     /* Output repaint state. Requests are coalesced until the next output tick,
      * so a burst of commits produces at most one composition. */
     bool repaint_needed;

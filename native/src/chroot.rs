@@ -17,6 +17,8 @@ const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarc
 const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarch-dmabuf-device-report";
+const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
@@ -157,6 +159,19 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             destination = shell_quote(&destination),
         )
     };
+    let install_dmabuf_device_report = if spec.wayland_ime_bridge.as_os_str().is_empty() {
+        String::new()
+    } else {
+        let source = spec.wayland_ime_bridge.parent()
+            .expect("Wayland IME bridge has a parent")
+            .join("trierarch-dmabuf-device-report");
+        let destination = spec.rootfs.join(GUEST_DMABUF_DEVICE_REPORT.trim_start_matches('/'));
+        let parent = destination.parent().expect("dma-buf device reporter has a parent");
+        format!(
+            "test -f {source} || {{ printf '%s\\n' 'Trierarch dma-buf device reporter is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
+            source = shell_quote(&source), parent = shell_quote(parent), destination = shell_quote(&destination),
+        )
+    };
     let guest = if x11 {
         format!(
             "/usr/bin/env -u WAYLAND_DISPLAY -u QT_QUICK_BACKEND DISPLAY=:0 XDG_SESSION_TYPE=x11 \
@@ -254,6 +269,15 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
                 bridge_script = crate::privileged::shell_quote(&bridge_script),
             )
         };
+        let report_dmabuf_device = if spec.wayland_ime_bridge.as_os_str().is_empty() {
+            String::new()
+        } else {
+            format!(
+                "/system/bin/chroot {rootfs} {reporter} --socket {socket} >/tmp/trierarch-dmabuf-device-report.log 2>&1 || true; ",
+                rootfs = shell_quote(&spec.rootfs), reporter = GUEST_DMABUF_DEVICE_REPORT,
+                socket = GUEST_DMABUF_FEEDBACK_SOCKET,
+            )
+        };
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
@@ -269,14 +293,14 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
              }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
              {system_mounts} \\
-             {install_compatibility}{install_ime_bridge}{install_kwin_wrapper} \\
+             {install_compatibility}{install_ime_bridge}{install_dmabuf_device_report}{install_kwin_wrapper} \\
               mkdir -p {runtime_target} || exit $?; \\
              if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
              {install_virgl} \\
              /system/bin/toybox mkdir -p {guest_runtime} && /system/bin/toybox chmod 700 {guest_runtime} || exit $?; \\
              if [ -e {guest_socket} ] || [ -L {guest_socket} ]; then /system/bin/toybox rm -f {guest_socket} || exit $?; fi; \\
              /system/bin/toybox ln -s {host_socket} {guest_socket} || exit $?; trierarch_wayland_socket_link=1; \\
-             {start_ime_bridge}/system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
+             {report_dmabuf_device}{start_ime_bridge}/system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
             runtime_target = shell_quote(&runtime_target),
             guest_runtime = shell_quote(&guest_runtime),
@@ -288,8 +312,10 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             ime_socket = shell_quote(&ime_socket),
             rootfs = shell_quote(&spec.rootfs),
             start_ime_bridge = start_ime_bridge,
+            report_dmabuf_device = report_dmabuf_device,
             install_compatibility = install_compatibility,
             install_ime_bridge = install_ime_bridge,
+            install_dmabuf_device_report = install_dmabuf_device_report,
             install_kwin_wrapper = install_kwin_wrapper,
             system_mounts = system_mounts,
             system_cleanup = system_cleanup,
