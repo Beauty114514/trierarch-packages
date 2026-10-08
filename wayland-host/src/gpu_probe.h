@@ -29,5 +29,7 @@ void trierarch_gpu_probe_report_host_buffer(struct trierarch_gpu_probe *probe, u
         uint32_t result, uint32_t egl_error, int fence_fd);
 bool trierarch_gpu_probe_validate_adreno(struct trierarch_gpu_probe *probe,
         const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd);
+AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *probe,
+        const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd);
 
 #endif

@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <android/hardware_buffer.h>
 
 struct trierarch_adreno_importer;
 struct trierarch_adreno_imported_image;
@@ -26,6 +27,10 @@ struct trierarch_adreno_imported_image *trierarch_adreno_importer_import(
         struct trierarch_adreno_importer *importer,
         const struct trierarch_dmabuf_descriptor *buffer, char *error, unsigned error_size);
 void trierarch_adreno_imported_image_destroy(struct trierarch_adreno_imported_image *image);
+/* Produces an Android-owned copy suitable for import by the existing EGL
+ * presenter. The caller owns the returned AHardwareBuffer reference. */
+AHardwareBuffer *trierarch_adreno_imported_image_copy_to_ahardware_buffer(
+        struct trierarch_adreno_imported_image *image, char *error, unsigned error_size);
 bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *importer,
         const struct trierarch_dmabuf_descriptor *buffer, char *error, unsigned error_size);
 void trierarch_adreno_importer_destroy(struct trierarch_adreno_importer *importer);

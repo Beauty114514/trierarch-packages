@@ -301,6 +301,28 @@ bool trierarch_gpu_probe_validate_adreno(struct trierarch_gpu_probe *probe,
     return accepted;
 }
 
+AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *probe,
+        const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
+    if (!probe || !probe->adreno_importer || !buffer || buffer_fd < 0) return NULL;
+    const struct trierarch_dmabuf_descriptor descriptor = {
+        .fd = buffer_fd, .width = buffer->width, .height = buffer->height,
+        .format = buffer->drm_format, .stride = buffer->stride, .offset = 0,
+        .modifier = buffer->modifier,
+    };
+    char error[160] = {0};
+    struct trierarch_adreno_imported_image *image = trierarch_adreno_importer_import(
+            probe->adreno_importer, &descriptor, error, sizeof(error));
+    if (!image) {
+        LOGE("Adreno dma-buf probe import rejected before copy: %s", error);
+        return NULL;
+    }
+    AHardwareBuffer *output = trierarch_adreno_imported_image_copy_to_ahardware_buffer(
+            image, error, sizeof(error));
+    trierarch_adreno_imported_image_destroy(image);
+    LOGI("Adreno dma-buf probe copy %s: %s", output ? "accepted" : "rejected", error);
+    return output;
+}
+
 bool trierarch_gpu_probe_take(struct trierarch_gpu_probe *probe, struct trierarch_gpu_probe_buffer *buffer,
         int *buffer_fd, int *client_fd) {
     if (!probe || !buffer || !buffer_fd || !client_fd || !probe->pending || probe->mode != CLIENT_GUEST_TO_HOST ||

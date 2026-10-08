@@ -490,6 +490,40 @@ static void draw_surface_tree(struct renderer_context *renderer,
         draw_surface_tree(renderer, server, child, own_x, own_y);
 }
 
+/* AHardwareBuffer is the deliberate boundary between the custom Android
+ * Turnip device and this renderer's normal EGL context. */
+static bool draw_ahardware_buffer_overlay(struct renderer_context *renderer,
+        AHardwareBuffer *buffer, int x, int y, int width, int height) {
+    if (!buffer || !renderer->create_image || !renderer->destroy_image ||
+            !renderer->image_target || !renderer->native_client_buffer) return false;
+    EGLClientBuffer native_buffer = renderer->native_client_buffer(buffer);
+    const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+    EGLImageKHR image = native_buffer ? renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+            EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes) : EGL_NO_IMAGE_KHR;
+    if (image == EGL_NO_IMAGE_KHR) return false;
+    const float left = 2.0f * x / renderer->width - 1.0f;
+    const float right = 2.0f * (x + width) / renderer->width - 1.0f;
+    const float top = 1.0f - 2.0f * y / renderer->height;
+    const float bottom = 1.0f - 2.0f * (y + height) / renderer->height;
+    const GLfloat vertices[] = { left,bottom,0,1, right,bottom,1,1,
+            left,top,0,0, right,top,1,0 };
+    glUseProgram(renderer->texture_program);
+    glBindTexture(GL_TEXTURE_2D, renderer->texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    renderer->image_target(GL_TEXTURE_2D, image);
+    glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), 0.0f);
+    glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), 1.0f);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), vertices);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), vertices + 2);
+    glEnableVertexAttribArray(0); glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
+    GLenum gl_error = glGetError();
+    renderer->destroy_image(renderer->display, image);
+    return gl_error == GL_NO_ERROR;
+}
+
 /* This is intentionally not a Wayland client buffer path.  A test client
  * sends one exported guest buffer through gpu-probe.sock; the active renderer
  * imports it in its own EGL context and overlays it once. */
@@ -501,6 +535,22 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     int buffer_fd = -1;
     int client_fd = -1;
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
+    AHardwareBuffer *adreno_output = trierarch_gpu_probe_copy_adreno(server->gpu_probe,
+            &buffer, buffer_fd);
+    if (adreno_output) {
+        close(buffer_fd);
+        const int edge = renderer->width < renderer->height ? renderer->width / 3 : renderer->height / 3;
+        const bool drawn = draw_ahardware_buffer_overlay(renderer, adreno_output, 24, 24, edge, edge);
+        AHardwareBuffer_release(adreno_output);
+        if (!drawn) {
+            LOGE("Adreno dma-buf probe EGL presentation failed: 0x%x", glGetError());
+            trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
+            return 0;
+        }
+        LOGI("Adreno dma-buf probe copied into Android hardware buffer; awaiting Android swap");
+        *result_client_fd = client_fd;
+        return 1;
+    }
     if (trierarch_gpu_probe_validate_adreno(server->gpu_probe, &buffer, buffer_fd)) {
         close(buffer_fd);
         trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, -1);
