@@ -31,7 +31,9 @@ driver rendered into?
 - `guest/gpu_probe_guest.c` requests the reverse direction, imports the
   received Android pixel FD through a surfaceless EGL display, clears it cyan,
   exports an `EGL_ANDROID_native_fence_sync` release fence, and waits the host
-  reuse fence before exit.
+  reuse fence before exit. Its `--receive-only` mode stops after validating
+  the three received FDs and their transport metadata, so FD transport can be
+  verified independently of guest EGL import support.
 - `wayland-host/src/gpu_probe.c` allocates three 256×256 RGBA
   `AHardwareBuffer`, dynamically queries its non-NDK native handle, and sends
   only the first FD after logging its complete shape. `renderer.c` samples the
@@ -60,6 +62,9 @@ Guest, inside a test container with EGL/GLES development headers:
 ```sh
 cc -O2 -Wall -Wextra -std=c11 guest/gpu_probe_guest.c -I. \
   $(pkg-config --cflags --libs egl glesv2) -o gpu-probe-guest
+
+# Transport-only gate; no EGL context or Mesa buffer import is attempted.
+./gpu-probe-guest --receive-only /path/to/gpu-probe.sock
 ```
 
 The Android listener is compiled by the normal `wayland-host` Android build.

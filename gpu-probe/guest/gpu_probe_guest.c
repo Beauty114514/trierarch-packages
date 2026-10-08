@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -164,6 +165,41 @@ static EGLDisplay create_surfaceless_display(void) {
     return function ? function(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL) : EGL_NO_DISPLAY;
 }
 
+static int run_receive_only_probe(const char *socket_path) {
+    int socket_fd = connect_socket(socket_path);
+    if (socket_fd < 0 || send_hello(socket_fd) < 0) {
+        fprintf(stderr, "guest: connect/hello failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    for (uint32_t received = 0; received < GPU_PROBE_BUFFER_COUNT; ++received) {
+        int buffer_fd = -1;
+        struct trierarch_gpu_probe_buffer buffer = {0};
+        if (receive_buffer(socket_fd, &buffer, &buffer_fd) < 0) {
+            fprintf(stderr, "guest: failed to receive host buffer %u\n", received);
+            close(socket_fd);
+            return 2;
+        }
+
+        struct stat status = {0};
+        int result = fstat(buffer_fd, &status);
+        printf("guest: received slot=%u fd=%d mode=%#o %ux%u format=0x%x stride=%u modifier=0x%llx\n",
+                buffer.buffer_id, buffer_fd, result == 0 ? status.st_mode : 0,
+                buffer.width, buffer.height, buffer.drm_format, buffer.stride,
+                (unsigned long long)buffer.modifier);
+        close(buffer_fd);
+        if (result < 0) {
+            fprintf(stderr, "guest: fstat host buffer %u failed: %s\n", received, strerror(errno));
+            close(socket_fd);
+            return 3;
+        }
+    }
+
+    puts("guest: host-to-guest AHardwareBuffer transport verified");
+    close(socket_fd);
+    return 0;
+}
+
 static int run_probe(const char *socket_path) {
     int socket_fd = connect_socket(socket_path);
     if (socket_fd < 0 || send_hello(socket_fd) < 0) { fprintf(stderr, "guest: connect/hello failed: %s\n", strerror(errno)); return 1; }
@@ -244,6 +280,10 @@ static int run_probe(const char *socket_path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: %s /path/to/gpu-probe.sock\n", argv[0]); return 64; }
-    return run_probe(argv[1]);
+    if (argc == 3 && strcmp(argv[1], "--receive-only") == 0)
+        return run_receive_only_probe(argv[2]);
+    if (argc == 2)
+        return run_probe(argv[1]);
+    fprintf(stderr, "usage: %s [--receive-only] /path/to/gpu-probe.sock\n", argv[0]);
+    return 64;
 }
