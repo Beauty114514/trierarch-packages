@@ -31,6 +31,7 @@ enum host_command_type {
     HOST_COMMAND_POINTER_RESET,
     HOST_COMMAND_CURSOR_VISIBLE,
     HOST_COMMAND_KEYBOARD_KEY,
+    HOST_COMMAND_CONFIGURE_ADRENO_PROBE,
 };
 
 struct host_command {
@@ -45,6 +46,7 @@ struct host_command {
         struct { uint32_t time_ms; } pointer_reset;
         struct { bool visible; } cursor_visible;
         struct { uint32_t key, time_ms; bool pressed; } keyboard_key;
+        struct { char *hook, *directory, *name; } adreno_probe;
     } data;
 };
 
@@ -60,6 +62,11 @@ static void discard_commands(void) {
         struct host_command *next = command->next;
         if (command->type == HOST_COMMAND_ATTACH_WINDOW && command->data.attach_window.window)
             ANativeWindow_release(command->data.attach_window.window);
+        if (command->type == HOST_COMMAND_CONFIGURE_ADRENO_PROBE) {
+            free(command->data.adreno_probe.hook);
+            free(command->data.adreno_probe.directory);
+            free(command->data.adreno_probe.name);
+        }
         free(command);
         command = next;
     }
@@ -137,6 +144,14 @@ static void process_commands(wayland_server_t *active_server) {
         case HOST_COMMAND_KEYBOARD_KEY:
             trierarch_keyboard_set_key(active_server, command->data.keyboard_key.key,
                     command->data.keyboard_key.pressed, command->data.keyboard_key.time_ms);
+            break;
+        case HOST_COMMAND_CONFIGURE_ADRENO_PROBE:
+            (void)trierarch_wayland_configure_adreno_probe(active_server,
+                    command->data.adreno_probe.hook, command->data.adreno_probe.directory,
+                    command->data.adreno_probe.name);
+            free(command->data.adreno_probe.hook);
+            free(command->data.adreno_probe.directory);
+            free(command->data.adreno_probe.name);
             break;
         }
         free(command);
@@ -219,6 +234,36 @@ Java_app_trierarch_wayland_WaylandBridge_nativeProbeAdrenoDriver(JNIEnv *env, jo
             probe ? probe : "result=error stage=allocate-result\n");
     free(probe);
     return result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeConfigureAdrenoProbe(JNIEnv *env, jobject object,
+        jstring hook_library_dir, jstring driver_dir, jstring driver_name) {
+    (void)object;
+    const char *hook = (*env)->GetStringUTFChars(env, hook_library_dir, NULL);
+    const char *directory = (*env)->GetStringUTFChars(env, driver_dir, NULL);
+    const char *name = (*env)->GetStringUTFChars(env, driver_name, NULL);
+    struct host_command *command = new_command(HOST_COMMAND_CONFIGURE_ADRENO_PROBE);
+    bool ready = hook && directory && name && command;
+    if (ready) {
+        command->data.adreno_probe.hook = strdup(hook);
+        command->data.adreno_probe.directory = strdup(directory);
+        command->data.adreno_probe.name = strdup(name);
+        ready = command->data.adreno_probe.hook && command->data.adreno_probe.directory &&
+                command->data.adreno_probe.name;
+    }
+    if (hook) (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
+    if (directory) (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
+    if (name) (*env)->ReleaseStringUTFChars(env, driver_name, name);
+    if (!ready) {
+        if (command) { free(command->data.adreno_probe.hook); free(command->data.adreno_probe.directory); free(command->data.adreno_probe.name); free(command); }
+        return JNI_FALSE;
+    }
+    pthread_mutex_lock(&server_mutex);
+    bool queued = enqueue_command_locked(command);
+    pthread_mutex_unlock(&server_mutex);
+    if (!queued) { free(command->data.adreno_probe.hook); free(command->data.adreno_probe.directory); free(command->data.adreno_probe.name); free(command); }
+    return queued ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

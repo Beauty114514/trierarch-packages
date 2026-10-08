@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "gpu_probe.h"
+#include "adreno_dmabuf_import.h"
 #include "server_internal.h"
 #include "compositor.h"
 
@@ -37,6 +38,7 @@ struct trierarch_gpu_probe {
     struct host_buffer_slot host_buffers[GPU_PROBE_BUFFER_COUNT];
     char socket_path[PATH_MAX];
     enum client_mode mode;
+    struct trierarch_adreno_importer *adreno_importer;
     bool pending;
 };
 
@@ -264,7 +266,39 @@ void trierarch_gpu_probe_destroy(struct trierarch_gpu_probe *probe) {
     if (probe->listener_source) wl_event_source_remove(probe->listener_source);
     close_client(probe); discard_pending(probe);
     if (probe->listener_fd >= 0) close(probe->listener_fd);
+    trierarch_adreno_importer_destroy(probe->adreno_importer);
     if (probe->socket_path[0]) unlink(probe->socket_path); free(probe);
+}
+
+bool trierarch_gpu_probe_set_adreno_driver(struct trierarch_gpu_probe *probe,
+        const char *hook_library_dir, const char *driver_dir, const char *driver_name) {
+    if (!probe || probe->pending) return false;
+    char error[160] = {0};
+    struct trierarch_adreno_importer *importer = trierarch_adreno_importer_create(
+            hook_library_dir, driver_dir, driver_name, error, sizeof(error));
+    if (!importer) {
+        LOGE("Adreno dma-buf probe setup failed: %s", error);
+        return false;
+    }
+    trierarch_adreno_importer_destroy(probe->adreno_importer);
+    probe->adreno_importer = importer;
+    LOGI("Adreno dma-buf probe importer configured");
+    return true;
+}
+
+bool trierarch_gpu_probe_validate_adreno(struct trierarch_gpu_probe *probe,
+        const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
+    if (!probe || !probe->adreno_importer || !buffer || buffer_fd < 0) return false;
+    const struct trierarch_dmabuf_descriptor descriptor = {
+        .fd = buffer_fd, .width = buffer->width, .height = buffer->height,
+        .format = buffer->drm_format, .stride = buffer->stride, .offset = 0,
+        .modifier = buffer->modifier,
+    };
+    char error[160] = {0};
+    bool accepted = trierarch_adreno_importer_validate(probe->adreno_importer,
+            &descriptor, error, sizeof(error));
+    LOGI("Adreno dma-buf probe import %s: %s", accepted ? "accepted" : "rejected", error);
+    return accepted;
 }
 
 bool trierarch_gpu_probe_take(struct trierarch_gpu_probe *probe, struct trierarch_gpu_probe_buffer *buffer,

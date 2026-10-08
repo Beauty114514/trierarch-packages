@@ -161,6 +161,12 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     return server;
 }
 
+bool trierarch_wayland_configure_adreno_probe(wayland_server_t *server,
+        const char *hook_library_dir, const char *driver_dir, const char *driver_name) {
+    return server && trierarch_gpu_probe_set_adreno_driver(server->gpu_probe,
+            hook_library_dir, driver_dir, driver_name);
+}
+
 void trierarch_wayland_destroy(wayland_server_t *server) {
     if (!server) return;
     trierarch_gpu_probe_destroy(server->gpu_probe);

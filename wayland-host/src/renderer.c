@@ -501,6 +501,11 @@ static int draw_gpu_probe(struct renderer_context *renderer,
     int buffer_fd = -1;
     int client_fd = -1;
     if (!trierarch_gpu_probe_take(server->gpu_probe, &buffer, &buffer_fd, &client_fd)) return 0;
+    if (trierarch_gpu_probe_validate_adreno(server->gpu_probe, &buffer, buffer_fd)) {
+        close(buffer_fd);
+        trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, -1);
+        return 0;
+    }
     if (!renderer->dmabuf_import_supported) {
         trierarch_gpu_probe_report(client_fd, TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, EGL_SUCCESS, -1);
         close(buffer_fd);

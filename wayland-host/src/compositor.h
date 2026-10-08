@@ -14,6 +14,8 @@ bool trierarch_wayland_begin_repaint(wayland_server_t *server);
 void trierarch_wayland_repaint_failed(wayland_server_t *server);
 void trierarch_wayland_request_render(wayland_server_t *server);
 void trierarch_wayland_set_output_size(wayland_server_t *server, int width, int height);
+bool trierarch_wayland_configure_adreno_probe(wayland_server_t *server,
+        const char *hook_library_dir, const char *driver_dir, const char *driver_name);
 bool trierarch_wayland_has_surface(wayland_server_t *server);
 void trierarch_pointer_move_absolute(wayland_server_t *server,
         float x, float y, uint32_t time_ms);
