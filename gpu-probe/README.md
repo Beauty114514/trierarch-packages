@@ -13,8 +13,8 @@ guest EGL/Mesa texture
   -> Android Surface texture draw
 
 three Android AHardwareBuffer allocations
-  -> runtime-inspected first native-handle FD + SCM_RIGHTS
-  -> guest surfaceless EGL_EXT_image_dma_buf_import
+  -> AHardwareBuffer_sendHandleToUnixSocket() (opaque flattened handle + SCM_RIGHTS)
+  -> transport-only validation in the guest
   -> guest renders up to three in-flight frames + native release fences
   -> Android waits the matching fence and samples each slot
   -> Android read-complete fence -> guest waits before reusing that slot
@@ -28,30 +28,30 @@ driver rendered into?
 
 - `protocol.h` defines a small, versioned `SOCK_SEQPACKET` message.  It is not
   a proposed production protocol.
-- `guest/gpu_probe_guest.c` requests the reverse direction, imports the
-  received Android pixel FD through a surfaceless EGL display, clears it cyan,
-  exports an `EGL_ANDROID_native_fence_sync` release fence, and waits the host
-  reuse fence before exit. Its `--receive-only` mode stops after validating
-  the three received FDs and their transport metadata, so FD transport can be
-  verified independently of guest EGL import support.
+- `guest/gpu_probe_guest.c` requests the reverse direction. Its
+  `--receive-only` mode validates the three opaque Android handle packets, all
+  their received FDs, and their serialized sizes without attempting guest EGL
+  import. The experimental render path remains for later work, but must not be
+  interpreted as a general decoder for an Android GraphicBuffer handle.
 - `wayland-host/src/gpu_probe.c` allocates three 256×256 RGBA
-  `AHardwareBuffer`, dynamically queries its non-NDK native handle, and sends
-  only the first FD after logging its complete shape. `renderer.c` samples the
-  original Android allocation as a temporary overlay after the guest replies.
+  `AHardwareBuffer` and transfers each complete handle through Android's public
+  `AHardwareBuffer_sendHandleToUnixSocket()` API.
+  `renderer.c` samples the original Android allocation as a temporary overlay
+  after the guest replies.
 
 The guest program reports the actual `GL_RENDERER`, surfaceless EGL extensions,
-import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes. The host reports the Android native-handle shape,
-the assumed one-plane RGBA DRM metadata, and whether Android-side sampling
-succeeded. A positive result means only that this particular Android allocator,
-guest Mesa driver, and EGL import stack interoperate; it is not yet a general
-buffer queue.
+import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes.
+The transport gate reports every received FD and opaque serialized-payload
+size. A positive result means only that this Android allocator can transfer a
+complete handle over this Unix socket; it does not prove that glibc Mesa can
+decode or import the handle as a Linux dma-buf.
 
 ## Intentionally not implemented yet
 
 A production queue policy, detailed fence telemetry, and any production protocol
-belong to a later bridge. This fixed three-slot probe intentionally rejects a
-native handle without a first FD, and does not claim that a multi-FD handle is
-portable merely because this test can inspect it.
+belong to a later bridge. This fixed three-slot probe accepts at most eight
+received FDs and 4096 bytes of serialized handle payload. It intentionally does
+not parse Android-private handle data.
 
 ## Build
 

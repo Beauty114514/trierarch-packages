@@ -5,9 +5,7 @@
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
-#include <dlfcn.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,10 +21,6 @@
 #define DRM_FORMAT_ABGR8888 0x34324241u
 #define GPU_PROBE_BUFFER_COUNT 3u
 
-/* VNDK-only: resolving this dynamically makes availability and native-handle
- * shape probe data instead of an unstated Android ABI dependency. */
-struct native_handle { int version; int numFds; int numInts; int data[]; };
-typedef const struct native_handle *(*get_native_handle_fn)(const AHardwareBuffer *);
 enum client_mode { CLIENT_NONE, CLIENT_GUEST_TO_HOST, CLIENT_HOST_TO_GUEST };
 
 struct host_buffer_slot {
@@ -89,28 +83,21 @@ static void send_result(int client_fd, uint32_t result, uint32_t egl_error,
     (void)sendmsg(client_fd, &packet, MSG_NOSIGNAL);
 }
 
-static int send_buffer(int client_fd, const struct trierarch_gpu_probe_buffer *buffer, int fd) {
-    char control[CMSG_SPACE(sizeof(int))] = {0};
-    struct iovec iov = { .iov_base = (void *)buffer, .iov_len = sizeof(*buffer) };
-    struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1,
-        .msg_control = control, .msg_controllen = sizeof(control) };
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
-    cmsg->cmsg_level = SOL_SOCKET; cmsg->cmsg_type = SCM_RIGHTS; cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
-    return sendmsg(client_fd, &message, MSG_NOSIGNAL) == (ssize_t)sizeof(*buffer) ? 0 : -1;
-}
-
-static get_native_handle_fn get_native_handle(void) {
-    static bool attempted;
-    static get_native_handle_fn function;
-    if (attempted) return function;
-    attempted = true;
-    function = (get_native_handle_fn)dlsym(RTLD_DEFAULT, "AHardwareBuffer_getNativeHandle");
-    if (!function) {
-        void *library = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
-        if (library) function = (get_native_handle_fn)dlsym(library, "AHardwareBuffer_getNativeHandle");
+static int send_host_buffer(int client_fd, const struct trierarch_gpu_probe_buffer *buffer,
+        AHardwareBuffer *hardware_buffer) {
+    if (send(client_fd, buffer, sizeof(*buffer), MSG_NOSIGNAL) != (ssize_t)sizeof(*buffer)) {
+        LOGE("Android AHardwareBuffer slot=%u header send failed: %s",
+                buffer->buffer_id, strerror(errno));
+        return -1;
     }
-    return function;
+    /* This is the public Android ABI: it serializes the complete opaque
+     * GraphicBuffer handle and transfers every required FD in one packet. */
+    int result = AHardwareBuffer_sendHandleToUnixSocket(hardware_buffer, client_fd);
+    if (result == 0) return 0;
+    int error = result < 0 ? -result : result;
+    LOGE("Android AHardwareBuffer slot=%u official handle send failed: result=%d (%s)",
+            buffer->buffer_id, result, strerror(error));
+    return -1;
 }
 
 static int create_and_send_host_buffers(struct trierarch_gpu_probe *probe) {
@@ -119,22 +106,14 @@ static int create_and_send_host_buffers(struct trierarch_gpu_probe *probe) {
         .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
         .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
     };
-    get_native_handle_fn native_handle = get_native_handle();
     for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
         struct host_buffer_slot *slot = &probe->host_buffers[index];
         if (AHardwareBuffer_allocate(&requested, &slot->buffer) != 0 || !slot->buffer) {
             LOGE("AHardwareBuffer_allocate failed for slot=%u", index); return -1;
         }
         AHardwareBuffer_Desc actual = {0}; AHardwareBuffer_describe(slot->buffer, &actual);
-        const struct native_handle *handle = native_handle ? native_handle(slot->buffer) : NULL;
-        if (!handle || handle->numFds < 1 || handle->data[0] < 0) {
-            LOGE("Android AHardwareBuffer native handle unavailable for slot=%u", index); return -1;
-        }
-        LOGI("host AHardwareBuffer slot=%u: %ux%u stride=%u format=0x%x native_handle fds=%d ints=%d",
-                index, actual.width, actual.height, actual.stride, actual.format,
-                handle->numFds, handle->numInts);
-        int fd = dup(handle->data[0]);
-        if (fd < 0) return -1;
+        LOGI("host AHardwareBuffer slot=%u: %ux%u stride=%u format=0x%x; sending official opaque handle",
+                index, actual.width, actual.height, actual.stride, actual.format);
         struct trierarch_gpu_probe_buffer buffer = {
             .magic = TRIERARCH_GPU_PROBE_MAGIC, .version = TRIERARCH_GPU_PROBE_VERSION,
             .type = TRIERARCH_GPU_PROBE_HOST_BUFFER, .width = actual.width, .height = actual.height,
@@ -142,8 +121,7 @@ static int create_and_send_host_buffers(struct trierarch_gpu_probe *probe) {
             .drm_format = DRM_FORMAT_ABGR8888, .stride = actual.stride * 4u,
             .modifier = 0, .buffer_id = index,
         };
-        int result = send_buffer(probe->client_fd, &buffer, fd); close(fd);
-        if (result < 0) return -1;
+        if (send_host_buffer(probe->client_fd, &buffer, slot->buffer) < 0) return -1;
     }
     LOGI("sent %u Android AHardwareBuffer slots to guest; awaiting render results", GPU_PROBE_BUFFER_COUNT);
     return 0;

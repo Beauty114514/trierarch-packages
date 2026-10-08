@@ -4,7 +4,9 @@
 #include <stdint.h>
 
 #define TRIERARCH_GPU_PROBE_MAGIC 0x54524750u /* TRGP */
-#define TRIERARCH_GPU_PROBE_VERSION 4u
+#define TRIERARCH_GPU_PROBE_VERSION 6u
+#define TRIERARCH_GPU_PROBE_MAX_NATIVE_HANDLE_FDS 8u
+#define TRIERARCH_GPU_PROBE_MAX_SERIALIZED_HANDLE_BYTES 4096u
 
 enum trierarch_gpu_probe_message_type {
     TRIERARCH_GPU_PROBE_HELLO = 1,
@@ -33,9 +35,9 @@ struct trierarch_gpu_probe_hello {
     uint32_t direction;
 };
 
-/* Exactly one FD accompanies a BUFFER.  This deliberately tests only a
- * single-plane Android allocation; a native handle with private metadata is
- * not a general DRM dma-buf protocol. */
+/* HOST_BUFFER is followed by a separate SOCK_SEQPACKET message emitted by
+ * AHardwareBuffer_sendHandleToUnixSocket(). Its flattened bytes and SCM_RIGHTS
+ * payload are intentionally opaque to the guest. */
 struct trierarch_gpu_probe_buffer {
     uint32_t magic;
     uint16_t version;

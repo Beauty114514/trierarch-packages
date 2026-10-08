@@ -57,6 +57,14 @@ struct guest_slot {
     bool in_flight;
 };
 
+struct received_host_buffer {
+    struct trierarch_gpu_probe_buffer buffer;
+    int fds[TRIERARCH_GPU_PROBE_MAX_NATIVE_HANDLE_FDS];
+    uint8_t serialized_handle[TRIERARCH_GPU_PROBE_MAX_SERIALIZED_HANDLE_BYTES];
+    size_t serialized_size;
+    uint32_t fd_count;
+};
+
 static uint64_t monotonic_ns(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -111,19 +119,46 @@ static int send_result(int fd, uint32_t result, uint32_t egl_error,
     return sendmsg(fd, &packet, 0) == (ssize_t)sizeof(message) ? 0 : -1;
 }
 
-static int receive_buffer(int fd, struct trierarch_gpu_probe_buffer *buffer, int *buffer_fd) {
-    char control[CMSG_SPACE(sizeof(int))] = {0};
-    struct iovec iov = { .iov_base = buffer, .iov_len = sizeof(*buffer) };
+static void close_received_host_buffer(struct received_host_buffer *received) {
+    if (!received) return;
+    for (uint32_t index = 0; index < received->fd_count; ++index) {
+        if (received->fds[index] >= 0) close(received->fds[index]);
+        received->fds[index] = -1;
+    }
+}
+
+static int receive_buffer(int fd, struct received_host_buffer *received) {
+    memset(received, 0, sizeof(*received));
+    for (uint32_t index = 0; index < TRIERARCH_GPU_PROBE_MAX_NATIVE_HANDLE_FDS; ++index)
+        received->fds[index] = -1;
+    if (recv(fd, &received->buffer, sizeof(received->buffer), 0) != (ssize_t)sizeof(received->buffer))
+        return -1;
+    struct trierarch_gpu_probe_buffer *buffer = &received->buffer;
+    if (buffer->magic != TRIERARCH_GPU_PROBE_MAGIC || buffer->version != TRIERARCH_GPU_PROBE_VERSION ||
+            buffer->type != TRIERARCH_GPU_PROBE_HOST_BUFFER || buffer->buffer_id >= GPU_PROBE_BUFFER_COUNT)
+        return -1;
+
+    char control[CMSG_SPACE(sizeof(int) * TRIERARCH_GPU_PROBE_MAX_NATIVE_HANDLE_FDS)] = {0};
+    struct iovec iov = {
+        .iov_base = received->serialized_handle,
+        .iov_len = sizeof(received->serialized_handle),
+    };
     struct msghdr packet = { .msg_iov = &iov, .msg_iovlen = 1,
         .msg_control = control, .msg_controllen = sizeof(control) };
-    if (recvmsg(fd, &packet, 0) != (ssize_t)sizeof(*buffer)) return -1;
+    ssize_t byte_count = recvmsg(fd, &packet, 0);
+    if (byte_count <= 0 || (packet.msg_flags & (MSG_CTRUNC | MSG_TRUNC)))
+        return -1;
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&packet);
     if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
-            cmsg->cmsg_len != CMSG_LEN(sizeof(int))) return -1;
-    memcpy(buffer_fd, CMSG_DATA(cmsg), sizeof(*buffer_fd));
-    return buffer->magic == TRIERARCH_GPU_PROBE_MAGIC && buffer->version == TRIERARCH_GPU_PROBE_VERSION &&
-            buffer->type == TRIERARCH_GPU_PROBE_HOST_BUFFER && buffer->buffer_id < GPU_PROBE_BUFFER_COUNT &&
-            *buffer_fd >= 0 ? 0 : -1;
+            cmsg->cmsg_len < CMSG_LEN(0)) return -1;
+    size_t fd_bytes = cmsg->cmsg_len - CMSG_LEN(0);
+    if (fd_bytes % sizeof(int) || fd_bytes / sizeof(int) < 1 ||
+            fd_bytes / sizeof(int) > TRIERARCH_GPU_PROBE_MAX_NATIVE_HANDLE_FDS)
+        return -1;
+    received->serialized_size = (size_t)byte_count;
+    received->fd_count = (uint32_t)(fd_bytes / sizeof(int));
+    memcpy(received->fds, CMSG_DATA(cmsg), fd_bytes);
+    return 0;
 }
 
 static int wait_fence(int fence_fd, uint64_t *wait_ns) {
@@ -173,26 +208,29 @@ static int run_receive_only_probe(const char *socket_path) {
     }
 
     for (uint32_t received = 0; received < GPU_PROBE_BUFFER_COUNT; ++received) {
-        int buffer_fd = -1;
-        struct trierarch_gpu_probe_buffer buffer = {0};
-        if (receive_buffer(socket_fd, &buffer, &buffer_fd) < 0) {
+        struct received_host_buffer host_buffer;
+        if (receive_buffer(socket_fd, &host_buffer) < 0) {
             fprintf(stderr, "guest: failed to receive host buffer %u\n", received);
             close(socket_fd);
             return 2;
         }
 
-        struct stat status = {0};
-        int result = fstat(buffer_fd, &status);
-        printf("guest: received slot=%u fd=%d mode=%#o %ux%u format=0x%x stride=%u modifier=0x%llx\n",
-                buffer.buffer_id, buffer_fd, result == 0 ? status.st_mode : 0,
-                buffer.width, buffer.height, buffer.drm_format, buffer.stride,
-                (unsigned long long)buffer.modifier);
-        close(buffer_fd);
-        if (result < 0) {
-            fprintf(stderr, "guest: fstat host buffer %u failed: %s\n", received, strerror(errno));
-            close(socket_fd);
-            return 3;
+        const struct trierarch_gpu_probe_buffer *buffer = &host_buffer.buffer;
+        printf("guest: received slot=%u %ux%u format=0x%x stride=%u modifier=0x%llx official-handle bytes=%zu fds=%u\n",
+                buffer->buffer_id, buffer->width, buffer->height, buffer->drm_format, buffer->stride,
+                (unsigned long long)buffer->modifier, host_buffer.serialized_size, host_buffer.fd_count);
+        for (uint32_t index = 0; index < host_buffer.fd_count; ++index) {
+            struct stat status = {0};
+            if (fstat(host_buffer.fds[index], &status) < 0) {
+                fprintf(stderr, "guest: fstat host buffer %u fd %u failed: %s\n", received, index, strerror(errno));
+                close_received_host_buffer(&host_buffer);
+                close(socket_fd);
+                return 3;
+            }
+            printf("guest: slot=%u handle-fd[%u]=%d mode=%#o\n", buffer->buffer_id,
+                    index, host_buffer.fds[index], status.st_mode);
         }
+        close_received_host_buffer(&host_buffer);
     }
 
     puts("guest: host-to-guest AHardwareBuffer transport verified");
@@ -226,13 +264,17 @@ static int run_probe(const char *socket_path) {
     if (!create_image || !destroy_image || !image_target || !create_sync || !destroy_sync || !dup_fence) return 5;
     struct guest_slot slots[GPU_PROBE_BUFFER_COUNT] = {0};
     for (uint32_t received = 0; received < GPU_PROBE_BUFFER_COUNT; ++received) {
-        int buffer_fd = -1; struct trierarch_gpu_probe_buffer buffer = {0};
-        if (receive_buffer(socket_fd, &buffer, &buffer_fd) < 0 || slots[buffer.buffer_id].received) return 6;
+        struct received_host_buffer host_buffer;
+        if (receive_buffer(socket_fd, &host_buffer) < 0 ||
+                slots[host_buffer.buffer.buffer_id].received) return 6;
+        struct trierarch_gpu_probe_buffer buffer = host_buffer.buffer;
+        int buffer_fd = host_buffer.fds[0];
         struct guest_slot *slot = &slots[buffer.buffer_id]; slot->buffer = buffer; slot->reuse_fence_fd = -1;
         const EGLint attributes[] = { EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
             EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format, EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd,
             EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0, EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride, EGL_NONE };
-        slot->image = create_image(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attributes); close(buffer_fd);
+        slot->image = create_image(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attributes);
+        close_received_host_buffer(&host_buffer);
         if (slot->image == EGL_NO_IMAGE_KHR) return 7;
         glGenTextures(1, &slot->texture); glBindTexture(GL_TEXTURE_2D, slot->texture); image_target(GL_TEXTURE_2D, slot->image);
         glGenFramebuffers(1, &slot->framebuffer); glBindFramebuffer(GL_FRAMEBUFFER, slot->framebuffer);
