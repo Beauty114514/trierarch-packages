@@ -90,6 +90,11 @@ pub fn start(
         .open(runtime_directory.join("virgl_host.log"))?;
     let angle = payload_directory.join("angle/vulkan");
     let library = payload_directory.join("lib");
+    // virglrenderer records its build-time libexec location as the default
+    // Venus renderer process path.  That path belongs to the development
+    // machine, not the installed APK payload.  The patched renderer accepts
+    // this explicit runtime override.
+    let render_server = payload_directory.join("bin/virgl_render_server");
     let linker = if cfg!(target_pointer_width = "64") {
         "/system/bin/linker64"
     } else {
@@ -104,6 +109,7 @@ pub fn start(
         .env("XDG_RUNTIME_DIR", runtime_directory)
         .env("TMPDIR", runtime_directory)
         .env("ANGLE_LIBS_DIR", &angle)
+        .env("RENDER_SERVER_EXEC_PATH", &render_server)
         .env(
             "LD_LIBRARY_PATH",
             format!(
