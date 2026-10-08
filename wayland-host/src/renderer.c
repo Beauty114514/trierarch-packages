@@ -610,12 +610,14 @@ static int draw_host_gpu_probe(struct renderer_context *renderer,
     uint32_t slot = UINT32_MAX;
     int guest_fence_fd = -1;
     if (!trierarch_gpu_probe_take_host_buffer(server->gpu_probe, &buffer, &slot, &guest_fence_fd)) return 0;
-    if (!wait_native_fence(guest_fence_fd)) {
+    if (guest_fence_fd >= 0 && !wait_native_fence(guest_fence_fd)) {
         LOGE("reverse gpu probe guest release fence wait failed: %s", strerror(errno));
         trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
                 TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
         return 0;
     }
+    if (guest_fence_fd < 0)
+        LOGI("reverse gpu probe sampling guest glFinish fallback");
     EGLClientBuffer native_buffer = renderer->native_client_buffer(buffer);
     const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
     EGLImageKHR image = native_buffer ? renderer->create_image(renderer->display, EGL_NO_CONTEXT,

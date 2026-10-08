@@ -316,7 +316,9 @@ static int run_probe(const char *socket_path) {
     create_sync_fn create_sync = (create_sync_fn)eglGetProcAddress("eglCreateSyncKHR");
     destroy_sync_fn destroy_sync = (destroy_sync_fn)eglGetProcAddress("eglDestroySyncKHR");
     dup_native_fence_fd_fn dup_fence = (dup_native_fence_fd_fn)eglGetProcAddress("eglDupNativeFenceFDANDROID");
-    if (!create_image || !destroy_image || !image_target || !create_sync || !destroy_sync || !dup_fence) return 5;
+    bool native_fence_supported = has_extension(extensions, "EGL_ANDROID_native_fence_sync") &&
+            create_sync && destroy_sync && dup_fence;
+    if (!create_image || !destroy_image || !image_target) return 5;
     struct guest_slot slots[GPU_PROBE_BUFFER_COUNT] = {0};
     for (uint32_t received = 0; received < GPU_PROBE_BUFFER_COUNT; ++received) {
         struct received_host_buffer host_buffer;
@@ -350,10 +352,16 @@ static int run_probe(const char *socket_path) {
         float phase = (float)(frame % 60) / 59.0f;
         glViewport(0, 0, (GLsizei)slot->buffer.width, (GLsizei)slot->buffer.height);
         glClearColor(phase, 0.85f - phase * 0.5f, 0.18f + phase * 0.6f, 1.0f); glClear(GL_COLOR_BUFFER_BIT);
-        EGLSyncKHR sync = create_sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
-        if (sync == EGL_NO_SYNC_KHR) return 11;
-        glFlush(); int fence_fd = dup_fence(display, sync); destroy_sync(display, sync);
-        if (fence_fd < 0 || glGetError() != GL_NO_ERROR ||
+        int fence_fd = -1;
+        if (native_fence_supported) {
+            EGLSyncKHR sync = create_sync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
+            if (sync == EGL_NO_SYNC_KHR) return 11;
+            glFlush(); fence_fd = dup_fence(display, sync); destroy_sync(display, sync);
+        } else {
+            /* Probe-only: do not turn this into a production queue policy. */
+            glFinish();
+        }
+        if ((native_fence_supported && fence_fd < 0) || glGetError() != GL_NO_ERROR ||
                 send_result(socket_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, index, fence_fd) < 0) {
             if (fence_fd >= 0) close(fence_fd);
             return 12;

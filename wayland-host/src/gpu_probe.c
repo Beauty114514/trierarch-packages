@@ -182,12 +182,20 @@ static int receive_guest_result(struct trierarch_gpu_probe *probe) {
         LOGE("guest attempted to submit busy buffer slot=%u", result.buffer_id); return -1;
     }
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&packet);
-    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
-            cmsg->cmsg_len != CMSG_LEN(sizeof(int))) {
-        LOGE("guest result lacks its release fence"); return -1;
+    if (!cmsg) {
+        /* Test-only fallback for a guest stack without
+         * EGL_ANDROID_native_fence_sync. The probe calls glFinish() before
+         * this message, so it is safe only for its one-shot validation. */
+        slot->guest_fence_fd = -1;
+        LOGI("guest rendered Android buffer slot=%u with glFinish fallback", result.buffer_id);
+    } else {
+        if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+                cmsg->cmsg_len != CMSG_LEN(sizeof(int))) {
+            LOGE("guest result has malformed release fence"); return -1;
+        }
+        memcpy(&slot->guest_fence_fd, CMSG_DATA(cmsg), sizeof(slot->guest_fence_fd));
+        if (slot->guest_fence_fd < 0) return -1;
     }
-    memcpy(&slot->guest_fence_fd, CMSG_DATA(cmsg), sizeof(slot->guest_fence_fd));
-    if (slot->guest_fence_fd < 0) return -1;
     slot->ready = true;
     probe->pending = true;
     LOGI("guest rendered Android buffer slot=%u; scheduling host sample", result.buffer_id);
@@ -274,7 +282,7 @@ bool trierarch_gpu_probe_take_host_buffer(struct trierarch_gpu_probe *probe, AHa
             probe->mode != CLIENT_HOST_TO_GUEST || probe->client_fd < 0) return false;
     for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
         struct host_buffer_slot *slot = &probe->host_buffers[index];
-        if (!slot->ready || !slot->buffer || slot->guest_fence_fd < 0) continue;
+        if (!slot->ready || !slot->buffer) continue;
         *buffer = slot->buffer;
         *buffer_id = index;
         *guest_fence_fd = slot->guest_fence_fd;
