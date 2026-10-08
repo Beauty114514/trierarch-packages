@@ -73,6 +73,66 @@ static void destroy_image(struct vulkan_image *image) {
     memset(image, 0, sizeof(*image));
 }
 
+/* The exported image must contain known GPU-written data.  This keeps the
+ * next host stage honest: it will have a visible value to sample rather than
+ * merely proving that a dma-buf can be bound as Vulkan memory. */
+static int clear_exported_image(VkDevice device, VkImage image, VkQueue queue,
+        uint32_t queue_family) {
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = queue_family,
+    };
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    if (vkCreateCommandPool(device, &pool_info, NULL, &pool) != VK_SUCCESS) return -1;
+    VkCommandBufferAllocateInfo allocation = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBufferBeginInfo begin = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+    if (vkAllocateCommandBuffers(device, &allocation, &command) != VK_SUCCESS ||
+            vkBeginCommandBuffer(command, &begin) != VK_SUCCESS) goto fail;
+    VkImageMemoryBarrier acquire = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1, .layerCount = 1 },
+    };
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &acquire);
+    const VkClearColorValue color = { .float32 = { 0.12f, 0.72f, 0.36f, 1.0f } };
+    const VkImageSubresourceRange range = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .levelCount = 1, .layerCount = 1 };
+    vkCmdClearColorImage(command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+    VkImageMemoryBarrier release = acquire;
+    release.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    release.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    release.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    release.dstAccessMask = 0;
+    release.srcQueueFamilyIndex = queue_family;
+    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &release);
+    if (vkEndCommandBuffer(command) != VK_SUCCESS) goto fail;
+    VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1, .pCommandBuffers = &command };
+    if (vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+            vkQueueWaitIdle(queue) != VK_SUCCESS) goto fail;
+    vkDestroyCommandPool(device, pool, NULL);
+    return 0;
+fail:
+    if (pool) vkDestroyCommandPool(device, pool, NULL);
+    return -1;
+}
+
 static int create_exportable_image(struct vulkan_image *image, int *export_fd,
         uint32_t *stride, uint64_t *modifier_out) {
     const char *extensions[] = {
@@ -164,6 +224,10 @@ static int create_exportable_image(struct vulkan_image *image, int *export_fd,
         .pNext = &export_info, .allocationSize = requirements.size, .memoryTypeIndex = memory_type };
     if (vkAllocateMemory(image->device, &allocation, NULL, &image->memory) != VK_SUCCESS ||
             vkBindImageMemory(image->device, image->image, image->memory, 0) != VK_SUCCESS) goto fail;
+    VkQueue queue_handle = VK_NULL_HANDLE;
+    vkGetDeviceQueue(image->device, family, 0, &queue_handle);
+    if (!queue_handle || clear_exported_image(image->device, image->image, queue_handle, family) < 0)
+        goto fail;
     VkImageDrmFormatModifierPropertiesEXT modifier_properties = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT };
     VkImageSubresource subresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT };
