@@ -1,0 +1,6 @@
+#ifndef TRIERARCH_GUEST_WAYLAND_DMABUF_CLIENT_H
+#define TRIERARCH_GUEST_WAYLAND_DMABUF_CLIENT_H
+
+int trierarch_guest_submit_wayland_dmabuf(void);
+
+#endif
