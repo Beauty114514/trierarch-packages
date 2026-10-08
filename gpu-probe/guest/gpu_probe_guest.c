@@ -5,11 +5,13 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <wayland-client.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -22,6 +24,9 @@
 
 #ifndef EGL_PLATFORM_SURFACELESS_MESA
 #define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
+#endif
+#ifndef EGL_PLATFORM_WAYLAND_KHR
+#define EGL_PLATFORM_WAYLAND_KHR 0x31D8
 #endif
 #ifndef EGL_LINUX_DMA_BUF_EXT
 #define EGL_LINUX_DMA_BUF_EXT 0x3270
@@ -194,10 +199,55 @@ static int receive_host_result(int fd, struct guest_slot slots[GPU_PROBE_BUFFER_
     return 0;
 }
 
-static EGLDisplay create_surfaceless_display(void) {
+static struct wl_display *probe_wayland_display;
+
+static EGLDisplay create_probe_display(const char **path) {
+    const char *client_extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    fprintf(stderr, "guest: EGL client platforms base=%d wayland=%d surfaceless=%d\n",
+            has_extension(client_extensions, "EGL_EXT_platform_base") ||
+                    has_extension(client_extensions, "EGL_KHR_platform_base"),
+            has_extension(client_extensions, "EGL_EXT_platform_wayland") ||
+                    has_extension(client_extensions, "EGL_KHR_platform_wayland"),
+            has_extension(client_extensions, "EGL_MESA_platform_surfaceless"));
     get_platform_display_fn function = (get_platform_display_fn)eglGetProcAddress("eglGetPlatformDisplayEXT");
     if (!function) function = (get_platform_display_fn)eglGetProcAddress("eglGetPlatformDisplay");
-    return function ? function(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL) : EGL_NO_DISPLAY;
+    if (function) {
+        EGLDisplay display = function(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+        if (display != EGL_NO_DISPLAY) {
+            *path = "explicit-surfaceless";
+            return display;
+        }
+        fprintf(stderr, "guest: explicit surfaceless display rejected: 0x%x\n", eglGetError());
+    }
+
+    EGLDisplay display = EGL_NO_DISPLAY;
+    if (getenv("EGL_PLATFORM")) {
+        display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (display != EGL_NO_DISPLAY) {
+            *path = "environment-default";
+            return display;
+        }
+    }
+
+    probe_wayland_display = wl_display_connect(NULL);
+    if (!probe_wayland_display) {
+        fprintf(stderr, "guest: Wayland EGL fallback could not connect: %s\n", strerror(errno));
+        return EGL_NO_DISPLAY;
+    }
+    /* eglGetPlatformDisplay* is absent or rejects both standard platform
+     * enums on this Mesa build. The legacy Wayland native-display entry point
+     * is still part of EGL 1.4 and is widely supported by Mesa. */
+    if (setenv("EGL_PLATFORM", "wayland", 1) != 0)
+        fprintf(stderr, "guest: could not select Wayland EGL platform: %s\n", strerror(errno));
+    display = eglGetDisplay((EGLNativeDisplayType)probe_wayland_display);
+    if (display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "guest: legacy Wayland EGL display rejected: 0x%x\n", eglGetError());
+        wl_display_disconnect(probe_wayland_display);
+        probe_wayland_display = NULL;
+        return EGL_NO_DISPLAY;
+    }
+    *path = "parent-wayland";
+    return display;
 }
 
 static int run_receive_only_probe(const char *socket_path) {
@@ -241,8 +291,13 @@ static int run_receive_only_probe(const char *socket_path) {
 static int run_probe(const char *socket_path) {
     int socket_fd = connect_socket(socket_path);
     if (socket_fd < 0 || send_hello(socket_fd) < 0) { fprintf(stderr, "guest: connect/hello failed: %s\n", strerror(errno)); return 1; }
-    EGLDisplay display = create_surfaceless_display();
-    if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) { fprintf(stderr, "guest: eglInitialize failed: 0x%x\n", eglGetError()); return 2; }
+    const char *display_path = "none";
+    EGLDisplay display = create_probe_display(&display_path);
+    if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
+        fprintf(stderr, "guest: %s EGL initialization failed: 0x%x\n", display_path, eglGetError());
+        return 2;
+    }
+    printf("guest: EGL display path=%s\n", display_path);
     const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
     printf("guest: EGL import=%d native-fence=%d\n", has_extension(extensions, "EGL_EXT_image_dma_buf_import"),
             has_extension(extensions, "EGL_ANDROID_native_fence_sync"));
@@ -317,7 +372,9 @@ static int run_probe(const char *socket_path) {
         glDeleteFramebuffers(1, &slots[index].framebuffer); glDeleteTextures(1, &slots[index].texture);
         destroy_image(display, slots[index].image);
     }
-    eglDestroySurface(display, surface); eglDestroyContext(display, context); eglTerminate(display); close(socket_fd);
+    eglDestroySurface(display, surface); eglDestroyContext(display, context); eglTerminate(display);
+    if (probe_wayland_display) { wl_display_disconnect(probe_wayland_display); probe_wayland_display = NULL; }
+    close(socket_fd);
     return 0;
 }
 
