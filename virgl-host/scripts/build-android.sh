@@ -156,6 +156,14 @@ if [[ -f "$prefix/libexec/virgl_render_server" ]]; then
     install -Dm755 "$prefix/libexec/virgl_render_server" "$dist_dir/virgl_render_server"
     "$llvm_strip" "$dist_dir/virgl_render_server"
 fi
+
+echo '=== Building Android Vulkan external-memory probe ==='
+probe_clang="$toolchain/bin/${target}26-clang"
+"$probe_clang" -O2 -Wall -Wextra -Werror \
+    "$package_dir/tools/adreno_external_memory_probe.c" \
+    -o "$dist_dir/adreno_external_memory_probe" -lvulkan -landroid
+"$llvm_strip" "$dist_dir/adreno_external_memory_probe"
+
 for backend in gl vulkan vulkan-null; do
     [[ -d "$angle_dir/$backend" ]] || continue
     install -d "$dist_dir/angle/$backend"
