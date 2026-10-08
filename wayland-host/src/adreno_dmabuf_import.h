@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 struct trierarch_adreno_importer;
+struct trierarch_adreno_imported_image;
 
 struct trierarch_dmabuf_descriptor {
     int fd;
@@ -19,6 +20,12 @@ struct trierarch_dmabuf_descriptor {
 struct trierarch_adreno_importer *trierarch_adreno_importer_create(
         const char *hook_library_dir, const char *driver_dir, const char *driver_name,
         char *error, unsigned error_size);
+/* The returned image owns its Vulkan image and imported memory.  It must be
+ * released before its importer is destroyed. */
+struct trierarch_adreno_imported_image *trierarch_adreno_importer_import(
+        struct trierarch_adreno_importer *importer,
+        const struct trierarch_dmabuf_descriptor *buffer, char *error, unsigned error_size);
+void trierarch_adreno_imported_image_destroy(struct trierarch_adreno_imported_image *image);
 bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *importer,
         const struct trierarch_dmabuf_descriptor *buffer, char *error, unsigned error_size);
 void trierarch_adreno_importer_destroy(struct trierarch_adreno_importer *importer);

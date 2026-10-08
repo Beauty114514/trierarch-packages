@@ -31,6 +31,12 @@ struct trierarch_adreno_importer {
     PFN_vkGetPhysicalDeviceMemoryProperties get_memory_properties;
 };
 
+struct trierarch_adreno_imported_image {
+    struct trierarch_adreno_importer *importer;
+    VkImage image;
+    VkDeviceMemory memory;
+};
+
 static void set_error(char *error, unsigned size, const char *format, ...) {
     if (!error || size == 0) return;
     va_list arguments;
@@ -185,12 +191,13 @@ struct trierarch_adreno_importer *trierarch_adreno_importer_create(
     return importer;
 }
 
-bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *importer,
+struct trierarch_adreno_imported_image *trierarch_adreno_importer_import(
+        struct trierarch_adreno_importer *importer,
         const struct trierarch_dmabuf_descriptor *buffer, char *error, unsigned error_size) {
     if (!importer || !buffer || buffer->fd < 0 || buffer->width == 0 || buffer->height == 0 ||
             buffer->modifier == UINT64_MAX || vk_format(buffer->format) == VK_FORMAT_UNDEFINED) {
         set_error(error, error_size, "invalid dma-buf descriptor");
-        return false;
+        return NULL;
     }
     VkSubresourceLayout layout = { .offset = buffer->offset, .rowPitch = buffer->stride };
     VkImageDrmFormatModifierExplicitCreateInfoEXT modifier = {
@@ -222,7 +229,7 @@ bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *import
     VkResult result = importer->create_image(importer->device, &image_info, NULL, &image);
     if (result != VK_SUCCESS) {
         set_error(error, error_size, "create dma-buf image: %d", result);
-        return false;
+        return NULL;
     }
     VkMemoryRequirements requirements;
     importer->get_image_memory_requirements(importer->device, image, &requirements);
@@ -230,13 +237,13 @@ bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *import
     if (!find_memory_type(importer, requirements.memoryTypeBits, &memory_type)) {
         importer->destroy_image(importer->device, image, NULL);
         set_error(error, error_size, "find dma-buf memory type");
-        return false;
+        return NULL;
     }
     int fd = dup(buffer->fd);
     if (fd < 0) {
         importer->destroy_image(importer->device, image, NULL);
         set_error(error, error_size, "duplicate dma-buf fd");
-        return false;
+        return NULL;
     }
     VkImportMemoryFdInfoKHR import = {
         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
@@ -254,16 +261,45 @@ bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *import
     if (result != VK_SUCCESS) {
         importer->destroy_image(importer->device, image, NULL);
         set_error(error, error_size, "import dma-buf memory: %d", result);
-        return false;
+        return NULL;
     }
     result = importer->bind_image_memory(importer->device, image, memory, 0);
-    importer->free_memory(importer->device, memory, NULL);
-    importer->destroy_image(importer->device, image, NULL);
     if (result != VK_SUCCESS) {
+        importer->free_memory(importer->device, memory, NULL);
+        importer->destroy_image(importer->device, image, NULL);
         set_error(error, error_size, "bind dma-buf image memory: %d", result);
-        return false;
+        return NULL;
     }
+    struct trierarch_adreno_imported_image *imported = calloc(1, sizeof(*imported));
+    if (!imported) {
+        importer->destroy_image(importer->device, image, NULL);
+        importer->free_memory(importer->device, memory, NULL);
+        set_error(error, error_size, "allocate imported image");
+        return NULL;
+    }
+    imported->importer = importer;
+    imported->image = image;
+    imported->memory = memory;
     set_error(error, error_size, "import accepted");
+    return imported;
+}
+
+void trierarch_adreno_imported_image_destroy(struct trierarch_adreno_imported_image *image) {
+    if (!image) return;
+    struct trierarch_adreno_importer *importer = image->importer;
+    if (importer && importer->device) {
+        if (image->image) importer->destroy_image(importer->device, image->image, NULL);
+        if (image->memory) importer->free_memory(importer->device, image->memory, NULL);
+    }
+    free(image);
+}
+
+bool trierarch_adreno_importer_validate(struct trierarch_adreno_importer *importer,
+        const struct trierarch_dmabuf_descriptor *buffer, char *error, unsigned error_size) {
+    struct trierarch_adreno_imported_image *image = trierarch_adreno_importer_import(
+            importer, buffer, error, error_size);
+    if (!image) return false;
+    trierarch_adreno_imported_image_destroy(image);
     return true;
 }
 
