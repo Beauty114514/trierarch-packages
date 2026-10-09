@@ -21,7 +21,6 @@
 #define DRM_FORMAT_ARGB8888 0x34325241u
 #define DRM_FORMAT_XBGR8888 0x34324258u
 #define DRM_FORMAT_ABGR8888 0x34324241u
-#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 
 #ifndef SYS_memfd_create
 #if defined(__aarch64__)
@@ -231,15 +230,11 @@ static void send_feedback(struct wl_resource *resource, struct wayland_server *s
         uint32_t format;
         uint32_t padding;
         uint64_t modifier;
-    } entries[8] = {
+    } entries[4] = {
         { DRM_FORMAT_XRGB8888, 0, 0 },
         { DRM_FORMAT_ARGB8888, 0, 0 },
         { DRM_FORMAT_XBGR8888, 0, 0 },
         { DRM_FORMAT_ABGR8888, 0, 0 },
-        { DRM_FORMAT_XRGB8888, 0, DRM_FORMAT_MOD_INVALID },
-        { DRM_FORMAT_ARGB8888, 0, DRM_FORMAT_MOD_INVALID },
-        { DRM_FORMAT_XBGR8888, 0, DRM_FORMAT_MOD_INVALID },
-        { DRM_FORMAT_ABGR8888, 0, DRM_FORMAT_MOD_INVALID },
     };
 #ifdef SYS_memfd_create
     int fd = (int)syscall(SYS_memfd_create, "trierarch-dmabuf-feedback", 0);
@@ -268,9 +263,9 @@ static void send_feedback(struct wl_resource *resource, struct wayland_server *s
     zwp_linux_dmabuf_feedback_v1_send_tranche_flags(resource, 0);
     struct wl_array indices;
     wl_array_init(&indices);
-    uint16_t *index_data = wl_array_add(&indices, sizeof(uint16_t) * 8);
+    uint16_t *index_data = wl_array_add(&indices, sizeof(uint16_t) * 4);
     if (index_data) {
-        for (uint16_t i = 0; i < 8; ++i) index_data[i] = i;
+        for (uint16_t i = 0; i < 4; ++i) index_data[i] = i;
         zwp_linux_dmabuf_feedback_v1_send_tranche_formats(resource, &indices);
     }
     zwp_linux_dmabuf_feedback_v1_send_tranche_done(resource);
@@ -340,14 +335,6 @@ void trierarch_dmabuf_bind(struct wl_client *client, void *data,
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ARGB8888, 0, 0);
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XBGR8888, 0, 0);
         zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ABGR8888, 0, 0);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XRGB8888,
-                (uint32_t)(DRM_FORMAT_MOD_INVALID >> 32), (uint32_t)DRM_FORMAT_MOD_INVALID);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ARGB8888,
-                (uint32_t)(DRM_FORMAT_MOD_INVALID >> 32), (uint32_t)DRM_FORMAT_MOD_INVALID);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XBGR8888,
-                (uint32_t)(DRM_FORMAT_MOD_INVALID >> 32), (uint32_t)DRM_FORMAT_MOD_INVALID);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ABGR8888,
-                (uint32_t)(DRM_FORMAT_MOD_INVALID >> 32), (uint32_t)DRM_FORMAT_MOD_INVALID);
     }
     LOGI("linux-dmabuf bound at version %u%s", version,
             version >= 4 ? " with guest main-device feedback" : "");
