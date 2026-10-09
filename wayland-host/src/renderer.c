@@ -49,6 +49,12 @@
 
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 
+/* Modifier 0 is DRM_FORMAT_MOD_LINEAR.  An invalid modifier means that the
+ * producer did not provide a layout that EGL can safely interpret. */
+static bool dmabuf_modifier_is_linear(uint64_t modifier) {
+    return modifier == 0;
+}
+
 typedef EGLBoolean (*bind_wayland_display_fn)(EGLDisplay, void *);
 typedef EGLBoolean (*query_wayland_buffer_fn)(EGLDisplay, void *, EGLint, EGLint *);
 typedef EGLImageKHR (*create_image_fn)(EGLDisplay, EGLContext, EGLenum, EGLClientBuffer, const EGLint *);
@@ -380,22 +386,26 @@ static void draw_surface(struct renderer_context *renderer,
     }
     if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && buffer->dmabuf_fd >= 0 &&
             renderer->dmabuf_import_supported) {
-        int fd = dup(buffer->dmabuf_fd);
-        if (fd >= 0) {
-            const EGLint basic_attributes[] = {
-                EGL_WIDTH, buffer->width,
-                EGL_HEIGHT, buffer->height,
-                EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer->format,
-                EGL_DMA_BUF_PLANE0_FD_EXT, fd,
-                EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)buffer->dmabuf_offset,
-                EGL_DMA_BUF_PLANE0_PITCH_EXT, buffer->stride,
-                EGL_NONE,
-            };
-            image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
-                    EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
-            close(fd);
-        }
-        if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf_modifier != DRM_FORMAT_MOD_INVALID) {
+        /* Never let EGL silently reinterpret a tiled/compressed buffer as
+         * linear. That can return a valid EGLImage while producing the
+         * characteristic repeated-column corruption on screen. */
+        if (dmabuf_modifier_is_linear(buffer->dmabuf_modifier)) {
+            int fd = dup(buffer->dmabuf_fd);
+            if (fd >= 0) {
+                const EGLint basic_attributes[] = {
+                    EGL_WIDTH, buffer->width,
+                    EGL_HEIGHT, buffer->height,
+                    EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer->format,
+                    EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+                    EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)buffer->dmabuf_offset,
+                    EGL_DMA_BUF_PLANE0_PITCH_EXT, buffer->stride,
+                    EGL_NONE,
+                };
+                image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                        EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
+                close(fd);
+            }
+        } else if (buffer->dmabuf_modifier != DRM_FORMAT_MOD_INVALID) {
             int fd = dup(buffer->dmabuf_fd);
             if (fd >= 0) {
                 const EGLint modifier_attributes[] = {
@@ -413,6 +423,9 @@ static void draw_surface(struct renderer_context *renderer,
                         EGL_LINUX_DMA_BUF_EXT, NULL, modifier_attributes);
                 close(fd);
             }
+        } else {
+            LOGI("dmabuf EGL import skipped: unknown modifier fmt=0x%x stride=%d",
+                    buffer->format, buffer->stride);
         }
         if (image != EGL_NO_IMAGE_KHR) {
             glBindTexture(GL_TEXTURE_2D, renderer->texture);
@@ -450,6 +463,12 @@ static void draw_surface(struct renderer_context *renderer,
         adreno_copy = trierarch_gpu_probe_copy_adreno(surface->server->gpu_probe,
                 &adreno_buffer, buffer->dmabuf_fd);
         if (adreno_copy) {
+            static unsigned int copy_trace_count;
+            if (copy_trace_count++ < 8) {
+                LOGI("dmabuf Adreno copy accepted: %dx%d fmt=0x%x stride=%d mod=0x%llx",
+                        buffer->width, buffer->height, buffer->format, buffer->stride,
+                        (unsigned long long)buffer->dmabuf_modifier);
+            }
             EGLClientBuffer native_buffer = renderer->native_client_buffer
                     ? renderer->native_client_buffer(adreno_copy) : NULL;
             const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
@@ -467,9 +486,21 @@ static void draw_surface(struct renderer_context *renderer,
                 AHardwareBuffer_release(adreno_copy);
                 adreno_copy = NULL;
             }
+        } else {
+            static unsigned int copy_failure_count;
+            if (copy_failure_count++ < 8) {
+                LOGE("dmabuf Adreno copy failed: %dx%d fmt=0x%x stride=%d mod=0x%llx",
+                        buffer->width, buffer->height, buffer->format, buffer->stride,
+                        (unsigned long long)buffer->dmabuf_modifier);
+            }
         }
     }
-    if (image == EGL_NO_IMAGE_KHR && buffer->data) {
+    /* mmap() exposes the real pixels only for a linear dma-buf.  A tiled or
+     * otherwise opaque layout must not fall through to glTexImage2D either;
+     * that would reproduce the same corruption with a different path. */
+    const bool cpu_mapping_safe = !buffer->dmabuf ||
+            dmabuf_modifier_is_linear(buffer->dmabuf_modifier);
+    if (image == EGL_NO_IMAGE_KHR && buffer->data && cpu_mapping_safe) {
         const int packed_stride = buffer->width * 4;
         const void *pixels = buffer->data;
         void *packed = NULL;
@@ -614,9 +645,10 @@ static int draw_gpu_probe(struct renderer_context *renderer,
         EGL_DMA_BUF_PLANE0_FD_EXT, buffer_fd, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
         EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)buffer.stride, EGL_NONE,
     };
-    image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
-            EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
-    if (image == EGL_NO_IMAGE_KHR && buffer.modifier != DRM_FORMAT_MOD_INVALID) {
+    if (dmabuf_modifier_is_linear(buffer.modifier)) {
+        image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
+                EGL_LINUX_DMA_BUF_EXT, NULL, basic_attributes);
+    } else if (buffer.modifier != DRM_FORMAT_MOD_INVALID) {
         const EGLint modifier_attributes[] = {
             EGL_WIDTH, (EGLint)buffer.width, EGL_HEIGHT, (EGLint)buffer.height,
             EGL_LINUX_DRM_FOURCC_EXT, (EGLint)buffer.drm_format,
@@ -628,6 +660,9 @@ static int draw_gpu_probe(struct renderer_context *renderer,
         };
         image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
                 EGL_LINUX_DMA_BUF_EXT, NULL, modifier_attributes);
+    } else {
+        LOGI("gpu probe EGL import skipped: unknown modifier fmt=0x%x stride=%u",
+                buffer.drm_format, buffer.stride);
     }
     close(buffer_fd);
     if (image == EGL_NO_IMAGE_KHR) {
