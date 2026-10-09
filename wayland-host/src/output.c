@@ -33,14 +33,12 @@ static void send_output_state(struct wayland_server *server, struct wl_resource 
             WL_OUTPUT_TRANSFORM_NORMAL);
     wl_output_send_mode(resource, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
             width, height, 60000);
-    if (version >= 2) {
-        wl_output_send_scale(resource, 1);
-        wl_output_send_done(resource);
-    }
+    if (version >= 2) wl_output_send_scale(resource, 1);
     if (version >= 4) {
         wl_output_send_name(resource, "Trierarch-1");
         wl_output_send_description(resource, "Trierarch Wayland Output");
     }
+    if (version >= 2) wl_output_send_done(resource);
 }
 
 void trierarch_output_bind(struct wl_client *client, void *data,
