@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #ifndef VK_USE_PLATFORM_ANDROID_KHR
 #define VK_USE_PLATFORM_ANDROID_KHR
@@ -75,6 +76,14 @@ static VkFormat vk_format(uint32_t drm_format) {
     default:
         return VK_FORMAT_UNDEFINED;
     }
+}
+
+static bool has_device_extension(const VkExtensionProperties *extensions, uint32_t count,
+        const char *name) {
+    for (uint32_t index = 0; index < count; ++index) {
+        if (strcmp(extensions[index].extensionName, name) == 0) return true;
+    }
+    return false;
 }
 
 static bool find_memory_type(struct trierarch_adreno_importer *importer, uint32_t bits,
@@ -161,12 +170,37 @@ static bool initialize_device(struct trierarch_adreno_importer *importer, char *
         return false;
     }
 
-    const char *extensions[] = {
+    PFN_vkEnumerateDeviceExtensionProperties enumerate_extensions =
+            (PFN_vkEnumerateDeviceExtensionProperties)importer->get_instance_proc_addr(
+                    importer->instance, "vkEnumerateDeviceExtensionProperties");
+    uint32_t extension_count = 0;
+    VkExtensionProperties *available_extensions = NULL;
+    if (!enumerate_extensions ||
+            enumerate_extensions(importer->physical_device, NULL, &extension_count, NULL) != VK_SUCCESS ||
+            !(available_extensions = calloc(extension_count, sizeof(*available_extensions))) ||
+            enumerate_extensions(importer->physical_device, NULL, &extension_count,
+                    available_extensions) != VK_SUCCESS) {
+        free(available_extensions);
+        set_error(error, error_size, "enumerate Vulkan device extensions");
+        return false;
+    }
+
+    const char *required_extensions[] = {
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
         VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
         VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
         VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
     };
+    for (size_t index = 0; index < sizeof(required_extensions) / sizeof(required_extensions[0]);
+            ++index) {
+        if (!has_device_extension(available_extensions, extension_count, required_extensions[index])) {
+            set_error(error, error_size, "missing Vulkan device extension: %s",
+                    required_extensions[index]);
+            free(available_extensions);
+            return false;
+        }
+    }
+    free(available_extensions);
     VkDeviceQueueCreateInfo queue = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = importer->queue_family,
@@ -177,8 +211,8 @@ static bool initialize_device(struct trierarch_adreno_importer *importer, char *
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue,
-        .enabledExtensionCount = sizeof(extensions) / sizeof(extensions[0]),
-        .ppEnabledExtensionNames = extensions,
+        .enabledExtensionCount = sizeof(required_extensions) / sizeof(required_extensions[0]),
+        .ppEnabledExtensionNames = required_extensions,
     };
     result = create_device(importer->physical_device, &device_info, NULL, &importer->device);
     if (result != VK_SUCCESS) {
