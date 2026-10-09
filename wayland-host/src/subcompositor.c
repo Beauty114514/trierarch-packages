@@ -1,6 +1,14 @@
 #include "server_internal.h"
 
+#include <android/log.h>
 #include <stdlib.h>
+
+#define TAG "trierarch-wayland"
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
+
+static uint32_t resource_id(const struct wl_resource *resource) {
+    return resource ? wl_resource_get_id((struct wl_resource *)resource) : 0;
+}
 
 /* KWin uses this global for nested helper and cursor surfaces. */
 static void subsurface_destroy_request(struct wl_client *client,
@@ -25,13 +33,24 @@ static void subsurface_place_above(struct wl_client *client,
     struct compositor_surface *sibling_surface =
             trierarch_surface_from_resource(sibling);
     if (!surface || !sibling_surface || !surface->parent ||
-            surface->parent != sibling_surface->parent) {
+            (sibling_surface != surface->parent &&
+             surface->parent != sibling_surface->parent)) {
+        LOGW("subsurface place_above rejected: surface=%p id=%u parent=%p "
+             "sibling=%p id=%u sibling-parent=%p",
+             (void *)surface, resource_id(surface ? surface->wl_surface : NULL),
+             (void *)(surface ? surface->parent : NULL),
+             (void *)sibling_surface,
+             resource_id(sibling),
+             (void *)(sibling_surface ? sibling_surface->parent : NULL));
         wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
                 "surface and sibling must share a parent");
         return;
     }
     wl_list_remove(&surface->subsurface_link);
-    wl_list_insert(sibling_surface->subsurface_link.next, &surface->subsurface_link);
+    if (sibling_surface == surface->parent)
+        wl_list_insert(surface->parent->children.prev, &surface->subsurface_link);
+    else
+        wl_list_insert(sibling_surface->subsurface_link.next, &surface->subsurface_link);
 }
 
 static void subsurface_place_below(struct wl_client *client,
@@ -41,13 +60,24 @@ static void subsurface_place_below(struct wl_client *client,
     struct compositor_surface *sibling_surface =
             trierarch_surface_from_resource(sibling);
     if (!surface || !sibling_surface || !surface->parent ||
-            surface->parent != sibling_surface->parent) {
+            (sibling_surface != surface->parent &&
+             surface->parent != sibling_surface->parent)) {
+        LOGW("subsurface place_below rejected: surface=%p id=%u parent=%p "
+             "sibling=%p id=%u sibling-parent=%p",
+             (void *)surface, resource_id(surface ? surface->wl_surface : NULL),
+             (void *)(surface ? surface->parent : NULL),
+             (void *)sibling_surface,
+             resource_id(sibling),
+             (void *)(sibling_surface ? sibling_surface->parent : NULL));
         wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
                 "surface and sibling must share a parent");
         return;
     }
     wl_list_remove(&surface->subsurface_link);
-    wl_list_insert(&sibling_surface->subsurface_link, &surface->subsurface_link);
+    if (sibling_surface == surface->parent)
+        wl_list_insert(&surface->parent->children, &surface->subsurface_link);
+    else
+        wl_list_insert(&sibling_surface->subsurface_link, &surface->subsurface_link);
 }
 
 static void subsurface_set_sync(struct wl_client *client,
