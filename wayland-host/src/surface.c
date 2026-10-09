@@ -75,27 +75,48 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
                 "non-zero buffer offsets are not supported");
         return;
     }
-    surface->pending = buffer_resource
+    struct shm_buffer *pending = buffer_resource
             ? trierarch_shm_buffer_from_resource(buffer_resource) : NULL;
-    if (buffer_resource && !surface->pending)
-        surface->pending = trierarch_dmabuf_buffer_from_resource(buffer_resource);
-    if (buffer_resource && !surface->pending)
-        surface->pending = trierarch_android_buffer_from_resource(buffer_resource);
-    if (buffer_resource && !surface->pending)
-        surface->pending = trierarch_egl_buffer_from_resource(buffer_resource, surface->server);
-    if (buffer_resource && !surface->pending) {
+    if (buffer_resource && !pending)
+        pending = trierarch_dmabuf_buffer_from_resource(buffer_resource);
+    if (buffer_resource && !pending)
+        pending = trierarch_android_buffer_from_resource(buffer_resource);
+    if (buffer_resource && !pending)
+        pending = trierarch_adreno_buffer_from_resource(buffer_resource);
+    if (buffer_resource && !pending)
+        pending = trierarch_egl_buffer_from_resource(buffer_resource, surface->server);
+    if (buffer_resource && !pending) {
         wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SIZE,
                 "unsupported wl_buffer type");
-    } else if (surface->pending) {
+    } else if (!buffer_resource) {
+        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                "surface=%p detach pending=%p current=%p", surface,
+                surface->pending, surface->current);
+        if (surface->pending)
+            trierarch_adreno_presenter_buffer_unreference(surface->pending);
+        surface->pending = NULL;
+        surface->pending_detach = true;
+    } else if (pending) {
+        if (pending->adreno_presenter)
+            __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                    "surface=%p attach adreno pending=%p current=%p",
+                    surface, pending, surface->current);
+        if (surface->pending != pending) {
+            if (surface->pending)
+                trierarch_adreno_presenter_buffer_unreference(surface->pending);
+            surface->pending = pending;
+            surface->pending_detach = false;
+            trierarch_adreno_presenter_buffer_acquire(pending);
+        }
         static unsigned int attach_logs;
         if (attach_logs++ < 64) {
             __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
                     "attach buffer type=%s size=%dx%d format=0x%x",
-                    surface->pending->dmabuf ? "dmabuf" :
-                    surface->pending->android_buffer ? "android-wlegl" :
-                    surface->pending->egl_buffer ? "egl-wl" : "shm",
-                    surface->pending->width, surface->pending->height,
-                    surface->pending->format);
+                    pending->adreno_presenter ? "adreno-presenter" :
+                    pending->dmabuf ? "dmabuf" :
+                    pending->android_buffer ? "android-wlegl" :
+                    pending->egl_buffer ? "egl-wl" : "shm",
+                    pending->width, pending->height, pending->format);
         }
     }
 }
@@ -199,11 +220,18 @@ static void surface_resource_destroy(struct wl_resource *resource) {
     trierarch_wayland_request_render(surface->server);
     if (surface->current) {
         struct shm_buffer *current = surface->current;
+        surface->current = NULL;
         trierarch_shm_buffer_release(current);
         if (current->egl_buffer) free(current);
+        trierarch_adreno_presenter_buffer_unreference(current);
     }
-    if (surface->pending && surface->pending->egl_buffer)
-        free(surface->pending);
+    if (surface->pending) {
+        struct shm_buffer *pending = surface->pending;
+        surface->pending = NULL;
+        if (pending->egl_buffer) free(pending);
+        trierarch_adreno_presenter_buffer_unreference(pending);
+    }
+    surface->pending_detach = false;
     wl_list_remove(&surface->link);
     free(surface);
 }
@@ -275,20 +303,32 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
                 &surface->pending_frame_callbacks);
         wl_list_init(&surface->pending_frame_callbacks);
     }
-    if (surface->pending) {
+    if (surface->pending || surface->pending_detach) {
+        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                "surface=%p commit buffer=%p detach=%d current=%p", surface,
+                surface->pending, surface->pending_detach, surface->current);
         if (surface->pending != surface->current)
             surface->perf_buffer_replacements++;
         if (surface->current) {
             struct shm_buffer *current = surface->current;
+            surface->current = NULL;
             trierarch_shm_buffer_release(current);
             if (current->egl_buffer) free(current);
+            trierarch_adreno_presenter_buffer_unreference(current);
         }
         surface->current = surface->pending;
-        surface->current->busy = true;
         surface->pending = NULL;
-        surface->width = surface->current->width;
-        surface->height = surface->current->height;
-        surface->mapped = true;
+        surface->pending_detach = false;
+        if (surface->current) {
+            surface->current->busy = true;
+            surface->width = surface->current->width;
+            surface->height = surface->current->height;
+            surface->mapped = true;
+        } else {
+            surface->width = 0;
+            surface->height = 0;
+            surface->mapped = false;
+        }
         surface->damaged = true;
         /* Nested compositors such as KWin wait for the surface to enter an
          * output before committing their real desktop buffer. */

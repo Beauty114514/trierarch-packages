@@ -3,13 +3,16 @@
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <stdlib.h>
+#include <poll.h>
 #include <unistd.h>
 
 #define TAG "TrierarchAdrenoPresenter"
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define TRIERARCH_ADRENO_CAPABILITIES \
-    TRIERARCH_ADRENO_PRESENTER_V1_CAPABILITY_HOST_BUFFER
+    (TRIERARCH_ADRENO_PRESENTER_V1_CAPABILITY_HOST_BUFFER | \
+     TRIERARCH_ADRENO_PRESENTER_V1_CAPABILITY_EXPLICIT_SYNC)
 #define TRIERARCH_ADRENO_MAX_DIMENSION 8192
 #define DRM_FORMAT_ABGR8888 0x34324241u
 
@@ -20,6 +23,11 @@ struct adreno_buffer_request {
     struct wl_resource *resource;
     struct wl_resource *wl_buffer;
     AHardwareBuffer *hardware_buffer;
+    struct shm_buffer buffer;
+    int guest_fence_fd;
+    bool submitted;
+    bool fence_waited;
+    uint32_t surface_references;
 };
 
 static get_native_handle_fn get_native_handle(void) {
@@ -39,7 +47,8 @@ static get_native_handle_fn get_native_handle(void) {
 }
 
 static void maybe_free_request(struct adreno_buffer_request *request) {
-    if (!request || request->resource || request->wl_buffer) return;
+    if (!request || request->resource || request->wl_buffer ||
+            request->surface_references != 0) return;
     if (request->hardware_buffer)
         AHardwareBuffer_release(request->hardware_buffer);
     free(request);
@@ -61,9 +70,16 @@ static void buffer_destroy_request(struct wl_client *client,
 static void buffer_submit(struct wl_client *client, struct wl_resource *resource,
         int32_t acquire_fence) {
     (void)client;
-    if (acquire_fence >= 0) close(acquire_fence);
-    trierarch_adreno_buffer_v1_send_failed(resource,
-            TRIERARCH_ADRENO_BUFFER_V1_ERROR_UNSUPPORTED);
+    struct adreno_buffer_request *request = wl_resource_get_user_data(resource);
+    if (!request || acquire_fence < 0 || request->submitted) {
+        if (acquire_fence >= 0) close(acquire_fence);
+        trierarch_adreno_buffer_v1_send_failed(resource,
+                TRIERARCH_ADRENO_BUFFER_V1_ERROR_INVALID_SUBMISSION);
+        return;
+    }
+    request->guest_fence_fd = acquire_fence;
+    request->submitted = true;
+    request->fence_waited = false;
 }
 
 static const struct trierarch_adreno_buffer_v1_interface buffer_impl = {
@@ -82,10 +98,18 @@ static const struct wl_buffer_interface wl_buffer_impl = {
 };
 
 static void wl_buffer_destroy(struct wl_resource *resource) {
-    struct adreno_buffer_request *request = wl_resource_get_user_data(resource);
+    struct shm_buffer *buffer = wl_resource_get_user_data(resource);
+    if (!buffer) return;
+    struct adreno_buffer_request *request = buffer->adreno_presenter_request;
     if (!request) return;
     request->wl_buffer = NULL;
+    buffer->resource = NULL;
     maybe_free_request(request);
+}
+
+struct shm_buffer *trierarch_adreno_buffer_from_resource(struct wl_resource *resource) {
+    struct shm_buffer *buffer = resource ? wl_resource_get_user_data(resource) : NULL;
+    return buffer && buffer->adreno_presenter ? buffer : NULL;
 }
 
 static void buffer_fail(struct adreno_buffer_request *request, uint32_t reason) {
@@ -139,11 +163,66 @@ static bool allocate_buffer(struct wl_client *client,
         buffer_fail(request, TRIERARCH_ADRENO_BUFFER_V1_ERROR_NO_MEMORY);
         return false;
     }
-    wl_resource_set_implementation(request->wl_buffer, &wl_buffer_impl, request,
-            wl_buffer_destroy);
+    request->guest_fence_fd = -1;
+    request->buffer.resource = request->wl_buffer;
+    request->buffer.width = (int32_t)actual.width;
+    request->buffer.height = (int32_t)actual.height;
+    request->buffer.stride = (int32_t)(actual.stride * 4u);
+    request->buffer.format = DRM_FORMAT_ABGR8888;
+    request->buffer.android_buffer = true;
+    request->buffer.adreno_presenter = true;
+    request->buffer.android_hardware_buffer = request->hardware_buffer;
+    request->buffer.adreno_presenter_request = request;
+    /* Every wl_buffer owned by this compositor stores shm_buffer as user data.
+     * surface_attach() probes that common layout before the specific type. */
+    wl_resource_set_implementation(request->wl_buffer, &wl_buffer_impl,
+            &request->buffer, wl_buffer_destroy);
     trierarch_adreno_buffer_v1_send_ready(request->resource, request->wl_buffer,
             dma_buf, actual.stride * 4u, 0, 0, 0, 0);
     return true;
+}
+
+bool trierarch_adreno_presenter_wait_buffer(struct shm_buffer *buffer) {
+    if (!buffer || !buffer->adreno_presenter) return true;
+    struct adreno_buffer_request *request = buffer->adreno_presenter_request;
+    if (!request || !request->submitted || request->fence_waited ||
+            request->guest_fence_fd < 0)
+        return request && request->fence_waited;
+    struct pollfd descriptor = { .fd = request->guest_fence_fd, .events = POLLIN };
+    int result;
+    do { result = poll(&descriptor, 1, 3000); } while (result < 0 && errno == EINTR);
+    close(request->guest_fence_fd);
+    request->guest_fence_fd = -1;
+    if (result <= 0) {
+        LOGW("guest completion fence wait failed");
+        return false;
+    }
+    request->fence_waited = true;
+    return true;
+}
+
+void trierarch_adreno_presenter_buffer_release(struct shm_buffer *buffer) {
+    if (!buffer || !buffer->adreno_presenter) return;
+    struct adreno_buffer_request *request = buffer->adreno_presenter_request;
+    if (!request) return;
+    if (request->guest_fence_fd >= 0) close(request->guest_fence_fd);
+    request->guest_fence_fd = -1;
+    request->submitted = false;
+    request->fence_waited = false;
+}
+
+void trierarch_adreno_presenter_buffer_acquire(struct shm_buffer *buffer) {
+    if (!buffer || !buffer->adreno_presenter) return;
+    struct adreno_buffer_request *request = buffer->adreno_presenter_request;
+    if (request) request->surface_references++;
+}
+
+void trierarch_adreno_presenter_buffer_unreference(struct shm_buffer *buffer) {
+    if (!buffer || !buffer->adreno_presenter) return;
+    struct adreno_buffer_request *request = buffer->adreno_presenter_request;
+    if (!request) return;
+    if (request->surface_references > 0) request->surface_references--;
+    maybe_free_request(request);
 }
 
 static void presenter_destroy(struct wl_client *client,

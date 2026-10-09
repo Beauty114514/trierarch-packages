@@ -342,6 +342,7 @@ static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
     struct shm_buffer *buffer = surface->current;
     if (!buffer) return;
+    if (!trierarch_adreno_presenter_wait_buffer(buffer)) return;
     if (buffer->dmabuf) {
         static unsigned int trace_count;
         if (trace_count++ < 3) {

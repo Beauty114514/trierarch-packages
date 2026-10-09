@@ -1,11 +1,14 @@
 #include "server_internal.h"
 
+#include <android/log.h>
 #include <errno.h>
 #include <android/hardware_buffer.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#define TRIERARCH_TAG "TrierarchWayland"
 
 struct shm_pool {
     void *data;
@@ -212,7 +215,12 @@ struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resour
 }
 
 void trierarch_shm_buffer_release(struct shm_buffer *buffer) {
-    if (!buffer || !buffer->resource || !buffer->busy) return;
+    if (!buffer || !buffer->busy) return;
+    if (buffer->adreno_presenter)
+        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                "release adreno buffer resource=%p", buffer->resource);
     buffer->busy = false;
-    wl_buffer_send_release(buffer->resource);
+    trierarch_adreno_presenter_buffer_release(buffer);
+    if (buffer->resource)
+        wl_buffer_send_release(buffer->resource);
 }

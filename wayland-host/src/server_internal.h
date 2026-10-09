@@ -34,8 +34,10 @@ struct shm_buffer {
     bool dmabuf;
     bool egl_buffer;
     bool android_buffer;
+    bool adreno_presenter;
     void *egl_resource;
     void *android_hardware_buffer;
+    void *adreno_presenter_request;
     int dmabuf_fd;
     void *dmabuf_mapping;
     size_t dmabuf_mapping_size;
@@ -66,6 +68,7 @@ struct compositor_surface {
     int32_t buffer_scale;
     struct shm_buffer *current;
     struct shm_buffer *pending;
+    bool pending_detach;
     int32_t width;
     int32_t height;
     bool configured;
@@ -222,5 +225,10 @@ void trierarch_dmabuf_bind(struct wl_client *, void *, uint32_t, uint32_t);
 struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resource,
         struct wayland_server *server);
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource);
+struct shm_buffer *trierarch_adreno_buffer_from_resource(struct wl_resource *resource);
+bool trierarch_adreno_presenter_wait_buffer(struct shm_buffer *buffer);
+void trierarch_adreno_presenter_buffer_release(struct shm_buffer *buffer);
+void trierarch_adreno_presenter_buffer_acquire(struct shm_buffer *buffer);
+void trierarch_adreno_presenter_buffer_unreference(struct shm_buffer *buffer);
 
 #endif
