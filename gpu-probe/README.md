@@ -39,6 +39,35 @@ driver rendered into?
   `renderer.c` samples the original Android allocation as a temporary overlay
   after the guest replies.
 
+### Full-size Wayland presenter gate
+
+`guest/presenter_buffer_probe.c` is a separate one-shot client for the existing
+`trierarch_adreno_presenter_v1` Wayland protocol. Unlike the socket transport
+probe above, it asks the actual Wayland host for a buffer of a chosen size,
+imports that buffer into guest EGL, clears it with Freedreno, checks a pixel
+readback, submits a native fence, and attaches the returned `wl_buffer` on the
+same Wayland connection. The host can then present that exact allocation via
+its AHardwareBuffer path. It never starts KWin, changes Mesa, or runs unless
+invoked explicitly.
+
+Build from a checkout that contains both `gpu-probe` and sibling
+`wayland-host/protocol`, inside the aarch64 guest with Wayland/EGL/GLES
+development packages installed:
+
+```sh
+sh gpu-probe/guest/build-presenter-buffer.sh
+XDG_RUNTIME_DIR=/tmp/trierarch-wayland-user \
+WAYLAND_DISPLAY=wayland-trierarch \
+  gpu-probe/guest/build/presenter-buffer/presenter-buffer-probe 1080 2244
+```
+
+The width and height should match the active host output. The probe requires
+the host presenter global and native fence support; its failure must not be
+treated as a reason to replace the working desktop path. Success proves only
+that this device can render and present one host-owned allocation at that
+size. It does not mean KWin has adopted host-owned buffers, or prove a public
+DRM modifier for Android's opaque AHardwareBuffer layout.
+
 The guest program reports the actual `GL_RENDERER`, surfaceless EGL extensions,
 import result, GL error, frame rate, reuse-fence wait time, and both fence outcomes.
 The transport gate reports every received FD and opaque serialized-payload
