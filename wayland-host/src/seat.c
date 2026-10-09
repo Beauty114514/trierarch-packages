@@ -344,8 +344,10 @@ static const struct wl_touch_interface touch_impl = {
 static void seat_get_pointer(struct wl_client *client, struct wl_resource *seat,
         uint32_t id) {
     uint32_t version = (uint32_t)wl_resource_get_version(seat);
+    if (version > (uint32_t)wl_pointer_interface.version)
+        version = (uint32_t)wl_pointer_interface.version;
     struct wl_resource *resource = wl_resource_create(client, &wl_pointer_interface,
-            version < 10 ? version : 10, id);
+            version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
@@ -358,8 +360,10 @@ static void seat_get_pointer(struct wl_client *client, struct wl_resource *seat,
 static void seat_get_keyboard(struct wl_client *client, struct wl_resource *seat,
         uint32_t id) {
     uint32_t version = (uint32_t)wl_resource_get_version(seat);
+    if (version > (uint32_t)wl_keyboard_interface.version)
+        version = (uint32_t)wl_keyboard_interface.version;
     struct wl_resource *resource = wl_resource_create(client, &wl_keyboard_interface,
-            version < 10 ? version : 10, id);
+            version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
@@ -375,8 +379,11 @@ static void seat_get_keyboard(struct wl_client *client, struct wl_resource *seat
 
 static void seat_get_touch(struct wl_client *client, struct wl_resource *seat,
         uint32_t id) {
+    uint32_t version = (uint32_t)wl_resource_get_version(seat);
+    if (version > (uint32_t)wl_touch_interface.version)
+        version = (uint32_t)wl_touch_interface.version;
     struct wl_resource *resource = wl_resource_create(client, &wl_touch_interface,
-            wl_resource_get_version(seat), id);
+            version, id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
@@ -394,7 +401,8 @@ static const struct wl_seat_interface seat_impl = {
 void trierarch_seat_bind(struct wl_client *client, void *data,
         uint32_t version, uint32_t id) {
     struct wayland_server *server = data;
-    uint32_t bind_version = version < 7 ? version : 7;
+    uint32_t bind_version = version < TRIERARCH_WL_SEAT_VERSION
+            ? version : TRIERARCH_WL_SEAT_VERSION;
     struct wl_resource *resource = wl_resource_create(client, &wl_seat_interface,
             bind_version, id);
     if (!resource) {

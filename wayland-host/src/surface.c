@@ -277,7 +277,10 @@ static const struct wl_compositor_interface compositor_impl = {
 void trierarch_surface_bind(struct wl_client *client, void *data,
         uint32_t version, uint32_t id) {
     struct wl_resource *resource = wl_resource_create(
-            client, &wl_compositor_interface, version < 4 ? version : 4, id);
+            client, &wl_compositor_interface,
+            version < TRIERARCH_WL_COMPOSITOR_VERSION
+                    ? version : TRIERARCH_WL_COMPOSITOR_VERSION,
+            id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;

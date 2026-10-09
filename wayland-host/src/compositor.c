@@ -124,7 +124,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     server->gpu_probe = trierarch_gpu_probe_create(server, server->runtime_dir);
     server->dmabuf_feedback_device = trierarch_dmabuf_feedback_device_create(server,
             server->runtime_dir);
-    wl_global_create(server->display, &wl_compositor_interface, 4, server,
+    wl_global_create(server->display, &wl_compositor_interface,
+            TRIERARCH_WL_COMPOSITOR_VERSION, server,
             trierarch_surface_bind);
     wl_global_create(server->display, &wl_subcompositor_interface, 1, server,
             trierarch_subcompositor_bind);
@@ -141,7 +142,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             server, trierarch_viewporter_bind);
     wl_global_create(server->display, &wl_output_interface, 4, server,
             trierarch_output_bind);
-    wl_global_create(server->display, &wl_seat_interface, 7, server,
+    wl_global_create(server->display, &wl_seat_interface,
+            TRIERARCH_WL_SEAT_VERSION, server,
             trierarch_seat_bind);
     wl_global_create(server->display, &zwp_pointer_constraints_v1_interface, 1,
             server, trierarch_pointer_constraints_bind);

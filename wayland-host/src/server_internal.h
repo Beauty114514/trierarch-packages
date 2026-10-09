@@ -19,6 +19,12 @@
 #include "android-wlegl-server-protocol.h"
 #include "trierarch-adreno-presenter-v1-server-protocol.h"
 
+/* Keep these in sync with the protocol behavior implemented by this host.
+ * wl_resource versions are negotiated per client, so raising the advertised
+ * maximum does not force older clients to use newer protocol requests. */
+#define TRIERARCH_WL_COMPOSITOR_VERSION 6
+#define TRIERARCH_WL_SEAT_VERSION 9
+
 struct shm_buffer {
     struct wl_resource *resource;
     struct shm_pool *pool;
