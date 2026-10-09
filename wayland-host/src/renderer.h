@@ -14,5 +14,6 @@ bool trierarch_renderer_valid(const struct renderer_context *renderer);
 bool trierarch_renderer_render(struct renderer_context *renderer,
         struct wayland_server *server);
 void trierarch_renderer_report_performance(struct wayland_server *server);
+void trierarch_renderer_report_transfer(struct renderer_context *renderer);
 
 #endif

@@ -169,6 +169,7 @@ static void *dispatch_loop(void *argument) {
                 trierarch_wayland_repaint_failed(active_server);
         }
         trierarch_renderer_report_performance(active_server);
+        trierarch_renderer_report_transfer(renderer);
 
         pthread_mutex_lock(&server_mutex);
         bool running = dispatch_running && server == active_server;
