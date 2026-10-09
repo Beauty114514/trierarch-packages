@@ -35,6 +35,7 @@ struct shm_buffer {
     bool egl_buffer;
     bool android_buffer;
     bool adreno_presenter;
+    bool host_owned_dmabuf;
     void *egl_resource;
     void *android_hardware_buffer;
     void *adreno_presenter_request;
@@ -131,6 +132,7 @@ struct wayland_server {
     struct wl_list xdg_output_resources;
     struct wl_list pointer_resources;
     struct wl_list keyboard_resources;
+    struct wl_list adreno_requests;
     struct compositor_surface *pointer_focus;
     struct compositor_surface *keyboard_focus;
     struct compositor_surface *cursor_surface;
@@ -226,6 +228,9 @@ struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resour
         struct wayland_server *server);
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource);
 struct shm_buffer *trierarch_adreno_buffer_from_resource(struct wl_resource *resource);
+void *trierarch_adreno_presenter_match_dmabuf(struct wayland_server *server,
+        struct wl_client *client, int fd, int32_t width, int32_t height,
+        uint32_t format, uint32_t stride, uint32_t offset, uint64_t modifier);
 bool trierarch_adreno_presenter_wait_buffer(struct shm_buffer *buffer);
 void trierarch_adreno_presenter_buffer_release(struct shm_buffer *buffer);
 void trierarch_adreno_presenter_buffer_acquire(struct shm_buffer *buffer);

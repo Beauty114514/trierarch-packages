@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define TAG "TrierarchAdrenoPresenter"
@@ -20,6 +21,8 @@ struct native_handle { int version; int numFds; int numInts; int data[]; };
 typedef const struct native_handle *(*get_native_handle_fn)(const AHardwareBuffer *);
 
 struct adreno_buffer_request {
+    struct wl_list link;
+    struct wayland_server *server;
     struct wl_resource *resource;
     struct wl_resource *wl_buffer;
     AHardwareBuffer *hardware_buffer;
@@ -49,6 +52,9 @@ static get_native_handle_fn get_native_handle(void) {
 static void maybe_free_request(struct adreno_buffer_request *request) {
     if (!request || request->resource || request->wl_buffer ||
             request->surface_references != 0) return;
+    wl_list_remove(&request->link);
+    if (request->guest_fence_fd >= 0)
+        close(request->guest_fence_fd);
     if (request->hardware_buffer)
         AHardwareBuffer_release(request->hardware_buffer);
     free(request);
@@ -110,6 +116,36 @@ static void wl_buffer_destroy(struct wl_resource *resource) {
 struct shm_buffer *trierarch_adreno_buffer_from_resource(struct wl_resource *resource) {
     struct shm_buffer *buffer = resource ? wl_resource_get_user_data(resource) : NULL;
     return buffer && buffer->adreno_presenter ? buffer : NULL;
+}
+
+void *trierarch_adreno_presenter_match_dmabuf(struct wayland_server *server,
+        struct wl_client *client, int fd, int32_t width, int32_t height,
+        uint32_t format, uint32_t stride, uint32_t offset, uint64_t modifier) {
+    /* Only reuse buffers issued by this client's presenter request. An fd
+     * alone is not enough to infer an AHardwareBuffer's layout or ownership. */
+    if (!server || !client || fd < 0 || offset != 0 || modifier != 0 ||
+            format != DRM_FORMAT_ABGR8888) return NULL;
+    struct stat received;
+    if (fstat(fd, &received) != 0) return NULL;
+    get_native_handle_fn get_handle = get_native_handle();
+    if (!get_handle) return NULL;
+    struct adreno_buffer_request *request;
+    wl_list_for_each(request, &server->adreno_requests, link) {
+        if (!request->resource || !request->wl_buffer ||
+                wl_resource_get_client(request->resource) != client ||
+                request->buffer.width != width || request->buffer.height != height ||
+                request->buffer.stride != (int32_t)stride ||
+                !request->hardware_buffer) continue;
+        const struct native_handle *handle = get_handle(request->hardware_buffer);
+        struct stat original;
+        if (!handle || handle->numFds < 1 || handle->data[0] < 0 ||
+                fstat(handle->data[0], &original) != 0 ||
+                original.st_dev != received.st_dev ||
+                original.st_ino != received.st_ino) continue;
+        AHardwareBuffer_acquire(request->hardware_buffer);
+        return request->hardware_buffer;
+    }
+    return NULL;
 }
 
 static void buffer_fail(struct adreno_buffer_request *request, uint32_t reason) {
@@ -177,6 +213,7 @@ static bool allocate_buffer(struct wl_client *client,
      * surface_attach() probes that common layout before the specific type. */
     wl_resource_set_implementation(request->wl_buffer, &wl_buffer_impl,
             &request->buffer, wl_buffer_destroy);
+    wl_list_insert(&request->server->adreno_requests, &request->link);
     trierarch_adreno_buffer_v1_send_ready(request->resource, request->wl_buffer,
             dma_buf, actual.stride * 4u, 0, 0, 0, 0);
     return true;
@@ -234,10 +271,12 @@ static void presenter_destroy(struct wl_client *client,
 static void presenter_create_buffer(struct wl_client *client,
         struct wl_resource *resource, uint32_t id, int32_t width, int32_t height,
         uint32_t format, uint32_t flags) {
-    (void)resource;
     (void)flags;
     struct adreno_buffer_request *request = calloc(1, sizeof(*request));
     if (!request) { wl_client_post_no_memory(client); return; }
+    wl_list_init(&request->link);
+    request->server = wl_resource_get_user_data(resource);
+    request->guest_fence_fd = -1;
     request->resource = wl_resource_create(client,
             &trierarch_adreno_buffer_v1_interface, 1, id);
     if (!request->resource) {
