@@ -17,6 +17,7 @@
 #include "fractional-scale-v1-server-protocol.h"
 #include "relative-pointer-unstable-v1-server-protocol.h"
 #include "android-wlegl-server-protocol.h"
+#include "trierarch-adreno-presenter-v1-server-protocol.h"
 
 struct shm_buffer {
     struct wl_resource *resource;
@@ -203,6 +204,7 @@ void trierarch_fractional_scale_bind(struct wl_client *, void *, uint32_t, uint3
 void trierarch_relative_pointer_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_android_wlegl_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
+void trierarch_adreno_presenter_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);

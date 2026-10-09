@@ -158,6 +158,9 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             server, trierarch_relative_pointer_bind);
     wl_global_create(server->display, &android_wlegl_interface, 1,
             server, trierarch_android_wlegl_bind);
+    /* Negotiation endpoint only; zero capabilities force normal fallback. */
+    wl_global_create(server->display, &trierarch_adreno_presenter_v1_interface, 1,
+            server, trierarch_adreno_presenter_bind);
     wl_global_create(server->display, &wl_data_device_manager_interface, 3,
             server, trierarch_data_device_bind);
     server->valid = true;

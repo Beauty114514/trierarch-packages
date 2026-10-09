@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="trierarch_adreno_presenter_v1">
+  <copyright>Copyright 2026 Trierarch contributors
+
+    SPDX-License-Identifier: MIT</copyright>
+  <interface name="trierarch_adreno_presenter_v1" version="1">
+    <description summary="experimental host-owned Android buffers">
+      Optional Trierarch path for a Mesa Wayland presenter to render into
+      Android-host-owned buffers. Clients must fall back when unavailable.
+    </description>
+    <enum name="capability" bitfield="true">
+      <entry name="host_buffer" value="1" summary="host can provide buffers"/>
+      <entry name="explicit_sync" value="2" summary="host consumes fences"/>
+    </enum>
+    <request name="destroy" type="destructor"/>
+    <request name="create_buffer">
+      <arg name="id" type="new_id" interface="trierarch_adreno_buffer_v1"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="format" type="uint" summary="DRM fourcc"/>
+      <arg name="flags" type="uint"/>
+    </request>
+    <event name="capabilities">
+      <arg name="flags" type="uint" enum="capability"/>
+    </event>
+  </interface>
+  <interface name="trierarch_adreno_buffer_v1" version="1">
+    <enum name="error">
+      <entry name="unsupported" value="0" summary="host presenter unavailable"/>
+      <entry name="invalid_size" value="1" summary="unsupported dimensions"/>
+      <entry name="invalid_format" value="2" summary="unsupported format"/>
+      <entry name="no_memory" value="3" summary="allocation failed"/>
+      <entry name="invalid_submission" value="4" summary="invalid submission"/>
+    </enum>
+    <request name="destroy" type="destructor"/>
+    <request name="submit"><arg name="acquire_fence" type="fd"/></request>
+    <event name="ready">
+      <arg name="buffer" type="new_id" interface="wl_buffer"/>
+      <arg name="dma_buf" type="fd"/>
+      <arg name="stride" type="uint"/>
+      <arg name="offset" type="uint"/>
+      <arg name="modifier_hi" type="uint"/>
+      <arg name="modifier_lo" type="uint"/>
+      <arg name="slot" type="uint"/>
+    </event>
+    <event name="failed"><arg name="reason" type="uint" enum="error"/></event>
+  </interface>
+</protocol>
