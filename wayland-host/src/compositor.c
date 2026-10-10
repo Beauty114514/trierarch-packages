@@ -195,7 +195,13 @@ void trierarch_wayland_dispatch(wayland_server_t *server) {
     wl_display_flush_clients(server->display);
     struct timespec before, after;
     clock_gettime(CLOCK_MONOTONIC, &before);
-    wl_event_loop_dispatch(server->event_loop, -1);
+    errno = 0;
+    int dispatch_result = wl_event_loop_dispatch(server->event_loop, -1);
+    if (dispatch_result < 0) {
+        __android_log_print(ANDROID_LOG_ERROR, TRIERARCH_TAG,
+                "wayland dispatch failed: result=%d errno=%d (%s)",
+                dispatch_result, errno, strerror(errno));
+    }
     clock_gettime(CLOCK_MONOTONIC, &after);
     uint64_t elapsed_ns = (uint64_t)(after.tv_sec - before.tv_sec) * 1000000000ULL
             + (uint64_t)(after.tv_nsec - before.tv_nsec);

@@ -1,7 +1,31 @@
 #include "server_internal.h"
 #include "xdg-shell-server-protocol.h"
 
+#include <android/log.h>
 #include <stdlib.h>
+#include <sys/types.h>
+
+#define TRIERARCH_XDG_TAG "TrierarchWayland"
+
+static unsigned int xdg_trace_count;
+
+static void trace_xdg_event(const char *event, struct wl_client *client,
+        struct compositor_surface *surface, uint32_t value) {
+    if (xdg_trace_count++ >= 32) return;
+    pid_t pid = -1;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
+    __android_log_print(ANDROID_LOG_INFO, TRIERARCH_XDG_TAG,
+            "xdg trace event=%s pid=%d uid=%u surface=%p xdg=%p toplevel=%p "
+            "configured=%d output=%dx%d value=%u",
+            event, (int)pid, (unsigned int)uid, (void *)surface,
+            surface ? (void *)surface->xdg_surface : NULL,
+            surface ? (void *)surface->xdg_toplevel : NULL,
+            surface ? surface->configured : 0,
+            surface && surface->server ? surface->server->output_width : 0,
+            surface && surface->server ? surface->server->output_height : 0, value);
+}
 
 static void popup_destroy(struct wl_client *, struct wl_resource *);
 static void popup_grab(struct wl_client *, struct wl_resource *, struct wl_resource *, uint32_t);
@@ -93,7 +117,9 @@ static void xdg_surface_destroy(struct wl_client *client, struct wl_resource *re
 static void xdg_surface_get_toplevel(struct wl_client *client,
         struct wl_resource *resource, uint32_t id) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    trace_xdg_event("get_toplevel", client, surface, id);
     if (!surface || surface->xdg_toplevel) {
+        trace_xdg_event("get_toplevel-rejected", client, surface, id);
         wl_resource_post_error(resource, XDG_WM_BASE_ERROR_ROLE,
                 "surface already has a role");
         return;
@@ -140,7 +166,7 @@ static void xdg_surface_set_window_geometry(struct wl_client *client,
 
 static void xdg_surface_ack_configure(struct wl_client *client,
         struct wl_resource *resource, uint32_t serial) {
-    (void)client; (void)resource; (void)serial;
+    trace_xdg_event("ack_configure", client, wl_resource_get_user_data(resource), serial);
 }
 
 static void xdg_surface_resource_destroy(struct wl_resource *resource) {
@@ -199,7 +225,9 @@ static void positioner_set_parent_configure(struct wl_client *c, struct wl_resou
 static void wm_base_get_xdg_surface(struct wl_client *client, struct wl_resource *resource,
         uint32_t id, struct wl_resource *surface_resource) {
     struct compositor_surface *surface = wl_resource_get_user_data(surface_resource);
+    trace_xdg_event("get_xdg_surface", client, surface, id);
     if (!surface || surface->server != wl_resource_get_user_data(resource) || surface->xdg_surface) {
+        trace_xdg_event("get_xdg_surface-rejected", client, surface, id);
         wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_SURFACE_STATE,
                 "invalid wl_surface");
         return;
@@ -237,8 +265,10 @@ void trierarch_surface_send_configure(struct compositor_surface *surface) {
     xdg_toplevel_send_configure(surface->xdg_toplevel,
             surface->server->output_width, surface->server->output_height, &states);
     wl_array_release(&states);
-    xdg_surface_send_configure(surface->xdg_surface,
-            wl_display_next_serial(surface->server->display));
+    uint32_t serial = wl_display_next_serial(surface->server->display);
+    trace_xdg_event("send_configure", wl_resource_get_client(surface->xdg_surface),
+            surface, serial);
+    xdg_surface_send_configure(surface->xdg_surface, serial);
     surface->configured = true;
 }
 

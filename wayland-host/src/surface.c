@@ -140,8 +140,19 @@ static void surface_damage_buffer(struct wl_client *client, struct wl_resource *
 }
 
 static void surface_commit(struct wl_client *client, struct wl_resource *resource) {
-    (void)client;
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    static unsigned int commit_trace_count;
+    if (commit_trace_count++ < 24) {
+        pid_t pid = -1;
+        uid_t uid = (uid_t)-1;
+        gid_t gid = (gid_t)-1;
+        if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
+        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+                "surface trace request=commit pid=%d uid=%u surface=%p xdg=%p toplevel=%p",
+                (int)pid, (unsigned int)uid, (void *)surface,
+                surface ? (void *)surface->xdg_surface : NULL,
+                surface ? (void *)surface->xdg_toplevel : NULL);
+    }
     if (surface) trierarch_surface_commit(surface);
 }
 
