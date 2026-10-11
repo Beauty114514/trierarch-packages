@@ -1,7 +1,6 @@
 #include "renderer.h"
 #include "server_internal.h"
 #include "gpu_probe.h"
-#include "transfer_stats.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -87,7 +86,6 @@ struct renderer_context {
     bool dmabuf_import_supported;
     uint64_t observed_surface_commits;
     uint64_t observed_surface_damage;
-    struct trierarch_transfer_stats transfer_stats;
 };
 
 static uint64_t monotonic_ns(void) {
@@ -192,10 +190,6 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
     server->perf_render_max_ns = 0;
     server->perf_swap_ns = 0;
     server->perf_swap_max_ns = 0;
-}
-
-void trierarch_renderer_report_transfer(struct renderer_context *renderer) {
-    if (renderer) trierarch_transfer_stats_report(&renderer->transfer_stats, monotonic_ns());
 }
 
 static const char *vertex_source =
@@ -365,8 +359,6 @@ static void draw_surface(struct renderer_context *renderer,
     float right = 2.0f * (x + width) / renderer->width - 1.0f;
     float top = 1.0f - 2.0f * y / renderer->height;
     float bottom = 1.0f - 2.0f * (y + height) / renderer->height;
-    uint64_t transfer_start_ns = buffer->dmabuf ? monotonic_ns() : 0;
-    enum trierarch_transfer_path transfer_path = TRIERARCH_TRANSFER_DROPPED;
     glUseProgram(renderer->texture_program);
     glBindTexture(GL_TEXTURE_2D, renderer->texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -392,16 +384,12 @@ static void draw_surface(struct renderer_context *renderer,
             } else {
                 swizzle = 0.0f;
                 opaque = 0.0f;
-                transfer_path = TRIERARCH_TRANSFER_HOST_AHB;
             }
         }
     }
     if (buffer->host_owned_dmabuf) {
         if (image == EGL_NO_IMAGE_KHR) {
             LOGE("host-owned dma-buf AHardwareBuffer import failed; refusing CPU fallback");
-            trierarch_transfer_stats_record(&renderer->transfer_stats,
-                    TRIERARCH_TRANSFER_DROPPED, buffer->size,
-                    monotonic_ns() - transfer_start_ns);
             return;
         }
         static unsigned int host_owned_logs;
@@ -417,7 +405,6 @@ static void draw_surface(struct renderer_context *renderer,
             renderer->image_target(GL_TEXTURE_2D, image);
             swizzle = 0.0f;
             opaque = 0.0f;
-            transfer_path = TRIERARCH_TRANSFER_EGL_WAYLAND;
         }
     }
     if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && buffer->dmabuf_fd >= 0 &&
@@ -469,7 +456,6 @@ static void draw_surface(struct renderer_context *renderer,
             if (glGetError() == GL_NO_ERROR) {
                 swizzle = 0.0f;
                 opaque = buffer->format == 0x34325258u || buffer->format == 0x34324258u ? 1.0f : 0.0f;
-                transfer_path = TRIERARCH_TRANSFER_EGL_DMABUF;
                 LOGI("dma-buf EGL import: %dx%d fmt=0x%x modifier=0x%llx",
                         buffer->width, buffer->height, buffer->format,
                         (unsigned long long)buffer->dmabuf_modifier);
@@ -516,7 +502,6 @@ static void draw_surface(struct renderer_context *renderer,
                 renderer->image_target(GL_TEXTURE_2D, image);
                 swizzle = 0.0f;
                 opaque = buffer->format == 0x34325258u || buffer->format == 0x34324258u ? 1.0f : 0.0f;
-                transfer_path = TRIERARCH_TRANSFER_ADRENO_COPY;
             } else {
                 if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image)
                     renderer->destroy_image(renderer->display, image);
@@ -545,9 +530,6 @@ static void draw_surface(struct renderer_context *renderer,
         if (buffer->stride != packed_stride) {
             packed = malloc((size_t)packed_stride * (size_t)buffer->height);
             if (!packed) {
-                if (buffer->dmabuf) trierarch_transfer_stats_record(&renderer->transfer_stats,
-                        TRIERARCH_TRANSFER_DROPPED, buffer->size,
-                        monotonic_ns() - transfer_start_ns);
                 return;
             }
             for (int row = 0; row < buffer->height; ++row) {
@@ -560,13 +542,10 @@ static void draw_surface(struct renderer_context *renderer,
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, buffer->width, buffer->height, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         free(packed);
-        transfer_path = TRIERARCH_TRANSFER_CPU_UPLOAD;
         /* XRGB has no alpha channel. ARGB must retain its alpha: cursor images
          * rely on transparent pixels around the visible pointer shape. */
         opaque = buffer->format == WL_SHM_FORMAT_XRGB8888 ? 1.0f : 0.0f;
     }
-    if (buffer->dmabuf) trierarch_transfer_stats_record(&renderer->transfer_stats,
-            transfer_path, buffer->size, monotonic_ns() - transfer_start_ns);
     if (image == EGL_NO_IMAGE_KHR && !buffer->data) {
         static unsigned int unavailable_buffer_count;
         if (unavailable_buffer_count++ < 3) {
