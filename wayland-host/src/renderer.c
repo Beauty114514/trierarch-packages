@@ -7,6 +7,8 @@
 #include <GLES2/gl2ext.h>
 #include <android/log.h>
 #include <errno.h>
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -51,6 +53,40 @@
  * producer did not provide a layout that EGL can safely interpret. */
 static bool dmabuf_modifier_is_linear(uint64_t modifier) {
     return modifier == 0;
+}
+
+/* mmap alone does not establish CPU/GPU ownership of a dma-buf.  The guest
+ * compositor may still be rendering when the Android host falls back to a
+ * CPU upload, so bracket that read with the dma-buf synchronization ioctl. */
+static bool dmabuf_begin_cpu_read(const struct shm_buffer *buffer) {
+    if (!buffer || !buffer->dmabuf || buffer->dmabuf_fd < 0)
+        return false;
+    struct dma_buf_sync sync = {
+        .flags = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_START,
+    };
+    if (ioctl(buffer->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync) == 0)
+        return true;
+    static bool reported;
+    if (!reported) {
+        reported = true;
+        LOGE("dma-buf CPU read synchronization unavailable: errno=%d", errno);
+    }
+    return false;
+}
+
+static void dmabuf_end_cpu_read(const struct shm_buffer *buffer) {
+    if (!buffer || !buffer->dmabuf || buffer->dmabuf_fd < 0)
+        return;
+    struct dma_buf_sync sync = {
+        .flags = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END,
+    };
+    if (ioctl(buffer->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync) != 0) {
+        static bool reported;
+        if (!reported) {
+            reported = true;
+            LOGE("dma-buf CPU read synchronization end failed: errno=%d", errno);
+        }
+    }
 }
 
 typedef EGLBoolean (*bind_wayland_display_fn)(EGLDisplay, void *);
@@ -458,12 +494,15 @@ static void draw_surface(struct renderer_context *renderer,
     const bool cpu_mapping_safe = !buffer->dmabuf ||
             dmabuf_modifier_is_linear(buffer->dmabuf_modifier);
     if (image == EGL_NO_IMAGE_KHR && buffer->data && cpu_mapping_safe) {
+        const bool cpu_read_active = dmabuf_begin_cpu_read(buffer);
         const int packed_stride = buffer->width * 4;
         const void *pixels = buffer->data;
         void *packed = NULL;
         if (buffer->stride != packed_stride) {
             packed = malloc((size_t)packed_stride * (size_t)buffer->height);
             if (!packed) {
+                if (cpu_read_active)
+                    dmabuf_end_cpu_read(buffer);
                 return;
             }
             for (int row = 0; row < buffer->height; ++row) {
@@ -476,6 +515,8 @@ static void draw_surface(struct renderer_context *renderer,
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, buffer->width, buffer->height, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         free(packed);
+        if (cpu_read_active)
+            dmabuf_end_cpu_read(buffer);
         /* XRGB has no alpha channel. ARGB must retain its alpha: cursor images
          * rely on transparent pixels around the visible pointer shape. */
         opaque = buffer->format == WL_SHM_FORMAT_XRGB8888 ? 1.0f : 0.0f;
