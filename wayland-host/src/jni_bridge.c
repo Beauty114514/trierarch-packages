@@ -4,12 +4,17 @@
 #include "renderer.h"
 
 #include <jni.h>
+#include <android/log.h>
 #include <pthread.h>
 #include <android/native_window_jni.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define TAG "TrierarchWayland"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 static pthread_mutex_t server_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t command_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -145,14 +150,18 @@ static void process_commands(wayland_server_t *active_server) {
             trierarch_keyboard_set_key(active_server, command->data.keyboard_key.key,
                     command->data.keyboard_key.pressed, command->data.keyboard_key.time_ms);
             break;
-        case HOST_COMMAND_CONFIGURE_ADRENO_PROBE:
-            (void)trierarch_wayland_configure_adreno_probe(active_server,
+        case HOST_COMMAND_CONFIGURE_ADRENO_PROBE: {
+            LOGI("Adreno importer: processing configure command driver=%s/%s",
+                    command->data.adreno_probe.directory, command->data.adreno_probe.name);
+            bool configured = trierarch_wayland_configure_adreno_probe(active_server,
                     command->data.adreno_probe.hook, command->data.adreno_probe.directory,
                     command->data.adreno_probe.name);
+            LOGI("Adreno importer: host configure result=%d", configured);
             free(command->data.adreno_probe.hook);
             free(command->data.adreno_probe.directory);
             free(command->data.adreno_probe.name);
             break;
+        }
         }
         free(command);
         command = next;
