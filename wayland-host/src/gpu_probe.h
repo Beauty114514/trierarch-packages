@@ -15,14 +15,6 @@ void trierarch_gpu_probe_destroy(struct trierarch_gpu_probe *probe);
 bool trierarch_gpu_probe_set_adreno_driver(struct trierarch_gpu_probe *probe,
         const char *hook_library_dir, const char *driver_dir, const char *driver_name);
 
-/* Android owns this allocation until transfer.  The caller acquires its only
- * reference and must release it after sampling and reporting the result. */
-bool trierarch_gpu_probe_take_host_buffer(struct trierarch_gpu_probe *probe,
-        AHardwareBuffer **buffer, uint32_t *buffer_id, int *guest_fence_fd);
-/* Ownership of fence_fd transfers here. Pass -1 when no native fence exists. */
-void trierarch_gpu_probe_report(int client_fd, uint32_t result, uint32_t egl_error, int fence_fd);
-void trierarch_gpu_probe_report_host_buffer(struct trierarch_gpu_probe *probe, uint32_t buffer_id,
-        uint32_t result, uint32_t egl_error, int fence_fd);
 AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *probe,
         const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd);
 
