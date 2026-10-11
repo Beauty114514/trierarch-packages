@@ -8,10 +8,6 @@ use std::path::Path;
 const ENDPOINT_FILE: &str = "runtime/control";
 
 pub(super) fn request(files_directory: &Path, operation: &str, id: Option<&str>) -> Result<()> {
-    request_fields(files_directory, operation, &id.into_iter().collect::<Vec<_>>())
-}
-
-pub(super) fn request_fields(files_directory: &Path, operation: &str, fields: &[&str]) -> Result<()> {
     let endpoint = fs::read_to_string(files_directory.join(ENDPOINT_FILE))
         .context("read Trierarch runtime control endpoint")?;
     let (socket_name, token) = endpoint
@@ -24,10 +20,10 @@ pub(super) fn request_fields(files_directory: &Path, operation: &str, fields: &[
     );
 
     let mut request = format!("{token}\t{operation}");
-    for field in fields {
-        ensure!(!field.contains(['\t', '\n', '\r']), "invalid runtime control argument");
+    if let Some(id) = id {
+        ensure!(!id.contains(['\t', '\n', '\r']), "invalid runtime control argument");
         request.push('\t');
-        request.push_str(field);
+        request.push_str(id);
     }
     request.push('\n');
     let response = send(socket_name, request.as_bytes(), needs_acknowledgement(operation))?;

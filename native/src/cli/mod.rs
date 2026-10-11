@@ -51,14 +51,6 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
             validate_profile_id(id)?;
             runtime_client::request(&files_directory, "rerun", Some(id))
         }
-        [command, driver_directory, driver_name] if command == "--adreno-probe" => {
-            runtime_client::request_fields(&files_directory, "adreno-probe",
-                &[driver_directory, driver_name])
-        }
-        [command, driver_directory, driver_name] if command == "--adreno-import-probe" => {
-            runtime_client::request_fields(&files_directory, "adreno-import-probe",
-                &[driver_directory, driver_name])
-        }
         [command, archive, name_flag, name]
             if command == "--import" && name_flag == "--name" =>
         {
@@ -76,7 +68,7 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
 
 fn print_usage() -> Result<()> {
     println!(
-        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --adreno-probe DRIVER_DIRECTORY DRIVER_SO\n  trierarch --adreno-import-probe DRIVER_DIRECTORY DRIVER_SO\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
+        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
     );
     Ok(())
 }
