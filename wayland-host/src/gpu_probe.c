@@ -272,65 +272,32 @@ void trierarch_gpu_probe_destroy(struct trierarch_gpu_probe *probe) {
 
 bool trierarch_gpu_probe_set_adreno_driver(struct trierarch_gpu_probe *probe,
         const char *hook_library_dir, const char *driver_dir, const char *driver_name) {
-    if (!probe || probe->pending) return false;
-    char error[160] = {0};
-    struct trierarch_adreno_importer *importer = trierarch_adreno_importer_create(
-            hook_library_dir, driver_dir, driver_name, error, sizeof(error));
-    if (!importer) {
-        LOGE("Adreno dma-buf probe setup failed: %s", error);
-        return false;
-    }
-    trierarch_adreno_importer_destroy(probe->adreno_importer);
-    probe->adreno_importer = importer;
-    LOGI("Adreno dma-buf probe importer configured");
-    return true;
+    (void)probe;
+    (void)hook_library_dir;
+    (void)driver_dir;
+    (void)driver_name;
+    /* Android currently lacks the Vulkan dma-buf external-memory extension
+     * required by this importer.  Keep the probe API intact while making the
+     * unsupported path opt out explicitly; the renderer then uses its normal
+     * EGL/CPU presentation fallback. */
+    LOGI("Adreno dma-buf importer disabled; using presentation fallback");
+    return false;
 }
 
 bool trierarch_gpu_probe_validate_adreno(struct trierarch_gpu_probe *probe,
         const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
-    if (!probe || !probe->adreno_importer || !buffer || buffer_fd < 0) return false;
-    const struct trierarch_dmabuf_descriptor descriptor = {
-        .fd = buffer_fd, .width = buffer->width, .height = buffer->height,
-        .format = buffer->drm_format, .stride = buffer->stride, .offset = 0,
-        .modifier = buffer->modifier,
-    };
-    char error[160] = {0};
-    bool accepted = trierarch_adreno_importer_validate(probe->adreno_importer,
-            &descriptor, error, sizeof(error));
-    LOGI("Adreno dma-buf probe import %s: %s", accepted ? "accepted" : "rejected", error);
-    return accepted;
+    (void)probe;
+    (void)buffer;
+    (void)buffer_fd;
+    return false;
 }
 
 AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *probe,
         const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
-    if (!probe || !probe->adreno_importer || !buffer || buffer_fd < 0) return NULL;
-    const struct trierarch_dmabuf_descriptor descriptor = {
-        .fd = buffer_fd, .width = buffer->width, .height = buffer->height,
-        .format = buffer->drm_format, .stride = buffer->stride, .offset = 0,
-        .modifier = buffer->modifier,
-    };
-    char error[160] = {0};
-    struct trierarch_adreno_imported_image *image = trierarch_adreno_importer_import(
-            probe->adreno_importer, &descriptor, error, sizeof(error));
-    if (!image) {
-        static unsigned import_failures;
-        if (import_failures++ < 3)
-            LOGE("Adreno dma-buf import rejected before copy: %s", error);
-        return NULL;
-    }
-    AHardwareBuffer *output = trierarch_adreno_imported_image_copy_to_ahardware_buffer(
-            image, error, sizeof(error));
-    trierarch_adreno_imported_image_destroy(image);
-    if (!output) {
-        static unsigned copy_failures;
-        if (copy_failures++ < 3)
-            LOGE("Adreno dma-buf copy rejected: %s", error);
-    } else {
-        static unsigned copy_successes;
-        if (copy_successes++ < 3)
-            LOGI("Adreno dma-buf copy accepted: %ux%u", buffer->width, buffer->height);
-    }
-    return output;
+    (void)probe;
+    (void)buffer;
+    (void)buffer_fd;
+    return NULL;
 }
 
 bool trierarch_gpu_probe_take(struct trierarch_gpu_probe *probe, struct trierarch_gpu_probe_buffer *buffer,
