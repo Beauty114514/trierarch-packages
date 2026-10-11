@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 #include "gpu_probe.h"
-#include "adreno_dmabuf_import.h"
 #include "server_internal.h"
 #include "compositor.h"
 
@@ -38,7 +37,6 @@ struct trierarch_gpu_probe {
     struct host_buffer_slot host_buffers[GPU_PROBE_BUFFER_COUNT];
     char socket_path[PATH_MAX];
     enum client_mode mode;
-    struct trierarch_adreno_importer *adreno_importer;
     bool pending;
 };
 
@@ -266,7 +264,6 @@ void trierarch_gpu_probe_destroy(struct trierarch_gpu_probe *probe) {
     if (probe->listener_source) wl_event_source_remove(probe->listener_source);
     close_client(probe); discard_pending(probe);
     if (probe->listener_fd >= 0) close(probe->listener_fd);
-    trierarch_adreno_importer_destroy(probe->adreno_importer);
     if (probe->socket_path[0]) unlink(probe->socket_path); free(probe);
 }
 
