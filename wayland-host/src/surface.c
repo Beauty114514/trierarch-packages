@@ -87,9 +87,6 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
         wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SIZE,
                 "unsupported wl_buffer type");
     } else if (!buffer_resource) {
-        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                "surface=%p detach pending=%p current=%p", surface,
-                surface->pending, surface->current);
         surface->pending = NULL;
         surface->pending_detach = true;
     } else if (pending) {
@@ -291,10 +288,9 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 
 void trierarch_surface_commit(struct compositor_surface *surface) {
     if (!surface) return;
-    const bool committing_dmabuf = surface->pending && surface->pending->dmabuf;
     surface->perf_commits++;
     surface->server->perf_surface_commits++;
-    surface->server->perf_surface_commit_generation++;
+    bool frame_callbacks_committed = false;
     if (!wl_list_empty(&surface->pending_frame_callbacks)) {
         uint64_t callbacks = (uint64_t)wl_list_length(&surface->pending_frame_callbacks);
         surface->perf_frame_callbacks_committed += callbacks;
@@ -302,48 +298,42 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
         wl_list_insert_list(surface->committed_frame_callbacks.prev,
                 &surface->pending_frame_callbacks);
         wl_list_init(&surface->pending_frame_callbacks);
+        frame_callbacks_committed = true;
     }
     if (surface->pending || surface->pending_detach) {
-        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                "surface=%p commit buffer=%p detach=%d current=%p", surface,
-                surface->pending, surface->pending_detach, surface->current);
-        if (surface->pending != surface->current)
+        const bool buffer_changed = surface->pending != surface->current;
+        if (buffer_changed) {
             surface->perf_buffer_replacements++;
-        if (surface->current) {
-            struct shm_buffer *current = surface->current;
-            surface->current = NULL;
-            trierarch_shm_buffer_release(current);
-            if (current->egl_buffer) free(current);
+            if (surface->current) {
+                struct shm_buffer *current = surface->current;
+                surface->current = NULL;
+                trierarch_shm_buffer_release(current);
+                if (current->egl_buffer) free(current);
+            }
+            surface->current = surface->pending;
+            if (surface->current) {
+                surface->current->busy = true;
+                surface->width = surface->current->width;
+                surface->height = surface->current->height;
+                surface->mapped = true;
+            } else {
+                surface->width = 0;
+                surface->height = 0;
+                surface->mapped = false;
+            }
+            surface->damaged = true;
+            surface->server->perf_surface_commit_generation++;
+            /* Nested compositors such as KWin wait for the surface to enter an
+             * output before committing their real desktop buffer. */
+            trierarch_output_enter_surface(surface->server, surface->wl_surface);
         }
-        surface->current = surface->pending;
         surface->pending = NULL;
         surface->pending_detach = false;
-        if (surface->current) {
-            surface->current->busy = true;
-            surface->width = surface->current->width;
-            surface->height = surface->current->height;
-            surface->mapped = true;
-        } else {
-            surface->width = 0;
-            surface->height = 0;
-            surface->mapped = false;
-        }
-        surface->damaged = true;
-        /* Nested compositors such as KWin wait for the surface to enter an
-         * output before committing their real desktop buffer. */
-        trierarch_output_enter_surface(surface->server, surface->wl_surface);
     }
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
-    trierarch_wayland_request_render(surface->server);
-    if (committing_dmabuf) {
-        static unsigned int trace_count;
-        if (trace_count++ < 3) {
-            __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                    "dmabuf trace stage=commit mapped=%d size=%dx%d",
-                    surface->mapped, surface->width, surface->height);
-        }
-    }
+    if (surface->damaged || frame_callbacks_committed)
+        trierarch_wayland_request_render(surface->server);
 }
 
 static bool surface_participates_in_output(const struct wayland_server *server,
