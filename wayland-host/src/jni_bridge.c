@@ -9,7 +9,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 #define TAG "TrierarchWayland"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -200,41 +199,6 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object
     pthread_mutex_unlock(&server_mutex);
     (*env)->ReleaseStringUTFChars(env, runtime_directory, runtime);
     return started ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jstring JNICALL
-Java_app_trierarch_wayland_WaylandBridge_nativeProbeAdrenoDriver(JNIEnv *env, jobject object,
-        jstring hook_library_dir, jstring driver_dir, jstring driver_name) {
-    (void)object;
-    const char *hook = (*env)->GetStringUTFChars(env, hook_library_dir, NULL);
-    const char *directory = (*env)->GetStringUTFChars(env, driver_dir, NULL);
-    const char *name = (*env)->GetStringUTFChars(env, driver_name, NULL);
-    if (!hook || !directory || !name) {
-        if (hook) (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
-        if (directory) (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
-        if (name) (*env)->ReleaseStringUTFChars(env, driver_name, name);
-        return (*env)->NewStringUTF(env, "result=error stage=read-arguments\n");
-    }
-    (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
-    (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
-    (*env)->ReleaseStringUTFChars(env, driver_name, name);
-    (void)hook;
-    (void)directory;
-    (void)name;
-    return (*env)->NewStringUTF(env, "result=unsupported stage=adreno-importer-removed\n");
-}
-
-JNIEXPORT jboolean JNICALL
-Java_app_trierarch_wayland_WaylandBridge_nativeConfigureAdrenoProbe(JNIEnv *env, jobject object,
-        jstring hook_library_dir, jstring driver_dir, jstring driver_name) {
-    (void)object;
-    const char *hook = (*env)->GetStringUTFChars(env, hook_library_dir, NULL);
-    const char *directory = (*env)->GetStringUTFChars(env, driver_dir, NULL);
-    const char *name = (*env)->GetStringUTFChars(env, driver_name, NULL);
-    if (hook) (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
-    if (directory) (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
-    if (name) (*env)->ReleaseStringUTFChars(env, driver_name, name);
-    return JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
