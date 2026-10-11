@@ -1,6 +1,7 @@
 #include "adreno_dmabuf_import.h"
 
 #include <dlfcn.h>
+#include <android/log.h>
 #include <android/hardware_buffer.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -11,6 +12,9 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #endif
 #include <vulkan/vulkan.h>
+
+#define TAG "TrierarchAdrenoImport"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
 enum { ADRENOTOOLS_DRIVER_CUSTOM = 1 << 0 };
 enum { DRM_FORMAT_ARGB8888 = 0x34325241, DRM_FORMAT_XRGB8888 = 0x34325258,
@@ -107,6 +111,25 @@ static bool initialize_device(struct trierarch_adreno_importer *importer, char *
         set_error(error, error_size, "find vkCreateInstance");
         return false;
     }
+    PFN_vkEnumerateInstanceExtensionProperties enumerate_instance_extensions =
+            (PFN_vkEnumerateInstanceExtensionProperties)importer->get_instance_proc_addr(
+                    NULL, "vkEnumerateInstanceExtensionProperties");
+    uint32_t instance_extension_count = 0;
+    VkExtensionProperties *instance_extensions = NULL;
+    bool has_surface = false;
+    bool has_android_surface = false;
+    if (enumerate_instance_extensions &&
+            enumerate_instance_extensions(NULL, &instance_extension_count, NULL) == VK_SUCCESS &&
+            (instance_extensions = calloc(instance_extension_count,
+                    sizeof(*instance_extensions))) &&
+            enumerate_instance_extensions(NULL, &instance_extension_count,
+                    instance_extensions) == VK_SUCCESS) {
+        has_surface = has_device_extension(instance_extensions, instance_extension_count,
+                VK_KHR_SURFACE_EXTENSION_NAME);
+        has_android_surface = has_device_extension(instance_extensions, instance_extension_count,
+                VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+    }
+    free(instance_extensions);
     VkApplicationInfo application = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "Trierarch dma-buf import",
@@ -191,6 +214,12 @@ static bool initialize_device(struct trierarch_adreno_importer *importer, char *
         VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
         VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
     };
+    const bool has_swapchain = has_device_extension(available_extensions, extension_count,
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    LOGI("Vulkan direct-present capability: surface=%d android-surface=%d swapchain=%d; "
+            "direct presenter %s",
+            has_surface, has_android_surface, has_swapchain,
+            has_surface && has_android_surface && has_swapchain ? "possible" : "unavailable");
     for (size_t index = 0; index < sizeof(required_extensions) / sizeof(required_extensions[0]);
             ++index) {
         if (!has_device_extension(available_extensions, extension_count, required_extensions[index])) {
