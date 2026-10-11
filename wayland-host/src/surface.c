@@ -115,7 +115,9 @@ static void surface_damage(struct wl_client *client, struct wl_resource *resourc
         surface->perf_damage++;
         surface->server->perf_surface_damage++;
         surface->server->perf_surface_damage_generation++;
-        trierarch_wayland_request_render(surface->server);
+        /* Damage is pending wl_surface state.  The client may send several
+         * damage rectangles before its following commit, so rendering here
+         * redraws the old buffer and creates redundant swaps. */
     }
 }
 
