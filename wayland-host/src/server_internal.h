@@ -224,6 +224,5 @@ void trierarch_dmabuf_bind(struct wl_client *, void *, uint32_t, uint32_t);
 struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resource,
         struct wayland_server *server);
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource);
-struct shm_buffer *trierarch_adreno_buffer_from_resource(struct wl_resource *resource);
 
 #endif

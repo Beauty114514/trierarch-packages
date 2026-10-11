@@ -5,7 +5,6 @@ package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_dir="$package_dir/sources"
 wayland_src="$source_dir/wayland"
 libffi_src="$source_dir/libffi"
-adrenotools_src="$source_dir/libadrenotools"
 protocol_xml="$source_dir/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
 single_pixel_xml="$source_dir/wayland-protocols/staging/single-pixel-buffer/single-pixel-buffer-v1.xml"
 viewporter_xml="$source_dir/wayland-protocols/stable/viewporter/viewporter.xml"
@@ -21,8 +20,6 @@ build_dir="$package_dir/build"
 ffi_prefix="$build_dir/libffi-install"
 wayland_build="$build_dir/wayland-android"
 wayland_prefix="$build_dir/wayland-install"
-adrenotools_build="$build_dir/adrenotools-android"
-adrenotools_prefix="$build_dir/adrenotools-install"
 protocol_dir="$package_dir/protocol/generated"
 out_dir="$package_dir/dist/android/arm64-v8a"
 
@@ -35,19 +32,12 @@ toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64"
 clang="$toolchain/bin/aarch64-linux-android26-clang"
 [[ -x "$clang" ]] || { echo "NDK toolchain not found: $clang" >&2; exit 1; }
 
-cmake_bin="$(command -v cmake || true)"
-if [[ -z "$cmake_bin" ]]; then
-    sdk_dir="$(dirname "$(dirname "$ndk")")"
-    cmake_bin="$(find "$sdk_dir/cmake" -type f -name cmake -perm -111 2>/dev/null | sort -V | tail -1 || true)"
-fi
-[[ -x "$cmake_bin" ]] || { echo "Missing required tool: cmake" >&2; exit 1; }
-
 for command_name in meson ninja make wayland-scanner; do
     command -v "$command_name" >/dev/null || { echo "Missing required tool: $command_name" >&2; exit 1; }
 done
 pkgconfig="$(command -v pkg-config)"
 [[ -n "$pkgconfig" ]] || { echo "Missing required tool: pkg-config" >&2; exit 1; }
-[[ -d "$wayland_src" && -d "$libffi_src" && -d "$adrenotools_src" ]] || {
+[[ -d "$wayland_src" && -d "$libffi_src" ]] || {
     echo "Run scripts/fetch.sh first" >&2
     exit 1
 }
@@ -76,14 +66,6 @@ PKG_CONFIG_PATH="$ffi_prefix/lib/pkgconfig" meson setup "$wayland_build" "$wayla
 meson compile -C "$wayland_build"
 meson install -C "$wayland_build"
 cp -a "$ffi_prefix/lib/libffi.so"* "$wayland_prefix/lib/"
-
-rm -rf "$adrenotools_build" "$adrenotools_prefix"
-"$cmake_bin" -S "$adrenotools_src" -B "$adrenotools_build" -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
-    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
-    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-    -DGEN_INSTALL_TARGET=ON -DCMAKE_INSTALL_PREFIX="$adrenotools_prefix"
-"$cmake_bin" --build "$adrenotools_build" --target install -j"$(nproc)"
 
 rm -rf "$protocol_dir"
 mkdir -p "$protocol_dir"
@@ -119,7 +101,4 @@ mkdir -p "$out_dir"
 cp "$build_dir/ndk-libs/arm64-v8a/libtrierarch-wayland-host.so" "$out_dir/"
 cp "$wayland_prefix/lib/libwayland-server.so" "$out_dir/"
 cp "$wayland_prefix/lib/libffi.so"* "$out_dir/"
-for library in libadrenotools.so libhook_impl.so libmain_hook.so; do
-    cp "$adrenotools_prefix/lib/$library" "$out_dir/"
-done
 echo "Android artifacts written to $out_dir"
