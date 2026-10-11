@@ -878,11 +878,6 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         int cursor_y = (int)wl_fixed_to_int(server->pointer_y) - server->cursor_hotspot_y;
         draw_surface(renderer, server->cursor_surface, cursor_x, cursor_y);
     }
-    int gpu_probe_client_fd = -1;
-    (void)draw_gpu_probe(renderer, server, &gpu_probe_client_fd);
-    uint32_t host_gpu_probe_buffer_id = UINT32_MAX;
-    int host_gpu_probe_fence_fd = -1;
-    (void)draw_host_gpu_probe(renderer, server, &host_gpu_probe_buffer_id, &host_gpu_probe_fence_fd);
     glDisable(GL_BLEND);
     /* Snapshot only callbacks for surfaces that participated in this output
      * composition.  A later commit cannot be completed by this swap. */
@@ -892,18 +887,9 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     uint64_t render_finished_ns = monotonic_ns();
     if (!swapped) {
         trierarch_surface_requeue_frame_callbacks(server);
-        trierarch_gpu_probe_report(gpu_probe_client_fd, TRIERARCH_GPU_PROBE_DRAW_FAILED,
-                eglGetError(), -1);
-        if (host_gpu_probe_buffer_id != UINT32_MAX)
-            trierarch_gpu_probe_report_host_buffer(server->gpu_probe, host_gpu_probe_buffer_id,
-                    TRIERARCH_GPU_PROBE_DRAW_FAILED, eglGetError(), host_gpu_probe_fence_fd);
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
     }
-    trierarch_gpu_probe_report(gpu_probe_client_fd, TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, -1);
-    if (host_gpu_probe_buffer_id != UINT32_MAX)
-        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, host_gpu_probe_buffer_id,
-                TRIERARCH_GPU_PROBE_OK, EGL_SUCCESS, host_gpu_probe_fence_fd);
     trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     server->perf_render_count++;
