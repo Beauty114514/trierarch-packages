@@ -4,10 +4,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <android/hardware_buffer.h>
-#include "protocol.h"
 
 struct wayland_server;
 struct trierarch_gpu_probe;
+
+struct trierarch_gpu_probe_buffer {
+    uint32_t width;
+    uint32_t height;
+    uint32_t drm_format;
+    uint32_t stride;
+    uint64_t modifier;
+};
 
 struct trierarch_gpu_probe *trierarch_gpu_probe_create(struct wayland_server *server,
         const char *runtime_dir);
