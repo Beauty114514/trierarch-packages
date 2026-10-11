@@ -8,7 +8,6 @@
 #include <GLES2/gl2ext.h>
 #include <android/log.h>
 #include <errno.h>
-#include <poll.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -590,102 +589,6 @@ static void draw_surface_tree(struct renderer_context *renderer,
     struct compositor_surface *child;
     wl_list_for_each(child, &surface->children, subsurface_link)
         draw_surface_tree(renderer, server, child, own_x, own_y);
-}
-
-static bool wait_native_fence(int fence_fd) {
-    if (fence_fd < 0) return false;
-    struct pollfd descriptor = { .fd = fence_fd, .events = POLLIN };
-    int result;
-    do { result = poll(&descriptor, 1, 3000); } while (result < 0 && errno == EINTR);
-    close(fence_fd);
-    return result == 1 && !(descriptor.revents & (POLLERR | POLLNVAL));
-}
-
-static int create_native_fence(struct renderer_context *renderer) {
-    if (!renderer->create_sync || !renderer->destroy_sync || !renderer->dup_native_fence_fd)
-        return -1;
-    EGLSyncKHR sync = renderer->create_sync(renderer->display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
-    if (sync == EGL_NO_SYNC_KHR) return -1;
-    /* Queue all prior sampling commands before duplicating its sync_file FD. */
-    glFlush();
-    EGLint fence_fd = renderer->dup_native_fence_fd(renderer->display, sync);
-    renderer->destroy_sync(renderer->display, sync);
-    return fence_fd >= 0 ? fence_fd : -1;
-}
-
-/* Reverse feasibility probe: Android allocates this AHardwareBuffer, the guest
- * renders through its exported pixel FD, then Android waits the guest release
- * fence before sampling. The reply returns a host read-complete fence. */
-static int draw_host_gpu_probe(struct renderer_context *renderer,
-        struct wayland_server *server, uint32_t *buffer_id, int *host_fence_fd) {
-    *buffer_id = UINT32_MAX;
-    *host_fence_fd = -1;
-    if (!server->gpu_probe || !renderer->create_image || !renderer->destroy_image ||
-            !renderer->image_target || !renderer->native_client_buffer) return 0;
-    AHardwareBuffer *buffer = NULL;
-    uint32_t slot = UINT32_MAX;
-    int guest_fence_fd = -1;
-    if (!trierarch_gpu_probe_take_host_buffer(server->gpu_probe, &buffer, &slot, &guest_fence_fd)) return 0;
-    if (guest_fence_fd >= 0 && !wait_native_fence(guest_fence_fd)) {
-        LOGE("reverse gpu probe guest release fence wait failed: %s", strerror(errno));
-        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
-                TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
-        return 0;
-    }
-    if (guest_fence_fd < 0)
-        LOGI("reverse gpu probe sampling guest glFinish fallback");
-    EGLClientBuffer native_buffer = renderer->native_client_buffer(buffer);
-    const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
-    EGLImageKHR image = native_buffer ? renderer->create_image(renderer->display, EGL_NO_CONTEXT,
-            EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes) : EGL_NO_IMAGE_KHR;
-    if (image == EGL_NO_IMAGE_KHR) {
-        EGLint error = eglGetError();
-        LOGE("reverse gpu probe Android buffer image creation failed: 0x%x", error);
-        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
-                TRIERARCH_GPU_PROBE_IMPORT_FAILED, error, -1);
-        return 0;
-    }
-    const int width = renderer->width / 4;
-    const int height = renderer->height / 4;
-    const int x = renderer->width - width - 24;
-    const int y = 24;
-    const float left = 2.0f * x / renderer->width - 1.0f;
-    const float right = 2.0f * (x + width) / renderer->width - 1.0f;
-    const float top = 1.0f - 2.0f * y / renderer->height;
-    const float bottom = 1.0f - 2.0f * (y + height) / renderer->height;
-    const GLfloat vertices[] = { left,bottom,0,1, right,bottom,1,1,
-            left,top,0,0, right,top,1,0 };
-    glUseProgram(renderer->texture_program);
-    glBindTexture(GL_TEXTURE_2D, renderer->texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    renderer->image_target(GL_TEXTURE_2D, image);
-    glUniform1f(glGetUniformLocation(renderer->texture_program, "swizzle"), 0.0f);
-    glUniform1f(glGetUniformLocation(renderer->texture_program, "opaque"), 1.0f);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), vertices);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), vertices + 2);
-    glEnableVertexAttribArray(0); glEnableVertexAttribArray(1);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
-    GLenum gl_error = glGetError();
-    renderer->destroy_image(renderer->display, image);
-    if (gl_error != GL_NO_ERROR) {
-        LOGE("reverse gpu probe Android buffer sampling failed: 0x%x", gl_error);
-        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
-                TRIERARCH_GPU_PROBE_DRAW_FAILED, EGL_SUCCESS, -1);
-        return 0;
-    }
-    int fence_fd = create_native_fence(renderer);
-    if (fence_fd < 0) {
-        LOGE("reverse gpu probe could not export host read-complete fence");
-        trierarch_gpu_probe_report_host_buffer(server->gpu_probe, slot,
-                TRIERARCH_GPU_PROBE_IMPORT_UNAVAILABLE, eglGetError(), -1);
-        return 0;
-    }
-    LOGI("reverse gpu probe waited guest fence and sampled Android buffer; awaiting Android swap");
-    *buffer_id = slot;
-    *host_fence_fd = fence_fd;
-    return 1;
 }
 
 static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) {
