@@ -1,6 +1,5 @@
 #include "server_internal.h"
 #include "dmabuf_feedback_device.h"
-#include "gpu_probe.h"
 #include "xdg-shell-server-protocol.h"
 
 #include <errno.h>
@@ -121,7 +120,6 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     if (socket_length > 0 && (size_t)socket_length < sizeof(socket_path)) {
         chmod(socket_path, 0666);
     }
-    server->gpu_probe = trierarch_gpu_probe_create(server, server->runtime_dir);
     server->dmabuf_feedback_device = trierarch_dmabuf_feedback_device_create(server,
             server->runtime_dir);
     wl_global_create(server->display, &wl_compositor_interface,
@@ -170,16 +168,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     return server;
 }
 
-bool trierarch_wayland_configure_adreno_probe(wayland_server_t *server,
-        const char *hook_library_dir, const char *driver_dir, const char *driver_name) {
-    return server && trierarch_gpu_probe_set_adreno_driver(server->gpu_probe,
-            hook_library_dir, driver_dir, driver_name);
-}
-
 void trierarch_wayland_destroy(wayland_server_t *server) {
     if (!server) return;
-    trierarch_gpu_probe_destroy(server->gpu_probe);
-    server->gpu_probe = NULL;
     trierarch_dmabuf_feedback_device_destroy(server->dmabuf_feedback_device);
     server->dmabuf_feedback_device = NULL;
     if (server->display) wl_display_destroy(server->display);

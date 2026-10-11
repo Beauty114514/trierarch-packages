@@ -1,5 +1,4 @@
 #include "compositor.h"
-#include "adreno_driver_probe.h"
 #include "keycode_map.h"
 #include "renderer.h"
 
@@ -36,7 +35,6 @@ enum host_command_type {
     HOST_COMMAND_POINTER_RESET,
     HOST_COMMAND_CURSOR_VISIBLE,
     HOST_COMMAND_KEYBOARD_KEY,
-    HOST_COMMAND_CONFIGURE_ADRENO_PROBE,
 };
 
 struct host_command {
@@ -51,7 +49,6 @@ struct host_command {
         struct { uint32_t time_ms; } pointer_reset;
         struct { bool visible; } cursor_visible;
         struct { uint32_t key, time_ms; bool pressed; } keyboard_key;
-        struct { char *hook, *directory, *name; } adreno_probe;
     } data;
 };
 
@@ -67,11 +64,6 @@ static void discard_commands(void) {
         struct host_command *next = command->next;
         if (command->type == HOST_COMMAND_ATTACH_WINDOW && command->data.attach_window.window)
             ANativeWindow_release(command->data.attach_window.window);
-        if (command->type == HOST_COMMAND_CONFIGURE_ADRENO_PROBE) {
-            free(command->data.adreno_probe.hook);
-            free(command->data.adreno_probe.directory);
-            free(command->data.adreno_probe.name);
-        }
         free(command);
         command = next;
     }
@@ -150,18 +142,6 @@ static void process_commands(wayland_server_t *active_server) {
             trierarch_keyboard_set_key(active_server, command->data.keyboard_key.key,
                     command->data.keyboard_key.pressed, command->data.keyboard_key.time_ms);
             break;
-        case HOST_COMMAND_CONFIGURE_ADRENO_PROBE: {
-            LOGI("Adreno importer: processing configure command driver=%s/%s",
-                    command->data.adreno_probe.directory, command->data.adreno_probe.name);
-            bool configured = trierarch_wayland_configure_adreno_probe(active_server,
-                    command->data.adreno_probe.hook, command->data.adreno_probe.directory,
-                    command->data.adreno_probe.name);
-            LOGI("Adreno importer: host configure result=%d", configured);
-            free(command->data.adreno_probe.hook);
-            free(command->data.adreno_probe.directory);
-            free(command->data.adreno_probe.name);
-            break;
-        }
         }
         free(command);
         command = next;
@@ -235,14 +215,13 @@ Java_app_trierarch_wayland_WaylandBridge_nativeProbeAdrenoDriver(JNIEnv *env, jo
         if (name) (*env)->ReleaseStringUTFChars(env, driver_name, name);
         return (*env)->NewStringUTF(env, "result=error stage=read-arguments\n");
     }
-    char *probe = trierarch_adreno_probe_driver(hook, directory, name);
     (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
     (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
     (*env)->ReleaseStringUTFChars(env, driver_name, name);
-    jstring result = (*env)->NewStringUTF(env,
-            probe ? probe : "result=error stage=allocate-result\n");
-    free(probe);
-    return result;
+    (void)hook;
+    (void)directory;
+    (void)name;
+    return (*env)->NewStringUTF(env, "result=unsupported stage=adreno-importer-removed\n");
 }
 
 JNIEXPORT jboolean JNICALL
@@ -252,27 +231,10 @@ Java_app_trierarch_wayland_WaylandBridge_nativeConfigureAdrenoProbe(JNIEnv *env,
     const char *hook = (*env)->GetStringUTFChars(env, hook_library_dir, NULL);
     const char *directory = (*env)->GetStringUTFChars(env, driver_dir, NULL);
     const char *name = (*env)->GetStringUTFChars(env, driver_name, NULL);
-    struct host_command *command = new_command(HOST_COMMAND_CONFIGURE_ADRENO_PROBE);
-    bool ready = hook && directory && name && command;
-    if (ready) {
-        command->data.adreno_probe.hook = strdup(hook);
-        command->data.adreno_probe.directory = strdup(directory);
-        command->data.adreno_probe.name = strdup(name);
-        ready = command->data.adreno_probe.hook && command->data.adreno_probe.directory &&
-                command->data.adreno_probe.name;
-    }
     if (hook) (*env)->ReleaseStringUTFChars(env, hook_library_dir, hook);
     if (directory) (*env)->ReleaseStringUTFChars(env, driver_dir, directory);
     if (name) (*env)->ReleaseStringUTFChars(env, driver_name, name);
-    if (!ready) {
-        if (command) { free(command->data.adreno_probe.hook); free(command->data.adreno_probe.directory); free(command->data.adreno_probe.name); free(command); }
-        return JNI_FALSE;
-    }
-    pthread_mutex_lock(&server_mutex);
-    bool queued = enqueue_command_locked(command);
-    pthread_mutex_unlock(&server_mutex);
-    if (!queued) { free(command->data.adreno_probe.hook); free(command->data.adreno_probe.directory); free(command->data.adreno_probe.name); free(command); }
-    return queued ? JNI_TRUE : JNI_FALSE;
+    return JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

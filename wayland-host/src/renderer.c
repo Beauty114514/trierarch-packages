@@ -1,6 +1,5 @@
 #include "renderer.h"
 #include "server_internal.h"
-#include "gpu_probe.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -346,7 +345,7 @@ static void draw_surface(struct renderer_context *renderer,
         static unsigned int trace_count;
         if (trace_count++ < 3) {
             LOGI("dmabuf trace stage=draw mapped=%d importer=%d size=%dx%d",
-                    surface->mapped, surface->server && surface->server->gpu_probe,
+                    surface->mapped, buffer->dmabuf,
                     buffer->width, buffer->height);
         }
     }
@@ -364,7 +363,6 @@ static void draw_surface(struct renderer_context *renderer,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     float swizzle = 1.0f, opaque = 1.0f;
     EGLImageKHR image = EGL_NO_IMAGE_KHR;
-    AHardwareBuffer *adreno_copy = NULL;
     if (buffer->android_buffer && buffer->android_hardware_buffer &&
             renderer->create_image && renderer->image_target && renderer->native_client_buffer) {
         EGLClientBuffer native_buffer = renderer->native_client_buffer(
@@ -468,55 +466,6 @@ static void draw_surface(struct renderer_context *renderer,
                     (unsigned long long)buffer->dmabuf_modifier);
         }
     }
-    /* The normal Android EGL implementation on this device cannot import
-     * Linux dma-buf. When the opt-in Adreno importer is configured, copy the
-     * guest image into an Android-owned AHardwareBuffer, which is the stable
-     * Vulkan-to-EGL boundary. Failure intentionally falls through to the
-     * established CPU path. */
-    if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && buffer->dmabuf_fd >= 0 &&
-            surface->server && surface->server->gpu_probe) {
-        const struct trierarch_gpu_probe_buffer adreno_buffer = {
-            .width = (uint32_t)buffer->width,
-            .height = (uint32_t)buffer->height,
-            .drm_format = buffer->format,
-            .stride = (uint32_t)buffer->stride,
-            .modifier = buffer->dmabuf_modifier,
-        };
-        adreno_copy = trierarch_gpu_probe_copy_adreno(surface->server->gpu_probe,
-                &adreno_buffer, buffer->dmabuf_fd);
-        if (adreno_copy) {
-            static unsigned int copy_trace_count;
-            if (copy_trace_count++ < 8) {
-                LOGI("dmabuf Adreno copy accepted: %dx%d fmt=0x%x stride=%d mod=0x%llx",
-                        buffer->width, buffer->height, buffer->format, buffer->stride,
-                        (unsigned long long)buffer->dmabuf_modifier);
-            }
-            EGLClientBuffer native_buffer = renderer->native_client_buffer
-                    ? renderer->native_client_buffer(adreno_copy) : NULL;
-            const EGLint attributes[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
-            image = native_buffer && renderer->create_image ? renderer->create_image(renderer->display,
-                    EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes)
-                    : EGL_NO_IMAGE_KHR;
-            if (image != EGL_NO_IMAGE_KHR && renderer->image_target) {
-                renderer->image_target(GL_TEXTURE_2D, image);
-                swizzle = 0.0f;
-                opaque = buffer->format == 0x34325258u || buffer->format == 0x34324258u ? 1.0f : 0.0f;
-            } else {
-                if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image)
-                    renderer->destroy_image(renderer->display, image);
-                image = EGL_NO_IMAGE_KHR;
-                AHardwareBuffer_release(adreno_copy);
-                adreno_copy = NULL;
-            }
-        } else {
-            static unsigned int copy_failure_count;
-            if (copy_failure_count++ < 8) {
-                LOGE("dmabuf Adreno copy failed: %dx%d fmt=0x%x stride=%d mod=0x%llx",
-                        buffer->width, buffer->height, buffer->format, buffer->stride,
-                        (unsigned long long)buffer->dmabuf_modifier);
-            }
-        }
-    }
     /* mmap() exposes the real pixels only for a linear dma-buf.  A tiled or
      * otherwise opaque layout must not fall through to glTexImage2D either;
      * that would reproduce the same corruption with a different path. */
@@ -570,7 +519,6 @@ static void draw_surface(struct renderer_context *renderer,
     glDrawArrays(GL_TRIANGLE_STRIP,0,4);
     glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
     if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image) renderer->destroy_image(renderer->display,image);
-    if (adreno_copy) AHardwareBuffer_release(adreno_copy);
     /* `surface->current` remains the source for later redraws until a new
      * wl_surface.commit replaces it.  Releasing here would let the client
      * destroy or reuse the wl_buffer while this surface still points at it.
