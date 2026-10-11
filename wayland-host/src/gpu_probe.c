@@ -22,7 +22,7 @@
 #define DRM_FORMAT_ABGR8888 0x34324241u
 #define GPU_PROBE_BUFFER_COUNT 3u
 
-enum client_mode { CLIENT_NONE, CLIENT_GUEST_TO_HOST, CLIENT_HOST_TO_GUEST };
+enum client_mode { CLIENT_NONE, CLIENT_HOST_TO_GUEST };
 
 struct host_buffer_slot {
     AHardwareBuffer *buffer;
@@ -32,9 +32,8 @@ struct host_buffer_slot {
 
 struct trierarch_gpu_probe {
     struct wayland_server *server;
-    int listener_fd, client_fd, buffer_fd;
+    int listener_fd, client_fd;
     struct wl_event_source *listener_source, *client_source;
-    struct trierarch_gpu_probe_buffer buffer;
     struct host_buffer_slot host_buffers[GPU_PROBE_BUFFER_COUNT];
     char socket_path[PATH_MAX];
     enum client_mode mode;
@@ -49,8 +48,6 @@ static void close_client(struct trierarch_gpu_probe *probe) {
 }
 
 static void discard_pending(struct trierarch_gpu_probe *probe) {
-    if (probe->buffer_fd >= 0) close(probe->buffer_fd);
-    probe->buffer_fd = -1;
     for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index) {
         if (probe->host_buffers[index].guest_fence_fd >= 0)
             close(probe->host_buffers[index].guest_fence_fd);
@@ -61,7 +58,6 @@ static void discard_pending(struct trierarch_gpu_probe *probe) {
         probe->host_buffers[index].ready = false;
     }
     probe->pending = false;
-    memset(&probe->buffer, 0, sizeof(probe->buffer));
 }
 
 static void send_result(int client_fd, uint32_t result, uint32_t egl_error,
@@ -135,31 +131,9 @@ static int receive_hello(struct trierarch_gpu_probe *probe) {
     if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
     if (received != (ssize_t)sizeof(hello) || hello.magic != TRIERARCH_GPU_PROBE_MAGIC ||
             hello.version != TRIERARCH_GPU_PROBE_VERSION || hello.type != TRIERARCH_GPU_PROBE_HELLO) return -1;
-    if (hello.direction == TRIERARCH_GPU_PROBE_GUEST_TO_HOST) { probe->mode = CLIENT_GUEST_TO_HOST; return 1; }
     if (hello.direction != TRIERARCH_GPU_PROBE_HOST_TO_GUEST) return -1;
     probe->mode = CLIENT_HOST_TO_GUEST;
     return create_and_send_host_buffers(probe) == 0 ? 1 : -1;
-}
-
-static int receive_guest_buffer(struct trierarch_gpu_probe *probe) {
-    char control[CMSG_SPACE(sizeof(int))] = {0};
-    struct iovec iov = { .iov_base = &probe->buffer, .iov_len = sizeof(probe->buffer) };
-    struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1,
-        .msg_control = control, .msg_controllen = sizeof(control) };
-    ssize_t received = recvmsg(probe->client_fd, &message, MSG_DONTWAIT);
-    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
-    if (received != (ssize_t)sizeof(probe->buffer)) return -1;
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
-    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS || cmsg->cmsg_len != CMSG_LEN(sizeof(int))) return -1;
-    memcpy(&probe->buffer_fd, CMSG_DATA(cmsg), sizeof(probe->buffer_fd));
-    if (probe->buffer.magic != TRIERARCH_GPU_PROBE_MAGIC || probe->buffer.version != TRIERARCH_GPU_PROBE_VERSION ||
-            probe->buffer.type != TRIERARCH_GPU_PROBE_GUEST_BUFFER || !probe->buffer.width ||
-            !probe->buffer.height || !probe->buffer.stride || probe->buffer_fd < 0) return -1;
-    probe->pending = true;
-    LOGI("received guest dma-buf: %ux%u format=0x%x stride=%u modifier=0x%llx", probe->buffer.width,
-            probe->buffer.height, probe->buffer.drm_format, probe->buffer.stride,
-            (unsigned long long)probe->buffer.modifier);
-    return 1;
 }
 
 static int receive_guest_result(struct trierarch_gpu_probe *probe) {
@@ -210,13 +184,9 @@ static int client_readable(int fd, uint32_t mask, void *data) {
     int outcome = -1;
     if (mask & WL_EVENT_READABLE) {
         if (probe->mode == CLIENT_NONE) outcome = receive_hello(probe);
-        else if (probe->mode == CLIENT_GUEST_TO_HOST) outcome = receive_guest_buffer(probe);
         else outcome = receive_guest_result(probe);
     }
     if (outcome == 1 && probe->pending) {
-        if (probe->mode == CLIENT_GUEST_TO_HOST && probe->client_source) {
-            wl_event_source_remove(probe->client_source); probe->client_source = NULL;
-        }
         trierarch_wayland_request_render(probe->server); return 0;
     }
     if (outcome < 0 || (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) {
@@ -242,7 +212,7 @@ static int listener_readable(int fd, uint32_t mask, void *data) {
 struct trierarch_gpu_probe *trierarch_gpu_probe_create(struct wayland_server *server, const char *runtime_dir) {
     if (!server || !server->event_loop || !runtime_dir) return NULL;
     struct trierarch_gpu_probe *probe = calloc(1, sizeof(*probe)); if (!probe) return NULL;
-    probe->server = server; probe->listener_fd = -1; probe->client_fd = -1; probe->buffer_fd = -1;
+    probe->server = server; probe->listener_fd = -1; probe->client_fd = -1;
     for (uint32_t index = 0; index < GPU_PROBE_BUFFER_COUNT; ++index)
         probe->host_buffers[index].guest_fence_fd = -1;
     int length = snprintf(probe->socket_path, sizeof(probe->socket_path), "%s/gpu-probe.sock", runtime_dir);
