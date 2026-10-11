@@ -340,7 +340,6 @@ static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
     struct shm_buffer *buffer = surface->current;
     if (!buffer) return;
-    if (!trierarch_adreno_presenter_wait_buffer(buffer)) return;
     if (buffer->dmabuf) {
         static unsigned int trace_count;
         if (trace_count++ < 3) {
@@ -371,28 +370,15 @@ static void draw_surface(struct renderer_context *renderer,
         if (native_buffer) image = renderer->create_image(renderer->display, EGL_NO_CONTEXT,
                 EGL_NATIVE_BUFFER_ANDROID, native_buffer, attributes);
         if (image != EGL_NO_IMAGE_KHR) {
-            if (buffer->host_owned_dmabuf) {
-                while (glGetError() != GL_NO_ERROR) {}
-            }
             renderer->image_target(GL_TEXTURE_2D, image);
-            if (buffer->host_owned_dmabuf && glGetError() != GL_NO_ERROR) {
-                renderer->destroy_image(renderer->display, image);
-                image = EGL_NO_IMAGE_KHR;
-            } else {
+            if (glGetError() == GL_NO_ERROR) {
                 swizzle = 0.0f;
                 opaque = 0.0f;
+            } else {
+                renderer->destroy_image(renderer->display, image);
+                image = EGL_NO_IMAGE_KHR;
             }
         }
-    }
-    if (buffer->host_owned_dmabuf) {
-        if (image == EGL_NO_IMAGE_KHR) {
-            LOGE("host-owned dma-buf AHardwareBuffer import failed; refusing CPU fallback");
-            return;
-        }
-        static unsigned int host_owned_logs;
-        if (host_owned_logs++ < 8)
-            LOGI("host-owned dma-buf presented through AHardwareBuffer: %dx%d",
-                    buffer->width, buffer->height);
     }
     if (image == EGL_NO_IMAGE_KHR && buffer->egl_buffer &&
             renderer->create_image && renderer->image_target) {

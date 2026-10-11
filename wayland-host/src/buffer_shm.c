@@ -216,11 +216,7 @@ struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resour
 
 void trierarch_shm_buffer_release(struct shm_buffer *buffer) {
     if (!buffer || !buffer->busy) return;
-    if (buffer->adreno_presenter)
-        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                "release adreno buffer resource=%p", buffer->resource);
     buffer->busy = false;
-    trierarch_adreno_presenter_buffer_release(buffer);
     if (buffer->resource)
         wl_buffer_send_release(buffer->resource);
 }

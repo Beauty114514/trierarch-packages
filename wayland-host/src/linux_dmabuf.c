@@ -1,7 +1,6 @@
 #include "server_internal.h"
 #include "dmabuf_feedback_device.h"
 
-#include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -31,7 +30,6 @@
 #endif
 
 struct dmabuf_params {
-    struct wayland_server *server;
     int fd;
     uint32_t offset;
     uint32_t stride;
@@ -51,8 +49,6 @@ static void dmabuf_buffer_destroy(struct wl_resource *resource) {
     buffer->resource = NULL;
     if (buffer->dmabuf_mapping)
         munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
-    if (buffer->android_hardware_buffer)
-        AHardwareBuffer_release(buffer->android_hardware_buffer);
     if (buffer->dmabuf_fd >= 0)
         close(buffer->dmabuf_fd);
     free(buffer);
@@ -77,32 +73,23 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
             params->stride > INT32_MAX) {
         return NULL;
     }
-    AHardwareBuffer *host_buffer = trierarch_adreno_presenter_match_dmabuf(
-            params->server, client, params->fd, width, height, format,
-            params->stride, params->offset, params->modifier);
     size_t end = 0;
     void *mapping = NULL;
-    if (!host_buffer) {
-        end = (size_t)params->offset + (size_t)params->stride * (size_t)height;
-        mapping = mmap(NULL, end, PROT_READ, MAP_SHARED, params->fd, 0);
-        if (mapping == MAP_FAILED) {
-            LOGW("dmabuf CPU fallback mmap failed: fd=%d size=%zu errno=%d",
-                    params->fd, end, errno);
-            mapping = NULL;
-        }
+    end = (size_t)params->offset + (size_t)params->stride * (size_t)height;
+    mapping = mmap(NULL, end, PROT_READ, MAP_SHARED, params->fd, 0);
+    if (mapping == MAP_FAILED) {
+        LOGW("dmabuf CPU fallback mmap failed: fd=%d size=%zu errno=%d",
+                params->fd, end, errno);
+        mapping = NULL;
     }
     struct shm_buffer *buffer = calloc(1, sizeof(*buffer));
     if (!buffer) {
         if (mapping) munmap(mapping, end);
-        if (host_buffer) AHardwareBuffer_release(host_buffer);
         close(params->fd);
         params->fd = -1;
         return NULL;
     }
     buffer->dmabuf = true;
-    buffer->android_buffer = host_buffer != NULL;
-    buffer->host_owned_dmabuf = host_buffer != NULL;
-    buffer->android_hardware_buffer = host_buffer;
     buffer->dmabuf_fd = params->fd;
     buffer->dmabuf_mapping = mapping;
     buffer->dmabuf_mapping_size = mapping ? end : 0;
@@ -118,7 +105,6 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     buffer->resource = wl_resource_create(client, &wl_buffer_interface, 1, id);
     if (!buffer->resource) {
         if (mapping) munmap(mapping, end);
-        if (host_buffer) AHardwareBuffer_release(host_buffer);
         close(buffer->dmabuf_fd);
         free(buffer);
         return NULL;
@@ -128,7 +114,7 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx source=%s",
             width, height, format, params->stride,
             (unsigned long long)params->modifier,
-            host_buffer ? "host-owned-ahb" : mapping ? "cpu-mappable" : "opaque");
+            mapping ? "cpu-mappable" : "opaque");
     return buffer;
 }
 
@@ -204,7 +190,6 @@ static void dmabuf_create_params(struct wl_client *client, struct wl_resource *r
         return;
     }
     params->fd = -1;
-    params->server = wl_resource_get_user_data(resource);
     struct wl_resource *params_resource = wl_resource_create(client,
             &zwp_linux_buffer_params_v1_interface, wl_resource_get_version(resource), id);
     if (!params_resource) {

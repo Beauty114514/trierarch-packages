@@ -17,7 +17,6 @@
 #include "fractional-scale-v1-server-protocol.h"
 #include "relative-pointer-unstable-v1-server-protocol.h"
 #include "android-wlegl-server-protocol.h"
-#include "trierarch-adreno-presenter-v1-server-protocol.h"
 
 /* Keep these in sync with the protocol behavior implemented by this host.
  * wl_resource versions are negotiated per client, so raising the advertised
@@ -40,11 +39,8 @@ struct shm_buffer {
     bool dmabuf;
     bool egl_buffer;
     bool android_buffer;
-    bool adreno_presenter;
-    bool host_owned_dmabuf;
     void *egl_resource;
     void *android_hardware_buffer;
-    void *adreno_presenter_request;
     int dmabuf_fd;
     void *dmabuf_mapping;
     size_t dmabuf_mapping_size;
@@ -137,7 +133,6 @@ struct wayland_server {
     struct wl_list xdg_output_resources;
     struct wl_list pointer_resources;
     struct wl_list keyboard_resources;
-    struct wl_list adreno_requests;
     struct compositor_surface *pointer_focus;
     struct compositor_surface *keyboard_focus;
     struct compositor_surface *cursor_surface;
@@ -212,7 +207,6 @@ void trierarch_fractional_scale_bind(struct wl_client *, void *, uint32_t, uint3
 void trierarch_relative_pointer_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_android_wlegl_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
-void trierarch_adreno_presenter_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
@@ -231,12 +225,5 @@ struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resour
         struct wayland_server *server);
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource);
 struct shm_buffer *trierarch_adreno_buffer_from_resource(struct wl_resource *resource);
-void *trierarch_adreno_presenter_match_dmabuf(struct wayland_server *server,
-        struct wl_client *client, int fd, int32_t width, int32_t height,
-        uint32_t format, uint32_t stride, uint32_t offset, uint64_t modifier);
-bool trierarch_adreno_presenter_wait_buffer(struct shm_buffer *buffer);
-void trierarch_adreno_presenter_buffer_release(struct shm_buffer *buffer);
-void trierarch_adreno_presenter_buffer_acquire(struct shm_buffer *buffer);
-void trierarch_adreno_presenter_buffer_unreference(struct shm_buffer *buffer);
 
 #endif

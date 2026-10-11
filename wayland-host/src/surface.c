@@ -82,8 +82,6 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
     if (buffer_resource && !pending)
         pending = trierarch_android_buffer_from_resource(buffer_resource);
     if (buffer_resource && !pending)
-        pending = trierarch_adreno_buffer_from_resource(buffer_resource);
-    if (buffer_resource && !pending)
         pending = trierarch_egl_buffer_from_resource(buffer_resource, surface->server);
     if (buffer_resource && !pending) {
         wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SIZE,
@@ -92,27 +90,17 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
         __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
                 "surface=%p detach pending=%p current=%p", surface,
                 surface->pending, surface->current);
-        if (surface->pending)
-            trierarch_adreno_presenter_buffer_unreference(surface->pending);
         surface->pending = NULL;
         surface->pending_detach = true;
     } else if (pending) {
-        if (pending->adreno_presenter)
-            __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                    "surface=%p attach adreno pending=%p current=%p",
-                    surface, pending, surface->current);
         if (surface->pending != pending) {
-            if (surface->pending)
-                trierarch_adreno_presenter_buffer_unreference(surface->pending);
             surface->pending = pending;
             surface->pending_detach = false;
-            trierarch_adreno_presenter_buffer_acquire(pending);
         }
         static unsigned int attach_logs;
         if (attach_logs++ < 64) {
             __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
                     "attach buffer type=%s size=%dx%d format=0x%x",
-                    pending->adreno_presenter ? "adreno-presenter" :
                     pending->dmabuf ? "dmabuf" :
                     pending->android_buffer ? "android-wlegl" :
                     pending->egl_buffer ? "egl-wl" : "shm",
@@ -234,13 +222,11 @@ static void surface_resource_destroy(struct wl_resource *resource) {
         surface->current = NULL;
         trierarch_shm_buffer_release(current);
         if (current->egl_buffer) free(current);
-        trierarch_adreno_presenter_buffer_unreference(current);
     }
     if (surface->pending) {
         struct shm_buffer *pending = surface->pending;
         surface->pending = NULL;
         if (pending->egl_buffer) free(pending);
-        trierarch_adreno_presenter_buffer_unreference(pending);
     }
     surface->pending_detach = false;
     wl_list_remove(&surface->link);
@@ -328,7 +314,6 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
             surface->current = NULL;
             trierarch_shm_buffer_release(current);
             if (current->egl_buffer) free(current);
-            trierarch_adreno_presenter_buffer_unreference(current);
         }
         surface->current = surface->pending;
         surface->pending = NULL;
