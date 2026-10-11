@@ -286,21 +286,6 @@ bool trierarch_gpu_probe_set_adreno_driver(struct trierarch_gpu_probe *probe,
     return true;
 }
 
-bool trierarch_gpu_probe_validate_adreno(struct trierarch_gpu_probe *probe,
-        const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
-    if (!probe || !probe->adreno_importer || !buffer || buffer_fd < 0) return false;
-    const struct trierarch_dmabuf_descriptor descriptor = {
-        .fd = buffer_fd, .width = buffer->width, .height = buffer->height,
-        .format = buffer->drm_format, .stride = buffer->stride, .offset = 0,
-        .modifier = buffer->modifier,
-    };
-    char error[160] = {0};
-    bool accepted = trierarch_adreno_importer_validate(probe->adreno_importer,
-            &descriptor, error, sizeof(error));
-    LOGI("Adreno dma-buf probe import %s: %s", accepted ? "accepted" : "rejected", error);
-    return accepted;
-}
-
 AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *probe,
         const struct trierarch_gpu_probe_buffer *buffer, int buffer_fd) {
     if (!probe || !probe->adreno_importer || !buffer || buffer_fd < 0) return NULL;
@@ -331,15 +316,6 @@ AHardwareBuffer *trierarch_gpu_probe_copy_adreno(struct trierarch_gpu_probe *pro
             LOGI("Adreno dma-buf copy accepted: %ux%u", buffer->width, buffer->height);
     }
     return output;
-}
-
-bool trierarch_gpu_probe_take(struct trierarch_gpu_probe *probe, struct trierarch_gpu_probe_buffer *buffer,
-        int *buffer_fd, int *client_fd) {
-    if (!probe || !buffer || !buffer_fd || !client_fd || !probe->pending || probe->mode != CLIENT_GUEST_TO_HOST ||
-            probe->buffer_fd < 0 || probe->client_fd < 0) return false;
-    *buffer = probe->buffer; *buffer_fd = probe->buffer_fd; *client_fd = probe->client_fd;
-    probe->buffer_fd = -1; probe->client_fd = -1; probe->pending = false; probe->mode = CLIENT_NONE;
-    memset(&probe->buffer, 0, sizeof(probe->buffer)); return true;
 }
 
 bool trierarch_gpu_probe_take_host_buffer(struct trierarch_gpu_probe *probe, AHardwareBuffer **buffer,
