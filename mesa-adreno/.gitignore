@@ -2,3 +2,5 @@
 src/
 pkg/
 build/
+.build/
+.debian-build/
