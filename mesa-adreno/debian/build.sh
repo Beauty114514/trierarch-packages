@@ -9,6 +9,12 @@ source_spec=${MESA_DEBIAN_SOURCE_SPEC:-mesa}
 expected_version=${MESA_DEBIAN_MESA_VERSION:-26.1.6}
 expected_source_package_version=${MESA_DEBIAN_SOURCE_PACKAGE_VERSION:-26.1.6-1}
 
+# Android may export /data/local/tmp to the guest. That path is outside the
+# chroot's filesystem, so dpkg-deb cannot create its temporary control files.
+if [[ -z "${TMPDIR:-}" || ! -d "$TMPDIR" || ! -w "$TMPDIR" ]]; then
+    export TMPDIR=/tmp
+fi
+
 if [[ "$(id -u)" -eq 0 ]]; then
     printf '%s\n' 'Run dpkg-buildpackage as the guest build user, not root.' >&2
     exit 1
@@ -43,7 +49,10 @@ if [[ -z "$source_dir" || ! -f "$source_dir/debian/rules" ]]; then
 fi
 
 actual_version=$(tr -d '[:space:]' < "$source_dir/VERSION" 2>/dev/null || true)
-if [[ -n "$expected_version" && "$actual_version" != "$expected_version" ]]; then
+actual_upstream_version=${actual_version%%-*}
+if [[ -n "$expected_version" &&
+        "$actual_version" != "$expected_version" &&
+        "$actual_upstream_version" != "$expected_version" ]]; then
     printf 'Mesa source version mismatch: expected %s, got %s\n' \
         "$expected_version" "${actual_version:-unknown}" >&2
     printf '%s\n' 'Set MESA_DEBIAN_MESA_VERSION only after reviewing the patch queue.' >&2
@@ -61,10 +70,20 @@ fi
 
 patch_dir="$script_dir/patches"
 if [[ -d "$patch_dir" ]]; then
-    while IFS= read -r patch_file; do
-        printf 'Applying %s\n' "$patch_file"
-        patch --forward --batch -d "$source_dir" -p1 < "$patch_file"
-    done < <(find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print | sort)
+    find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print | sort |
+        while IFS= read -r patch_file; do
+            if patch --dry-run --forward --batch -d "$source_dir" -p1 \
+                    < "$patch_file" >/dev/null 2>&1; then
+                printf 'Applying %s\n' "$patch_file"
+                patch --forward --batch -d "$source_dir" -p1 < "$patch_file"
+            elif patch --dry-run --reverse --batch -d "$source_dir" -p1 \
+                    < "$patch_file" >/dev/null 2>&1; then
+                printf 'Already applied: %s\n' "$patch_file"
+            else
+                printf 'Patch does not apply cleanly: %s\n' "$patch_file" >&2
+                exit 1
+            fi
+        done
 fi
 
 printf 'Building Debian packages from %s\n' "$source_dir"
