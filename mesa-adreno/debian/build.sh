@@ -7,6 +7,7 @@ source_dir=${MESA_DEBIAN_SOURCE_DIR:-}
 jobs=${MESA_BUILD_JOBS:-$(nproc)}
 source_spec=${MESA_DEBIAN_SOURCE_SPEC:-mesa}
 expected_version=${MESA_DEBIAN_MESA_VERSION:-26.1.6}
+expected_source_package_version=${MESA_DEBIAN_SOURCE_PACKAGE_VERSION:-26.1.6-1}
 
 if [[ "$(id -u)" -eq 0 ]]; then
     printf '%s\n' 'Run dpkg-buildpackage as the guest build user, not root.' >&2
@@ -49,7 +50,16 @@ if [[ -n "$expected_version" && "$actual_version" != "$expected_version" ]]; the
     exit 1
 fi
 
-patch_dir="$script_dir/../patches/debian"
+actual_source_package_version=$(dpkg-parsechangelog -l"$source_dir/debian/changelog" -S Version)
+if [[ -n "$expected_source_package_version" &&
+        "$actual_source_package_version" != "$expected_source_package_version" ]]; then
+    printf 'Debian Mesa source package mismatch: expected %s, got %s\n' \
+        "$expected_source_package_version" "${actual_source_package_version:-unknown}" >&2
+    printf '%s\n' 'Set MESA_DEBIAN_SOURCE_PACKAGE_VERSION only after reviewing the patch queue.' >&2
+    exit 1
+fi
+
+patch_dir="$script_dir/patches"
 if [[ -d "$patch_dir" ]]; then
     while IFS= read -r patch_file; do
         printf 'Applying %s\n' "$patch_file"

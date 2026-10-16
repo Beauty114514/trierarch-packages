@@ -66,17 +66,18 @@ cd /path/to/trierarch-packages/mesa-adreno
 ./debian/build.sh
 ```
 
-The script runs `apt-get source mesa`, optionally applies patches from
-`patches/debian/`, and invokes `dpkg-buildpackage`. The generated `.deb`
+The script runs `apt-get source mesa`, applies Trierarch's patches from
+`debian/patches/`, and invokes `dpkg-buildpackage`. The generated `.deb`
 packages are written beside the Debian source tree. Install them together:
 
 ```bash
 ./debian/install.sh /path/to/mesa-source-parent
 ```
 
-The current patch queue targets Mesa `26.1.6`; the script stops instead of
-silently applying it to another Mesa version. Updating Mesa requires reviewing
-and retesting the patch queue first.
+The current patch queue targets Kali source package `mesa_26.1.6-1` (upstream
+Mesa `26.1.6`). The script checks both version strings and stops instead of
+silently applying the patches to another source revision. Updating Mesa
+requires reviewing and retesting the patch queue first.
 
 For an already prepared source tree:
 

@@ -1,5 +1,5 @@
---- a/meson.build	2026-07-30 01:31:27.000000000 +0800
-+++ b/meson.build	2026-10-13 01:56:31.000000000 +0800
+--- a/meson.build
++++ b/meson.build
 @@ -353,6 +353,10 @@
    with_intel_virtio,
  ].contains(true)
@@ -11,8 +11,8 @@
  with_dri = false
  if with_gallium and (system_has_kms_drm or (freedreno_kmds.contains('kgsl') and with_gallium_zink))
    _glx = get_option('glx')
---- a/src/egl/drivers/dri2/egl_dri2.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/egl/drivers/dri2/egl_dri2.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/egl/drivers/dri2/egl_dri2.c
++++ b/src/egl/drivers/dri2/egl_dri2.c
 @@ -815,6 +815,9 @@
     _EGLDevice *dev;
     int render_fd;
@@ -23,8 +23,8 @@
     /* If we're not software, we need a DRM node FD */
     assert(software || dri2_dpy->fd_render_gpu >= 0);
  
---- a/src/egl/drivers/dri2/platform_drm.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/egl/drivers/dri2/platform_drm.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/egl/drivers/dri2/platform_drm.c
++++ b/src/egl/drivers/dri2/platform_drm.c
 @@ -629,6 +629,8 @@
  
           dri2_dpy->fd_display_gpu =
@@ -43,18 +43,8 @@
        if (dri2_dpy->fd_render_gpu < 0) {
           err = "DRI2: failed to get compatible render device";
           goto cleanup;
---- a/src/egl/drivers/dri2/platform_surfaceless.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/egl/drivers/dri2/platform_surfaceless.c	2026-10-13 04:25:58.000000000 +0800
-@@ -394,6 +394,7 @@
-       driver_loaded = surfaceless_probe_device_sw(disp);
-    }
- 
-+
-    if (!driver_loaded) {
-       err = "DRI2: failed to load driver";
-       goto cleanup;
---- a/src/egl/drivers/dri2/platform_wayland.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/egl/drivers/dri2/platform_wayland.c	2026-10-13 17:14:33.000000000 +0800
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
 @@ -2634,6 +2634,8 @@
        dri2_dpy->wl_dmabuf_feedback = NULL;
        dmabuf_feedback_format_table_fini(&dri2_dpy->format_table);
@@ -149,8 +139,8 @@
        dri2_dpy->driver_name = strdup("zink");
     else
        dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd_render_gpu);
---- a/src/egl/main/eglapi.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/egl/main/eglapi.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/egl/main/eglapi.c
++++ b/src/egl/main/eglapi.c
 @@ -685,6 +685,7 @@
  
        const char *env = os_get_option("MESA_LOADER_DRIVER_OVERRIDE");
@@ -159,8 +149,8 @@
  
        const char *gallium_hud_env = os_get_option("GALLIUM_HUD");
        disp->Options.GalliumHudWarn =
---- a/src/egl/main/egldisplay.h	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/egl/main/egldisplay.h	2026-10-13 01:56:31.000000000 +0800
+--- a/src/egl/main/egldisplay.h
++++ b/src/egl/main/egldisplay.h
 @@ -198,6 +198,7 @@
  
     /* options that affect how the driver initializes the display */
@@ -169,8 +159,8 @@
        EGLBoolean Zink;           /**< Use kopper only */
        EGLBoolean ForceSoftware;  /**< Use software path only */
        EGLBoolean GalliumHudWarn; /**< Using hud, warn when querying buffer age */
---- a/src/freedreno/drm/freedreno_device.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/freedreno/drm/freedreno_device.c	2026-10-13 16:53:40.000000000 +0800
+--- a/src/freedreno/drm/freedreno_device.c
++++ b/src/freedreno/drm/freedreno_device.c
 @@ -6,6 +6,7 @@
   *    Rob Clark <robclark@freedesktop.org>
   */
@@ -370,8 +360,8 @@
  bool
  fd_has_syncobj(struct fd_device *dev)
  {
---- a/src/freedreno/drm/freedreno_drmif.h	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/freedreno/drm/freedreno_drmif.h	2026-10-13 01:56:31.000000000 +0800
+--- a/src/freedreno/drm/freedreno_drmif.h
++++ b/src/freedreno/drm/freedreno_drmif.h
 @@ -50,6 +50,13 @@
     FD_UCHE_TRAP_BASE,
  };
@@ -407,8 +397,8 @@
  
  /* buffer-object functions:
   */
---- a/src/freedreno/drm/freedreno_pipe.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/freedreno/drm/freedreno_pipe.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/freedreno/drm/freedreno_pipe.c
++++ b/src/freedreno/drm/freedreno_pipe.c
 @@ -215,6 +215,12 @@
     return fence;
  }
@@ -422,8 +412,8 @@
  struct fd_fence *
  fd_fence_new(struct fd_pipe *pipe, bool use_fence_fd)
  {
---- a/src/freedreno/drm/freedreno_priv.h	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/freedreno/drm/freedreno_priv.h	2026-10-13 16:53:40.000000000 +0800
+--- a/src/freedreno/drm/freedreno_priv.h
++++ b/src/freedreno/drm/freedreno_priv.h
 @@ -188,9 +188,11 @@
  }
  
@@ -445,8 +435,8 @@
  
     /**
      * Flush any deferred submits (if deferred submits are supported by
---- /dev/null	2026-10-13 13:30:28.492752666 +0800
-+++ b/src/freedreno/drm/kgsl/kgsl_bo.c	2026-10-13 01:56:31.000000000 +0800
+--- /dev/null
++++ b/src/freedreno/drm/kgsl/kgsl_bo.c
 @@ -0,0 +1,295 @@
 +#include "kgsl_priv.h"
 +#include "util/os_file.h"
@@ -743,8 +733,8 @@
 +
 +    return bo;
 +}
---- /dev/null	2026-10-13 13:30:28.492752666 +0800
-+++ b/src/freedreno/drm/kgsl/kgsl_device.c	2026-10-13 01:56:31.000000000 +0800
+--- /dev/null
++++ b/src/freedreno/drm/kgsl/kgsl_device.c
 @@ -0,0 +1,44 @@
 +#include "kgsl_priv.h"
 +
@@ -790,8 +780,8 @@
 +kgsl_device_destroy(struct fd_device *dev)
 +{
 +}
---- /dev/null	2026-10-13 13:30:28.492752666 +0800
-+++ b/src/freedreno/drm/kgsl/kgsl_pipe.c	2026-10-13 16:54:12.000000000 +0800
+--- /dev/null
++++ b/src/freedreno/drm/kgsl/kgsl_pipe.c
 @@ -0,0 +1,229 @@
 +#include "kgsl_priv.h"
 +#include "freedreno_ringbuffer_sp.h"
@@ -1022,8 +1012,8 @@
 +        fd_pipe_del(pipe);
 +    return NULL;
 +}
---- /dev/null	2026-10-13 13:30:28.492752666 +0800
-+++ b/src/freedreno/drm/kgsl/kgsl_priv.h	2026-10-13 01:56:31.000000000 +0800
+--- /dev/null
++++ b/src/freedreno/drm/kgsl/kgsl_priv.h
 @@ -0,0 +1,54 @@
 +#ifndef KGSL_PRIV_H
 +#define KGSL_PRIV_H
@@ -1079,8 +1069,8 @@
 +void kgsl_bo_close_handle(struct fd_bo *bo);
 +
 +#endif
---- /dev/null	2026-10-13 13:30:28.492752666 +0800
-+++ b/src/freedreno/drm/kgsl/kgsl_ringbuffer_sp.c	2026-10-13 01:56:31.000000000 +0800
+--- /dev/null
++++ b/src/freedreno/drm/kgsl/kgsl_ringbuffer_sp.c
 @@ -0,0 +1,119 @@
 +#include "kgsl_priv.h"
 +#include "freedreno_ringbuffer_sp.h"
@@ -1201,8 +1191,8 @@
 +{
 +    return fd_submit_sp_new(pipe, flush_submit_list);
 +}
---- a/src/freedreno/drm/meson.build	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/freedreno/drm/meson.build	2026-10-13 01:56:31.000000000 +0800
+--- a/src/freedreno/drm/meson.build
++++ b/src/freedreno/drm/meson.build
 @@ -64,6 +64,17 @@
    libfreedreno_drm_link_with += libvdrm
  endif
@@ -1221,8 +1211,22 @@
  libfreedreno_drm = static_library(
    'freedreno_drm',
    [
---- a/src/gallium/drivers/freedreno/freedreno_context.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/gallium/drivers/freedreno/freedreno_context.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/freedreno/vulkan/msm_kgsl.h
++++ b/src/freedreno/vulkan/msm_kgsl.h
+@@ -549,6 +549,11 @@
+ /* ioctls */
+ #define KGSL_IOC_TYPE 0x09
+ 
++/* user space structures */
++#ifndef __user
++#define __user
++#endif
++
+ /*
+  * get misc info about the GPU
+  * type should be a value from enum kgsl_property_type
+--- a/src/gallium/drivers/freedreno/freedreno_context.c
++++ b/src/gallium/drivers/freedreno/freedreno_context.c
 @@ -504,6 +504,22 @@
     return status;
  }
@@ -1280,8 +1284,8 @@
     pctx->stream_uploader = u_upload_create_default(pctx);
     if (!pctx->stream_uploader)
        goto fail;
---- a/src/gallium/drivers/freedreno/freedreno_screen.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/gallium/drivers/freedreno/freedreno_screen.c	2026-10-13 16:53:40.000000000 +0800
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
 @@ -373,6 +373,15 @@
  
     u_init_pipe_screen_caps(&screen->base, 1);
@@ -1307,8 +1311,8 @@
     caps->timer_resolution = ticks_to_ns(1);
     caps->query_buffer_object =
     caps->query_so_overflow =
---- a/src/gallium/drivers/zink/zink_screen.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/gallium/drivers/zink/zink_screen.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
 @@ -2464,6 +2464,10 @@
  {
     VkSemaphore sem = VK_NULL_HANDLE;
@@ -1350,8 +1354,8 @@
           } else {
              ret = true;
           }
---- a/src/gallium/frontends/dri/loader_dri3_helper.c	2026-07-30 01:31:27.000000000 +0800
-+++ b/src/gallium/frontends/dri/loader_dri3_helper.c	2026-10-13 01:56:31.000000000 +0800
+--- a/src/gallium/frontends/dri/loader_dri3_helper.c
++++ b/src/gallium/frontends/dri/loader_dri3_helper.c
 @@ -26,11 +26,9 @@
  #include <unistd.h>
  #include <string.h>
@@ -1560,4 +1564,3 @@
     free(buffer);
  no_buffer:
     return NULL;
-
