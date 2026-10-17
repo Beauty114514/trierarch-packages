@@ -323,11 +323,10 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     }
 
     let source = spec.x11_socket_directory.join("X0");
-    let source_tmp = spec
-        .x11_socket_directory
-        .parent()
-        .expect("X11 socket directory has a tmp parent");
-    let target = spec.rootfs.join("tmp");
+    // Only the X11 socket directory belongs to the host session. Binding its
+    // parent over guest `/tmp` would hide `/tmp/trierarch-compat` and other
+    // guest runtime state.
+    let target = spec.rootfs.join("tmp/.X11-unix");
     let virgl_target = spec
         .rootfs
         .join(GUEST_VIRGL_RUNTIME_DIRECTORY.trim_start_matches('/'));
@@ -350,14 +349,14 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
              {system_cleanup} \\
          }}; \\
          trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
-         test -S {source} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
+         test -S {socket} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
          {install_compatibility}{install_ime_bridge}{system_mounts} \\
          mkdir -p {target} || exit $?; \\
-         if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source_tmp} {target} || exit $?; trierarch_mount_x11=1; fi; \\
+         if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source} {target} || exit $?; trierarch_mount_x11=1; fi; \\
          {install_virgl} \\
          /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
-        source = shell_quote(&source),
-        source_tmp = shell_quote(source_tmp),
+        socket = shell_quote(&source),
+        source = shell_quote(&spec.x11_socket_directory),
         target = shell_quote(&target),
         virgl_target = shell_quote(&virgl_target),
         install_virgl = install_virgl,
