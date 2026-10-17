@@ -69,9 +69,10 @@ CC=aarch64-linux-gnu-gcc bash scripts/build-linux.sh
 
 The Android app build cross-compiles this library with `aarch64-linux-gnu-gcc`,
 packages it as an asset, then deploys it at launch. For Plasma Wayland, PRoot
-and privileged chroot bind a small wrapper over KWin's actual
-`kwin_wayland_wrapper` entry point; that wrapper preloads the shim and delegates
-to a saved original wrapper. This keeps `LD_PRELOAD` scoped to KWin rather than
-exporting it to the desktop session. A glibc build is appropriate for the
-current Arch, Debian, and Ubuntu rootfses; a future musl rootfs needs a
+and privileged chroot create a small wrapper in the guest's temporary
+`/tmp/trierarch-compat` directory. The chroot path selects that wrapper through
+`KDEWM` and does not replace or bind over files supplied by the distribution;
+the wrapper preloads the shim only for KWin and delegates to the guest's own
+`kwin_wayland_wrapper` (or `kwin_wayland`). A glibc build is appropriate for
+the current Arch, Debian, and Ubuntu rootfses; a future musl rootfs needs a
 separately compiled artifact.

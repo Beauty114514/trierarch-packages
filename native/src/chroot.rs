@@ -21,14 +21,10 @@ const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarc
 const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const VIRGL_SOCKET: &str = "vtest.sock";
-const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
-const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
-const GUEST_KWIN_WAYLAND_WRAPPER_PATHS: &[&str] = &[
-    "/usr/bin/kwin_wayland_wrapper",
-    "/usr/sbin/kwin_wayland_wrapper",
-];
-const GUEST_KWIN_WAYLAND_WRAPPER_REAL: &str = "/opt/trierarch/compat/kwin_wayland_wrapper.real";
-const GUEST_KWIN_WAYLAND_WRAPPER_SHIM: &str = "/opt/trierarch/compat/kwin-wayland-wrapper";
+const GUEST_COMPATIBILITY_DIRECTORY: &str = "/tmp/trierarch-compat";
+const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str =
+    "/tmp/trierarch-compat/libtrierarch-udev-compat.so";
+const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/tmp/trierarch-compat/kwin-wayland-wrapper";
 
 #[derive(Clone, Debug)]
 pub struct ChrootSpec {
@@ -146,6 +142,9 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             destination = shell_quote(&destination),
         )
     };
+    if wayland && !spec.udev_compatibility_library.as_os_str().is_empty() {
+        environment.push(format!("KDEWM={GUEST_KWIN_WAYLAND_WRAPPER}"));
+    }
     let graphics_environment = shell_words(&environment);
     let install_ime_bridge = if spec.wayland_ime_bridge.as_os_str().is_empty() {
         String::new()
@@ -216,36 +215,23 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
                 target = shell_quote(&virgl_target),
             )
         };
-        let kwin_wrapper_target = guest_kwin_wrapper_target(&spec.rootfs);
-        let kwin_wrapper_real = spec
+        let kwin_wrapper = spec
             .rootfs
-            .join(GUEST_KWIN_WAYLAND_WRAPPER_REAL.trim_start_matches('/'));
-        let kwin_wrapper_shim = spec
-            .rootfs
-            .join(GUEST_KWIN_WAYLAND_WRAPPER_SHIM.trim_start_matches('/'));
-        let kwin_wrapper_parent = kwin_wrapper_shim
+            .join(GUEST_KWIN_WAYLAND_WRAPPER.trim_start_matches('/'));
+        let kwin_wrapper_parent = kwin_wrapper
             .parent()
             .expect("KWin compatibility wrapper has a parent");
-        let install_kwin_wrapper = if let Some(target) = kwin_wrapper_target.as_ref() {
-            if spec.udev_compatibility_library.as_os_str().is_empty() {
-                String::new()
-            } else {
-                let wrapper_script = kwin_wayland_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY);
-                format!(
-                    "if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {target} {real} && /system/bin/toybox chmod 755 {real} && printf '%s' {script} > {shim} && /system/bin/toybox chmod 755 {shim} && /system/bin/toybox mount --bind {shim} {target} || exit $?; trierarch_mount_kwin_wrapper=1; fi; ",
-                    target = shell_quote(target),
-                    parent = shell_quote(kwin_wrapper_parent),
-                    real = shell_quote(&kwin_wrapper_real),
-                    script = shell_quote(Path::new(&wrapper_script)),
-                    shim = shell_quote(&kwin_wrapper_shim),
-                )
-            }
-        } else {
+        let install_kwin_wrapper = if spec.udev_compatibility_library.as_os_str().is_empty() {
             String::new()
+        } else {
+            let wrapper_script = kwin_wayland_wrapper_script(GUEST_UDEV_COMPATIBILITY_LIBRARY);
+            format!(
+                "/system/bin/toybox mkdir -p {parent} && printf '%s' {script} > {wrapper} && /system/bin/toybox chmod 755 {wrapper} || exit $?; ",
+                parent = shell_quote(kwin_wrapper_parent),
+                script = shell_quote(Path::new(&wrapper_script)),
+                wrapper = shell_quote(&kwin_wrapper),
+            )
         };
-        let kwin_wrapper_cleanup_target = kwin_wrapper_target
-            .as_deref()
-            .unwrap_or_else(|| Path::new(GUEST_KWIN_WAYLAND_WRAPPER));
         let ime_socket = spec
             .rootfs
             .join(GUEST_WAYLAND_IME_SOCKET.trim_start_matches('/'));
@@ -281,11 +267,11 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_mount_kwin_wrapper=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; \\
              cleanup() {{ \\
                  if [ -n \"$trierarch_ime_bridge\" ]; then kill \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; wait \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; fi; \\
                  /system/bin/toybox rm -f {ime_socket} >/dev/null 2>&1 || true; \\
-                 if [ \"$trierarch_mount_kwin_wrapper\" = 1 ]; then /system/bin/toybox umount -l {kwin_wrapper_target} >/dev/null 2>&1 || true; fi; \\
+                 /system/bin/toybox rm -rf {compatibility_directory} >/dev/null 2>&1 || true; \\
                  if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_wayland\" = 1 ]; then /system/bin/toybox umount -l {runtime_target} >/dev/null 2>&1 || true; fi; \\
@@ -308,7 +294,9 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             host_socket = shell_quote(&host_socket),
             virgl_target = shell_quote(&virgl_target),
             install_virgl = install_virgl,
-            kwin_wrapper_target = shell_quote(kwin_wrapper_cleanup_target),
+            compatibility_directory = shell_quote(&spec.rootfs.join(
+                GUEST_COMPATIBILITY_DIRECTORY.trim_start_matches('/'),
+            )),
             ime_socket = shell_quote(&ime_socket),
             rootfs = shell_quote(&spec.rootfs),
             start_ime_bridge = start_ime_bridge,
@@ -370,8 +358,7 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
 
 fn kwin_wayland_wrapper_script(library: &str) -> String {
     format!(
-        "#!/bin/sh\nexec /usr/bin/env LD_PRELOAD={library} {real} \"$@\"\n",
-        real = GUEST_KWIN_WAYLAND_WRAPPER_REAL,
+        "#!/bin/sh\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nif [ -x /usr/bin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland \"$@\"\n",
     )
 }
 
@@ -411,13 +398,6 @@ fn cleanup_system_mounts(rootfs: &Path) -> String {
         dev = shell_quote(&dev),
         devpts = shell_quote(&devpts),
     )
-}
-
-fn guest_kwin_wrapper_target(rootfs: &Path) -> Option<PathBuf> {
-    GUEST_KWIN_WAYLAND_WRAPPER_PATHS
-        .iter()
-        .map(|guest_path| rootfs.join(guest_path.trim_start_matches('/')))
-        .find(|path| path.is_file())
 }
 
 fn validate_environment(values: &[String]) -> io::Result<()> {
