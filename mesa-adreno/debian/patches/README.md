@@ -17,5 +17,9 @@ working tree.
 It contains the KGSL backend, the ifdevs Freedreno changes, and Trierarch's
 Wayland EGL adjustment that selects `/dev/kgsl-3d0` when KGSL is requested
 instead of trusting a display-controller `renderD128` advertised by dma-buf
-feedback. It deliberately excludes generated build files, Debian packaging
-outputs, the package-written `VERSION` file, and a no-op whitespace change.
+feedback. `0002-trierarch-kgsl-build-option.patch` also changes Debian's
+`debian/rules` for arm64 so the build actually passes
+`-Dfreedreno-kmds=kgsl`; the source patch alone is not enough because Mesa
+otherwise defaults to the `msm` KMD selection. It deliberately excludes
+generated build files, Debian packaging outputs, the package-written
+`VERSION` file, and a no-op whitespace change.

@@ -1,0 +1,21 @@
+--- a/debian/rules
++++ b/debian/rules
+@@ -480,6 +480,10 @@
+       # Enable freedreno on x86 (for FEX) and arm
+       ifneq (,$(filter $(DEB_HOST_ARCH), amd64 armhf arm64 i386))
+      	GALLIUM_DEFAULTS += msm
+      	GALLIUM_DRIVERS += freedreno
+      	VULKAN_DEFAULTS += turnip
+      	VULKAN_DRIVERS += freedreno
++      	ifneq (,$(filter $(DEB_HOST_ARCH), arm64))
++     		confflags_FREEDRENO += -Dfreedreno-kmds=kgsl
++      	endif
+       endif
+@@ -545,6 +549,7 @@
+      	$(confflags_DIRECT_RENDERING) \
+      	$(confflags_GBM) \
+      	$(confflags_GALLIUM) \
++     	$(confflags_FREEDRENO) \
+      	$(confflags_GLES) \
+      	$(confflags_VALGRIND) \
+      	$(confflags_TEFLON)
