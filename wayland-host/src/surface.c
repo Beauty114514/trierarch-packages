@@ -1,6 +1,7 @@
 #include "server_internal.h"
 
 #include <stdlib.h>
+#include <unistd.h>
 #include <android/log.h>
 
 #define TRIERARCH_TAG "TrierarchWayland"
@@ -226,8 +227,18 @@ static void surface_resource_destroy(struct wl_resource *resource) {
     if (surface->pending) {
         struct shm_buffer *pending = surface->pending;
         surface->pending = NULL;
+        if (pending->acquire_fence_fd >= 0) {
+            close(pending->acquire_fence_fd);
+            pending->acquire_fence_fd = -1;
+        }
+        if (pending->explicit_release)
+            wl_resource_destroy(pending->explicit_release);
         if (pending->egl_buffer) free(pending);
     }
+    if (surface->acquire_fence_fd >= 0)
+        close(surface->acquire_fence_fd);
+    if (surface->pending_explicit_release)
+        wl_resource_destroy(surface->pending_explicit_release);
     surface->pending_detach = false;
     wl_list_remove(&surface->link);
     free(surface);
@@ -242,6 +253,7 @@ static void compositor_create_surface(struct wl_client *client,
         return;
     }
     surface->server = server;
+    surface->acquire_fence_fd = -1;
     surface->buffer_scale = 1;
     wl_list_init(&surface->children);
     wl_list_init(&surface->subsurface_link);
@@ -313,6 +325,19 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
                 trierarch_renderer_wait_idle(surface->server ? surface->server->renderer : NULL);
                 trierarch_shm_buffer_release(current);
                 if (current->egl_buffer) free(current);
+            }
+            if (surface->pending) {
+                surface->pending->acquire_fence_fd = surface->acquire_fence_fd;
+                surface->acquire_fence_fd = -1;
+                trierarch_explicit_sync_wait(surface->pending);
+                surface->pending->explicit_release = surface->pending_explicit_release;
+                surface->pending_explicit_release = NULL;
+            } else {
+                if (surface->acquire_fence_fd >= 0) close(surface->acquire_fence_fd);
+                surface->acquire_fence_fd = -1;
+                if (surface->pending_explicit_release)
+                    wl_resource_destroy(surface->pending_explicit_release);
+                surface->pending_explicit_release = NULL;
             }
             surface->current = surface->pending;
             if (surface->current) {

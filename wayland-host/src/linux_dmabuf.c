@@ -87,6 +87,7 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
         return NULL;
     }
     buffer->dmabuf = true;
+    buffer->acquire_fence_fd = -1;
     buffer->dmabuf_fd = params->fd;
     buffer->dmabuf_mapping = mapping;
     buffer->dmabuf_mapping_size = mapping ? end : 0;
@@ -332,4 +333,5 @@ void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer) {
     if (!buffer || !buffer->resource || !buffer->busy) return;
     buffer->busy = false;
     wl_buffer_send_release(buffer->resource);
+    trierarch_explicit_sync_buffer_release(buffer);
 }

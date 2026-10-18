@@ -100,6 +100,7 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *res
     buffer->format = format;
     buffer->single_pixel = false;
     buffer->dmabuf_fd = -1;
+    buffer->acquire_fence_fd = -1;
     wl_list_init(&buffer->pool_link);
     pool->references++;
     wl_list_insert(&pool->buffers, &buffer->pool_link);
@@ -219,4 +220,5 @@ void trierarch_shm_buffer_release(struct shm_buffer *buffer) {
     buffer->busy = false;
     if (buffer->resource)
         wl_buffer_send_release(buffer->resource);
+    trierarch_explicit_sync_buffer_release(buffer);
 }

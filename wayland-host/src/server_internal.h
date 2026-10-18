@@ -18,6 +18,7 @@
 #include "relative-pointer-unstable-v1-server-protocol.h"
 #include "android-wlegl-server-protocol.h"
 #include "wlr-layer-shell-unstable-v1-server-protocol.h"
+#include "linux-explicit-synchronization-unstable-v1-server-protocol.h"
 
 struct renderer_context;
 
@@ -54,6 +55,8 @@ struct shm_buffer {
     void *egl_resource;
     void *android_hardware_buffer;
     int dmabuf_fd;
+    int acquire_fence_fd;
+    struct wl_resource *explicit_release;
     void *dmabuf_mapping;
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
@@ -84,6 +87,9 @@ struct compositor_surface {
     struct shm_buffer *current;
     struct shm_buffer *pending;
     bool pending_detach;
+    struct wl_resource *explicit_sync;
+    int acquire_fence_fd;
+    struct wl_resource *pending_explicit_release;
     int32_t width;
     int32_t height;
     int32_t layer_x;
@@ -234,9 +240,12 @@ void trierarch_relative_pointer_bind(struct wl_client *, void *, uint32_t, uint3
 void trierarch_android_wlegl_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_layer_shell_bind(struct wl_client *, void *, uint32_t, uint32_t);
+void trierarch_explicit_sync_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
+void trierarch_explicit_sync_wait(struct shm_buffer *buffer);
+void trierarch_explicit_sync_buffer_release(struct shm_buffer *buffer);
 void trierarch_renderer_wait_idle(struct renderer_context *renderer);
 void trierarch_layer_surface_commit(struct compositor_surface *surface);
 void trierarch_surface_send_configure(struct compositor_surface *surface);

@@ -17,6 +17,7 @@ fractional_scale_xml="$source_dir/wayland-protocols/staging/fractional-scale/fra
 relative_pointer_xml="$source_dir/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml"
 android_wlegl_xml="$package_dir/protocol/android-wlegl.xml"
 layer_shell_xml="$package_dir/protocol/wlr-layer-shell-unstable-v1.xml"
+explicit_sync_xml="$source_dir/wayland-protocols/unstable/linux-explicit-synchronization/linux-explicit-synchronization-unstable-v1.xml"
 build_dir="$package_dir/build"
 ffi_prefix="$build_dir/libffi-install"
 wayland_build="$build_dir/wayland-android"
@@ -94,6 +95,8 @@ wayland-scanner server-header "$android_wlegl_xml" "$protocol_dir/android-wlegl-
 wayland-scanner private-code "$android_wlegl_xml" "$protocol_dir/android-wlegl-protocol.c"
 wayland-scanner server-header "$layer_shell_xml" "$protocol_dir/wlr-layer-shell-unstable-v1-server-protocol.h"
 wayland-scanner private-code "$layer_shell_xml" "$protocol_dir/wlr-layer-shell-unstable-v1-protocol.c"
+wayland-scanner server-header "$explicit_sync_xml" "$protocol_dir/linux-explicit-synchronization-unstable-v1-server-protocol.h"
+wayland-scanner private-code "$explicit_sync_xml" "$protocol_dir/linux-explicit-synchronization-unstable-v1-protocol.c"
 
 (cd "$package_dir" && "$ndk/ndk-build" NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=./Android.mk \
     NDK_APPLICATION_MK=./Application.mk NDK_LIBS_OUT="$build_dir/ndk-libs" \

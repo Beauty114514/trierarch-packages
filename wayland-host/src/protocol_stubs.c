@@ -213,6 +213,7 @@ static void wlegl_create_buffer(struct wl_client *client, struct wl_resource *re
         wl_client_post_no_memory(client); return;
     }
     buffer->android_buffer = true;
+    buffer->acquire_fence_fd = -1;
     buffer->android_hardware_buffer = hardware_buffer;
     buffer->width = width;
     buffer->height = height;

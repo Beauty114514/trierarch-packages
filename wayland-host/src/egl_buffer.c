@@ -13,6 +13,7 @@ struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resour
     if (!buffer) return NULL;
     buffer->resource = resource;
     buffer->egl_buffer = true;
+    buffer->acquire_fence_fd = -1;
     buffer->egl_resource = resource;
     buffer->width = server->output_width > 0 ? server->output_width : 1080;
     buffer->height = server->output_height > 0 ? server->output_height : 1920;

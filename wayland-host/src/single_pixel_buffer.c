@@ -36,6 +36,7 @@ static struct wl_resource *single_pixel_buffer_create(struct wl_client *client,
     buffer->stride = 4;
     buffer->format = WL_SHM_FORMAT_ARGB8888;
     buffer->single_pixel = true;
+    buffer->acquire_fence_fd = -1;
     buffer->resource = wl_resource_create(client, &wl_buffer_interface, 1, id);
     if (!buffer->resource) {
         free(buffer->data);

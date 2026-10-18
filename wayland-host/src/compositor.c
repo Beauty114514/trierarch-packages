@@ -162,6 +162,9 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             server, trierarch_data_device_bind);
     wl_global_create(server->display, &zwlr_layer_shell_v1_interface, 4,
             server, trierarch_layer_shell_bind);
+    wl_global_create(server->display,
+            &zwp_linux_explicit_synchronization_v1_interface, 2,
+            server, trierarch_explicit_sync_bind);
     server->valid = true;
     return server;
 }
