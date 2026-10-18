@@ -24,6 +24,15 @@
 #define TRIERARCH_WL_COMPOSITOR_VERSION 6
 #define TRIERARCH_WL_SEAT_VERSION 9
 
+/* Keep the packed 32-bit formats shared by the dma-buf and renderer paths.
+ * On little-endian systems the byte order exposed by GL_RGBA differs between
+ * the ARGB/XRGB and ABGR/XBGR families, so the renderer must inspect the
+ * advertised format before applying its R/B swizzle. */
+#define TRIERARCH_DRM_FORMAT_XRGB8888 0x34325258u
+#define TRIERARCH_DRM_FORMAT_ARGB8888 0x34325241u
+#define TRIERARCH_DRM_FORMAT_XBGR8888 0x34324258u
+#define TRIERARCH_DRM_FORMAT_ABGR8888 0x34324241u
+
 struct shm_buffer {
     struct wl_resource *resource;
     struct shm_pool *pool;

@@ -16,11 +16,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
-#define DRM_FORMAT_XRGB8888 0x34325258u
-#define DRM_FORMAT_ARGB8888 0x34325241u
-#define DRM_FORMAT_XBGR8888 0x34324258u
-#define DRM_FORMAT_ABGR8888 0x34324241u
-
 #ifndef SYS_memfd_create
 #if defined(__aarch64__)
 #define SYS_memfd_create 279
@@ -39,8 +34,10 @@ struct dmabuf_params {
 };
 
 static bool supported_format(uint32_t format) {
-    return format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888 ||
-            format == DRM_FORMAT_XBGR8888 || format == DRM_FORMAT_ABGR8888;
+    return format == TRIERARCH_DRM_FORMAT_XRGB8888 ||
+            format == TRIERARCH_DRM_FORMAT_ARGB8888 ||
+            format == TRIERARCH_DRM_FORMAT_XBGR8888 ||
+            format == TRIERARCH_DRM_FORMAT_ABGR8888;
 }
 
 static void dmabuf_buffer_destroy(struct wl_resource *resource) {
@@ -216,10 +213,10 @@ static void send_feedback(struct wl_resource *resource, struct wayland_server *s
         uint32_t padding;
         uint64_t modifier;
     } entries[4] = {
-        { DRM_FORMAT_XRGB8888, 0, 0 },
-        { DRM_FORMAT_ARGB8888, 0, 0 },
-        { DRM_FORMAT_XBGR8888, 0, 0 },
-        { DRM_FORMAT_ABGR8888, 0, 0 },
+        { TRIERARCH_DRM_FORMAT_XRGB8888, 0, 0 },
+        { TRIERARCH_DRM_FORMAT_ARGB8888, 0, 0 },
+        { TRIERARCH_DRM_FORMAT_XBGR8888, 0, 0 },
+        { TRIERARCH_DRM_FORMAT_ABGR8888, 0, 0 },
     };
 #ifdef SYS_memfd_create
     int fd = (int)syscall(SYS_memfd_create, "trierarch-dmabuf-feedback", 0);
@@ -310,16 +307,16 @@ void trierarch_dmabuf_bind(struct wl_client *client, void *data,
     }
     wl_resource_set_implementation(resource, &dmabuf_impl, server, NULL);
     if (version < 4) {
-        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XRGB8888);
-        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ARGB8888);
-        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_XBGR8888);
-        zwp_linux_dmabuf_v1_send_format(resource, DRM_FORMAT_ABGR8888);
+        zwp_linux_dmabuf_v1_send_format(resource, TRIERARCH_DRM_FORMAT_XRGB8888);
+        zwp_linux_dmabuf_v1_send_format(resource, TRIERARCH_DRM_FORMAT_ARGB8888);
+        zwp_linux_dmabuf_v1_send_format(resource, TRIERARCH_DRM_FORMAT_XBGR8888);
+        zwp_linux_dmabuf_v1_send_format(resource, TRIERARCH_DRM_FORMAT_ABGR8888);
     }
     if (version >= 3 && version < 4) {
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XRGB8888, 0, 0);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ARGB8888, 0, 0);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_XBGR8888, 0, 0);
-        zwp_linux_dmabuf_v1_send_modifier(resource, DRM_FORMAT_ABGR8888, 0, 0);
+        zwp_linux_dmabuf_v1_send_modifier(resource, TRIERARCH_DRM_FORMAT_XRGB8888, 0, 0);
+        zwp_linux_dmabuf_v1_send_modifier(resource, TRIERARCH_DRM_FORMAT_ARGB8888, 0, 0);
+        zwp_linux_dmabuf_v1_send_modifier(resource, TRIERARCH_DRM_FORMAT_XBGR8888, 0, 0);
+        zwp_linux_dmabuf_v1_send_modifier(resource, TRIERARCH_DRM_FORMAT_ABGR8888, 0, 0);
     }
     LOGI("linux-dmabuf bound at version %u%s", version,
             version >= 4 ? " with guest main-device feedback" : "");

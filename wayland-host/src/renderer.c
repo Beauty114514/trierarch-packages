@@ -55,6 +55,16 @@ static bool dmabuf_modifier_is_linear(uint64_t modifier) {
     return modifier == 0;
 }
 
+static bool format_needs_rb_swizzle(uint32_t format) {
+    return format == TRIERARCH_DRM_FORMAT_XRGB8888 ||
+            format == TRIERARCH_DRM_FORMAT_ARGB8888;
+}
+
+static bool format_is_opaque(uint32_t format) {
+    return format == TRIERARCH_DRM_FORMAT_XRGB8888 ||
+            format == TRIERARCH_DRM_FORMAT_XBGR8888;
+}
+
 /* mmap alone does not establish CPU/GPU ownership of a dma-buf.  The guest
  * compositor may still be rendering when the Android host falls back to a
  * CPU upload, so bracket that read with the dma-buf synchronization ioctl. */
@@ -474,7 +484,7 @@ static void draw_surface(struct renderer_context *renderer,
             renderer->image_target(GL_TEXTURE_2D, image);
             if (glGetError() == GL_NO_ERROR) {
                 swizzle = 0.0f;
-                opaque = buffer->format == 0x34325258u || buffer->format == 0x34324258u ? 1.0f : 0.0f;
+                opaque = format_is_opaque(buffer->format) ? 1.0f : 0.0f;
                 LOGI("dma-buf EGL import: %dx%d fmt=0x%x modifier=0x%llx",
                         buffer->width, buffer->height, buffer->format,
                         (unsigned long long)buffer->dmabuf_modifier);
@@ -519,7 +529,8 @@ static void draw_surface(struct renderer_context *renderer,
             dmabuf_end_cpu_read(buffer);
         /* XRGB has no alpha channel. ARGB must retain its alpha: cursor images
          * rely on transparent pixels around the visible pointer shape. */
-        opaque = buffer->format == WL_SHM_FORMAT_XRGB8888 ? 1.0f : 0.0f;
+        swizzle = format_needs_rb_swizzle(buffer->format) ? 1.0f : 0.0f;
+        opaque = format_is_opaque(buffer->format) ? 1.0f : 0.0f;
     }
     if (image == EGL_NO_IMAGE_KHR && !buffer->data) {
         static unsigned int unavailable_buffer_count;
