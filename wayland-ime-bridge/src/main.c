@@ -19,6 +19,7 @@
 #include <wayland-client.h>
 
 #include "input-method-v1-client-protocol.h"
+#include "input-method-v2-client-protocol.h"
 
 #define MAX_COMMIT_BYTES 65536U
 #define MAX_QUEUED_MESSAGES 128U
@@ -37,10 +38,15 @@ struct bridge {
     struct wl_display *display;
     struct zwp_input_method_v1 *input_method;
     struct zwp_input_method_context_v1 *context;
+    struct zwp_input_method_manager_v2 *input_method_manager_v2;
+    struct zwp_input_method_v2 *input_method_v2;
+    struct wl_seat *seat;
     struct message *head, *tail;
     uint32_t serial;
+    uint32_t v2_serial;
     unsigned int queued_messages;
-    bool saw_input_method, have_serial, sent;
+    bool saw_input_method, saw_input_method_v2, have_serial, sent;
+    bool v2_active;
 };
 
 static volatile sig_atomic_t running = 1;
@@ -107,7 +113,58 @@ static bool enqueue_keysym(struct bridge *bridge, uint32_t sym, uint32_t state) 
 }
 
 static void try_commit(struct bridge *bridge) {
-    if (!bridge->context || !bridge->have_serial || !bridge->head) return;
+    if ((!bridge->context && !bridge->v2_active) || !bridge->have_serial || !bridge->head) return;
+
+    if (bridge->v2_active) {
+        unsigned int committed = 0;
+        while (bridge->head) {
+            struct message *message = bridge->head;
+            bridge->head = message->next;
+            if (!bridge->head) bridge->tail = NULL;
+            bridge->queued_messages--;
+            if (message->type == MESSAGE_TEXT) {
+                zwp_input_method_v2_commit_string(bridge->input_method_v2,
+                        message->value.text);
+                trace("v2 committed %zu UTF-8 bytes with serial=%u; queue=%u\n",
+                        strlen(message->value.text), bridge->v2_serial,
+                        bridge->queued_messages);
+                free(message->value.text);
+            } else {
+                switch (message->value.keysym.sym) {
+                case 0xff08: /* XK_BackSpace */
+                    zwp_input_method_v2_delete_surrounding_text(
+                            bridge->input_method_v2, 1, 0);
+                    break;
+                case 0xffff: /* XK_Delete */
+                    zwp_input_method_v2_delete_surrounding_text(
+                            bridge->input_method_v2, 0, 1);
+                    break;
+                case 0xff0d: /* XK_Return */
+                    zwp_input_method_v2_commit_string(bridge->input_method_v2, "\n");
+                    break;
+                case 0xff09: /* XK_Tab */
+                    zwp_input_method_v2_commit_string(bridge->input_method_v2, "\t");
+                    break;
+                default:
+                    trace("dropped v2 keysym=0x%x; protocol has no keysym request\n",
+                            message->value.keysym.sym);
+                    break;
+                }
+                trace("v2 handled keysym=0x%x; queue=%u\n",
+                        message->value.keysym.sym, bridge->queued_messages);
+            }
+            free(message);
+            committed++;
+        }
+        zwp_input_method_v2_commit(bridge->input_method_v2, bridge->v2_serial);
+        bridge->sent = true;
+        if (wl_display_flush(bridge->display) < 0 && errno != EAGAIN) {
+            perror("unable to flush Wayland v2 text commit"); running = 0;
+        }
+        trace("flushed %u v2 commit(s) with serial=%u\n", committed,
+                bridge->v2_serial);
+        return;
+    }
 
     unsigned int committed = 0;
     while (bridge->head) {
@@ -200,15 +257,98 @@ static const struct zwp_input_method_v1_listener input_method_listener = {
     .activate = input_method_activate, .deactivate = input_method_deactivate,
 };
 
+static void input_method_v2_activate(void *data,
+        struct zwp_input_method_v2 *input_method) {
+    struct bridge *bridge = data;
+    if (bridge->input_method_v2 != input_method) return;
+    bridge->v2_active = true;
+    bridge->have_serial = false;
+    trace("v2 text input activated; waiting for state serial\n");
+}
+
+static void input_method_v2_deactivate(void *data,
+        struct zwp_input_method_v2 *input_method) {
+    struct bridge *bridge = data;
+    if (bridge->input_method_v2 != input_method) return;
+    bridge->v2_active = false;
+    bridge->have_serial = false;
+    clear_pending_messages(bridge, "v2 text input deactivated");
+    trace("v2 text input deactivated\n");
+}
+
+static void input_method_v2_surrounding_text(void *data,
+        struct zwp_input_method_v2 *input_method, const char *text,
+        uint32_t cursor, uint32_t anchor) {
+    (void)data; (void)input_method; (void)text; (void)cursor; (void)anchor;
+}
+
+static void input_method_v2_text_change_cause(void *data,
+        struct zwp_input_method_v2 *input_method, uint32_t cause) {
+    (void)data; (void)input_method; (void)cause;
+}
+
+static void input_method_v2_content_type(void *data,
+        struct zwp_input_method_v2 *input_method, uint32_t hint,
+        uint32_t purpose) {
+    (void)data; (void)input_method; (void)hint; (void)purpose;
+}
+
+static void input_method_v2_done(void *data,
+        struct zwp_input_method_v2 *input_method) {
+    struct bridge *bridge = data;
+    if (bridge->input_method_v2 != input_method) return;
+    bridge->v2_serial++;
+    bridge->serial = bridge->v2_serial;
+    bridge->have_serial = bridge->v2_active;
+    trace("v2 text input state serial=%u; queue=%u\n", bridge->v2_serial,
+            bridge->queued_messages);
+    try_commit(bridge);
+}
+
+static void input_method_v2_unavailable(void *data,
+        struct zwp_input_method_v2 *input_method) {
+    struct bridge *bridge = data;
+    if (bridge->input_method_v2 != input_method) return;
+    bridge->v2_active = false;
+    bridge->have_serial = false;
+    clear_pending_messages(bridge, "v2 input method unavailable");
+    trace("v2 input method unavailable\n");
+}
+
+static const struct zwp_input_method_v2_listener input_method_v2_listener = {
+    .activate = input_method_v2_activate,
+    .deactivate = input_method_v2_deactivate,
+    .surrounding_text = input_method_v2_surrounding_text,
+    .text_change_cause = input_method_v2_text_change_cause,
+    .content_type = input_method_v2_content_type,
+    .done = input_method_v2_done,
+    .unavailable = input_method_v2_unavailable,
+};
+
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
         const char *interface, uint32_t version) {
     struct bridge *bridge = data;
-    if (strcmp(interface, zwp_input_method_v1_interface.name) || bridge->input_method || version < 1) return;
-    bridge->input_method = wl_registry_bind(registry, name, &zwp_input_method_v1_interface, 1);
-    if (!bridge->input_method) return;
-    bridge->saw_input_method = true;
-    zwp_input_method_v1_add_listener(bridge->input_method, &input_method_listener, bridge);
-    puts("bound zwp_input_method_v1 version=1"); fflush(stdout);
+    if (!strcmp(interface, wl_seat_interface.name) && !bridge->seat && version >= 1) {
+        bridge->seat = wl_registry_bind(registry, name, &wl_seat_interface, 1);
+        return;
+    }
+    if (!strcmp(interface, zwp_input_method_v1_interface.name) &&
+            !bridge->input_method && version >= 1) {
+        bridge->input_method = wl_registry_bind(registry, name,
+                &zwp_input_method_v1_interface, 1);
+        if (!bridge->input_method) return;
+        bridge->saw_input_method = true;
+        zwp_input_method_v1_add_listener(bridge->input_method,
+                &input_method_listener, bridge);
+        puts("bound zwp_input_method_v1 version=1"); fflush(stdout);
+        return;
+    }
+    if (!strcmp(interface, zwp_input_method_manager_v2_interface.name) &&
+            !bridge->input_method_manager_v2 && version >= 1) {
+        bridge->input_method_manager_v2 = wl_registry_bind(registry, name,
+                &zwp_input_method_manager_v2_interface, 1);
+        if (bridge->input_method_manager_v2) bridge->saw_input_method_v2 = true;
+    }
 }
 static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
     (void)data; (void)registry; (void)name;
@@ -267,7 +407,7 @@ static bool consume_client(int fd, unsigned char *buffer, size_t *used, struct b
             size_t length = header & ~CONTROL_FRAME_BIT;
             if (!length || length > MAX_COMMIT_BYTES) { fputs("invalid bridge message length\n", stderr); return false; }
             if (*used < 4 + length) break;
-            if (!bridge->context) {
+            if (!bridge->context && !bridge->v2_active) {
                 trace("dropped %s IME event: no active text input\n",
                         control ? "keysym" : "text");
             } else if (control) {
@@ -341,8 +481,23 @@ int main(int argc, char **argv) {
     if (!bridge.display) { fputs("unable to connect to WAYLAND_DISPLAY\n", stderr); return EXIT_FAILURE; }
     struct wl_registry *registry = wl_display_get_registry(bridge.display);
     wl_registry_add_listener(registry, &registry_listener, &bridge);
-    if (wl_display_roundtrip(bridge.display) < 0 || !bridge.saw_input_method) {
-        fputs("zwp_input_method_v1 is unavailable\n", stderr); wl_display_disconnect(bridge.display); return EXIT_FAILURE;
+    if (wl_display_roundtrip(bridge.display) < 0 ||
+            (!bridge.saw_input_method && !bridge.saw_input_method_v2)) {
+        fputs("no supported Wayland input-method protocol is available\n", stderr);
+        wl_display_disconnect(bridge.display); return EXIT_FAILURE;
+    }
+    if (!bridge.input_method && bridge.input_method_manager_v2 && bridge.seat) {
+        bridge.input_method_v2 = zwp_input_method_manager_v2_get_input_method(
+                bridge.input_method_manager_v2, bridge.seat);
+        if (bridge.input_method_v2) {
+            zwp_input_method_v2_add_listener(bridge.input_method_v2,
+                    &input_method_v2_listener, &bridge);
+            puts("bound zwp_input_method_v2 version=1"); fflush(stdout);
+        }
+    }
+    if (!bridge.input_method && !bridge.input_method_v2) {
+        fputs("unable to create a supported Wayland input-method object\n", stderr);
+        wl_display_disconnect(bridge.display); return EXIT_FAILURE;
     }
     int listener = -1, client = -1;
     const char *socket_path = NULL;
@@ -367,6 +522,10 @@ int main(int argc, char **argv) {
     if (listener >= 0) close(listener);
     if (socket_path) unlink(socket_path);
     if (bridge.context) zwp_input_method_context_v1_destroy(bridge.context);
+    if (bridge.input_method_v2) zwp_input_method_v2_destroy(bridge.input_method_v2);
+    if (bridge.input_method_manager_v2)
+        zwp_input_method_manager_v2_destroy(bridge.input_method_manager_v2);
+    if (bridge.seat) wl_seat_destroy(bridge.seat);
     clear_pending_messages(&bridge, "bridge shutdown");
     wl_display_disconnect(bridge.display);
     if (diagnostic_log) fclose(diagnostic_log);

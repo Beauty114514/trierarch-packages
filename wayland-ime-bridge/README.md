@@ -1,12 +1,15 @@
 # Trierarch Wayland IME bridge
 
 The bridge is a guest client of the nested compositor's
-`zwp_input_method_v1`. It accepts complete UTF-8 text commits from a local Unix
-stream socket and submits them with `commit_string` when KWin supplies a valid
-text-input state serial.
+`zwp_input_method_v1` and `zwp_input_method_v2`. It accepts complete UTF-8 text
+commits from a local Unix stream socket and submits them with `commit_string`
+when the compositor supplies a valid text-input state serial. KWin currently
+uses v1, while wlroots-based compositors such as Hyprland use v2.
 
-It deliberately supports committed text only: it has no preedit support, key
-forwarding, Android lifecycle integration, or socket authentication yet.
+It deliberately supports committed text only: it has no preedit support, Android
+lifecycle integration, or socket authentication yet. On v2, Backspace, Delete,
+Return, and Tab are translated to the corresponding text-input operations;
+other keysyms remain available through the existing functional keyboard mode.
 
 Build inside the guest:
 
