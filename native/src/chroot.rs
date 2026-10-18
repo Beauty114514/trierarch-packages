@@ -12,7 +12,6 @@ use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
-const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
 const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
 const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log";
 const GUEST_SESSION_SUPERVISOR: &str =
@@ -300,12 +299,17 @@ fn guest_command(
             String::new()
         } else {
             let bridge_script = format!(
-                "rm -f {ime_socket}; \\
-                 ( ime_wait=0; while [ ! -S {runtime}/{nested_socket} ] && [ \"$ime_wait\" -lt 200 ]; do sleep 0.05; ime_wait=$((ime_wait + 1)); done; \\
-                   [ -S {runtime}/{nested_socket} ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \\
-                   exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY={nested_socket} TRIERARCH_IME_LOG={ime_log} {bridge} --socket {ime_socket} )",
+                "rm -f {ime_socket}; ime_marker={runtime}/.trierarch-ime-start-$$; : > \"$ime_marker\"; \\
+                 ( ime_wait=0; nested_socket=; while [ \"$ime_wait\" -lt 400 ] && [ -z \"$nested_socket\" ]; do \\
+                       for candidate in {runtime}/wayland-[0-9]*; do \\
+                           [ -S \"$candidate\" ] || continue; [ \"$candidate\" -nt \"$ime_marker\" ] || continue; \\
+                           nested_socket=\"${{candidate##*/}}\"; break; \\
+                       done; \\
+                       [ -n \"$nested_socket\" ] || {{ sleep 0.05; ime_wait=$((ime_wait + 1)); }}; \\
+                   done; \\
+                   rm -f \"$ime_marker\"; [ -n \"$nested_socket\" ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \\
+                   exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY=\"$nested_socket\" TRIERARCH_IME_LOG={ime_log} {bridge} --socket {ime_socket} )",
                 runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
-                nested_socket = NESTED_WAYLAND_SOCKET,
                 ime_log = GUEST_WAYLAND_IME_LOG,
                 bridge = GUEST_WAYLAND_IME_BRIDGE,
                 ime_socket = GUEST_WAYLAND_IME_SOCKET,

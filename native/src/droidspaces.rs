@@ -9,7 +9,6 @@ const GUEST_X11_SOCKET: &str = "/tmp/.X11-unix/X0";
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
-const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/tmp/trierarch-wayland-host/ime/trierarch-wayland-ime-bridge";
 const GUEST_DMABUF_DEVICE_REPORT: &str = "/tmp/trierarch-wayland-host/ime/trierarch-dmabuf-device-report";
 const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
@@ -303,9 +302,8 @@ impl DroidspacesSpec {
             String::new()
         } else {
             format!(
-                "( ime_wait=0; while [ ! -S {runtime}/{nested} ] && [ \"$ime_wait\" -lt 200 ]; do sleep 0.05; ime_wait=$((ime_wait + 1)); done; [ -S {runtime}/{nested} ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; exec /usr/bin/env WAYLAND_DISPLAY={nested} TRIERARCH_IME_LOG={log} {bridge} --socket {socket} ) & ime_bridge=$!; trap 'kill ${{ime_bridge:-}} ${{session_supervisor:-}} >/dev/null 2>&1 || true' EXIT HUP INT TERM; ",
+                "( ime_marker={runtime}/.trierarch-ime-start-$$; : > \"$ime_marker\"; ime_wait=0; nested_socket=; while [ \"$ime_wait\" -lt 400 ] && [ -z \"$nested_socket\" ]; do for candidate in {runtime}/wayland-[0-9]*; do [ -S \"$candidate\" ] || continue; [ \"$candidate\" -nt \"$ime_marker\" ] || continue; nested_socket=\"${{candidate##*/}}\"; break; done; [ -n \"$nested_socket\" ] || {{ sleep 0.05; ime_wait=$((ime_wait + 1)); }}; done; rm -f \"$ime_marker\"; [ -n \"$nested_socket\" ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; exec /usr/bin/env WAYLAND_DISPLAY=\"$nested_socket\" TRIERARCH_IME_LOG={log} {bridge} --socket {socket} ) & ime_bridge=$!; trap 'kill ${{ime_bridge:-}} ${{session_supervisor:-}} >/dev/null 2>&1 || true' EXIT HUP INT TERM; ",
                 runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
-                nested = NESTED_WAYLAND_SOCKET,
                 bridge = GUEST_WAYLAND_IME_BRIDGE,
                 socket = GUEST_WAYLAND_IME_SOCKET,
                 log = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log",

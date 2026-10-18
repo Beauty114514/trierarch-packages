@@ -16,7 +16,6 @@ const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarc
 const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/dmabuf-feedback.sock";
 const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.sock";
 const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.log";
-const NESTED_WAYLAND_SOCKET: &str = "wayland-0";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
@@ -134,18 +133,20 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         let script = format!(
             "{reporter} --socket {feedback_socket} >/tmp/trierarch-dmabuf-device-report.log 2>&1 || true; \
              rm -f {socket}; ime_marker={runtime}/.trierarch-ime-start-$$; : > \"$ime_marker\"; \
-             ( ime_wait=0; while [ \"$ime_wait\" -lt 200 ]; do \
-                   [ -S {runtime}/{nested_socket} ] && [ {runtime}/{nested_socket} -nt \"$ime_marker\" ] && break; \
-                   sleep 0.05; ime_wait=$((ime_wait + 1)); \
+             ( ime_wait=0; nested_socket=; while [ \"$ime_wait\" -lt 400 ] && [ -z \"$nested_socket\" ]; do \
+                   for candidate in {runtime}/wayland-[0-9]*; do \
+                       [ -S \"$candidate\" ] || continue; [ \"$candidate\" -nt \"$ime_marker\" ] || continue; \
+                       nested_socket=\"${{candidate##*/}}\"; break; \
+                   done; \
+                   [ -n \"$nested_socket\" ] || {{ sleep 0.05; ime_wait=$((ime_wait + 1)); }}; \
                done; \
-               [ -S {runtime}/{nested_socket} ] && [ {runtime}/{nested_socket} -nt \"$ime_marker\" ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \
-               rm -f \"$ime_marker\"; exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY={nested_socket} TRIERARCH_IME_LOG={log} {bridge} --socket {socket} ) & ime_bridge=$!; \
+               rm -f \"$ime_marker\"; [ -n \"$nested_socket\" ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \
+               exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY=\"$nested_socket\" TRIERARCH_IME_LOG={log} {bridge} --socket {socket} ) & ime_bridge=$!; \
              trap 'rm -f \"$ime_marker\"; kill ${{ime_bridge:-}} >/dev/null 2>&1 || true' EXIT HUP INT TERM; \
              {launch}; status=$?; kill $ime_bridge >/dev/null 2>&1 || true; wait $ime_bridge >/dev/null 2>&1 || true; rm -f \"$ime_marker\" {socket}; exit $status",
             runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
             reporter = if wayland_dmabuf_device_report { GUEST_DMABUF_DEVICE_REPORT } else { "/bin/true" },
             feedback_socket = GUEST_DMABUF_FEEDBACK_SOCKET,
-            nested_socket = NESTED_WAYLAND_SOCKET,
             bridge = GUEST_WAYLAND_IME_BRIDGE,
             socket = GUEST_WAYLAND_IME_SOCKET,
             log = GUEST_WAYLAND_IME_LOG,
