@@ -219,6 +219,7 @@ static void surface_resource_destroy(struct wl_resource *resource) {
     if (surface->current) {
         struct shm_buffer *current = surface->current;
         surface->current = NULL;
+        trierarch_renderer_wait_idle(surface->server ? surface->server->renderer : NULL);
         trierarch_shm_buffer_release(current);
         if (current->egl_buffer) free(current);
     }
@@ -309,6 +310,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
             if (surface->current) {
                 struct shm_buffer *current = surface->current;
                 surface->current = NULL;
+                trierarch_renderer_wait_idle(surface->server ? surface->server->renderer : NULL);
                 trierarch_shm_buffer_release(current);
                 if (current->egl_buffer) free(current);
             }

@@ -46,6 +46,21 @@
 #ifndef EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT
 #define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT 0x3444
 #endif
+#ifndef EGL_SYNC_FENCE_KHR
+#define EGL_SYNC_FENCE_KHR 0x30F9
+#endif
+#ifndef EGL_SYNC_FLUSH_COMMANDS_BIT_KHR
+#define EGL_SYNC_FLUSH_COMMANDS_BIT_KHR 0x0001
+#endif
+#ifndef EGL_FOREVER_KHR
+#define EGL_FOREVER_KHR 0xFFFFFFFFFFFFFFFFULL
+#endif
+#ifndef EGL_NO_SYNC_KHR
+#define EGL_NO_SYNC_KHR ((EGLSyncKHR)0)
+#endif
+#ifndef EGL_ALREADY_SIGNALED_KHR
+#define EGL_ALREADY_SIGNALED_KHR 0x30F2
+#endif
 
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 
@@ -107,9 +122,11 @@ typedef void (*image_target_fn)(GLenum, GLeglImageOES);
 typedef EGLClientBuffer (*native_client_buffer_fn)(void *);
 typedef EGLSyncKHR (*create_sync_fn)(EGLDisplay, EGLenum, const EGLint *);
 typedef EGLBoolean (*destroy_sync_fn)(EGLDisplay, EGLSyncKHR);
+typedef EGLint (*client_wait_sync_fn)(EGLDisplay, EGLSyncKHR, EGLint, EGLTimeKHR);
 typedef EGLint (*dup_native_fence_fd_fn)(EGLDisplay, EGLSyncKHR);
 
 struct renderer_context {
+    struct wayland_server *server;
     EGLDisplay display;
     EGLSurface surface;
     EGLContext context;
@@ -126,7 +143,9 @@ struct renderer_context {
     native_client_buffer_fn native_client_buffer;
     create_sync_fn create_sync;
     destroy_sync_fn destroy_sync;
+    client_wait_sync_fn client_wait_sync;
     dup_native_fence_fd_fn dup_native_fence_fd;
+    EGLSyncKHR frame_fence;
     bool dmabuf_import_supported;
     uint64_t observed_surface_commits;
     uint64_t observed_surface_damage;
@@ -326,6 +345,7 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
             "eglGetNativeClientBufferANDROID");
     renderer->create_sync = (create_sync_fn)eglGetProcAddress("eglCreateSyncKHR");
     renderer->destroy_sync = (destroy_sync_fn)eglGetProcAddress("eglDestroySyncKHR");
+    renderer->client_wait_sync = (client_wait_sync_fn)eglGetProcAddress("eglClientWaitSyncKHR");
     renderer->dup_native_fence_fd = (dup_native_fence_fd_fn)eglGetProcAddress(
             "eglDupNativeFenceFDANDROID");
     const char *extensions = eglQueryString(renderer->display, EGL_EXTENSIONS);
@@ -343,6 +363,9 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
     } else {
         LOGI("EGL Wayland buffer import unavailable; SHM/dmabuf fallback remains active");
     }
+    LOGI("EGL frame synchronization %s",
+            renderer->create_sync && renderer->destroy_sync && renderer->client_wait_sync
+                    ? "available" : "unavailable");
     LOGI("EGL dma-buf import %s", renderer->dmabuf_import_supported ? "available" : "unavailable");
     eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
     eglQuerySurface(renderer->display, renderer->surface, EGL_HEIGHT, &renderer->height);
@@ -352,6 +375,8 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
     renderer->valid = renderer->background_program && renderer->texture_program && renderer->texture;
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (!renderer->valid) goto fail;
+    renderer->server = server;
+    server->renderer = renderer;
     return renderer;
 
 fail:
@@ -361,6 +386,12 @@ fail:
 
 void trierarch_renderer_destroy(struct renderer_context *renderer) {
     if (!renderer) return;
+    if (renderer->server && renderer->server->renderer == renderer)
+        renderer->server->renderer = NULL;
+    if (renderer->frame_fence != EGL_NO_SYNC_KHR && renderer->destroy_sync) {
+        renderer->destroy_sync(renderer->display, renderer->frame_fence);
+        renderer->frame_fence = EGL_NO_SYNC_KHR;
+    }
     if (renderer->display != EGL_NO_DISPLAY && renderer->surface != EGL_NO_SURFACE &&
             renderer->context != EGL_NO_CONTEXT) {
         eglMakeCurrent(renderer->display, renderer->surface, renderer->surface,
@@ -376,6 +407,18 @@ void trierarch_renderer_destroy(struct renderer_context *renderer) {
         eglTerminate(renderer->display);
     }
     free(renderer);
+}
+
+void trierarch_renderer_wait_idle(struct renderer_context *renderer) {
+    if (!renderer || renderer->frame_fence == EGL_NO_SYNC_KHR ||
+            !renderer->client_wait_sync || !renderer->destroy_sync)
+        return;
+    EGLint result = renderer->client_wait_sync(renderer->display, renderer->frame_fence,
+            EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, EGL_FOREVER_KHR);
+    if (result != EGL_CONDITION_SATISFIED_KHR && result != EGL_ALREADY_SIGNALED_KHR)
+        LOGE("EGL frame fence wait failed: result=0x%x", result);
+    renderer->destroy_sync(renderer->display, renderer->frame_fence);
+    renderer->frame_fence = EGL_NO_SYNC_KHR;
 }
 
 bool trierarch_renderer_valid(const struct renderer_context *renderer) {
@@ -587,6 +630,10 @@ static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) 
 bool trierarch_renderer_render(struct renderer_context *renderer,
         struct wayland_server *server) {
     if (!trierarch_renderer_valid(renderer) || !server) return false;
+    /* Keep at most one host frame in flight.  This is deliberately a fence
+     * wait, not glFinish: surface commits can release their previous buffer
+     * only after this GPU completion point has been reached. */
+    trierarch_renderer_wait_idle(renderer);
     uint64_t render_started_ns = monotonic_ns();
     bool surface_updated = renderer->observed_surface_commits != server->perf_surface_commit_generation
             || renderer->observed_surface_damage != server->perf_surface_damage_generation;
@@ -649,6 +696,15 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         trierarch_surface_requeue_frame_callbacks(server);
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
+    }
+    if (renderer->create_sync && renderer->destroy_sync && renderer->client_wait_sync) {
+        const EGLint attributes[] = { EGL_NONE };
+        renderer->frame_fence = renderer->create_sync(renderer->display,
+                EGL_SYNC_FENCE_KHR, attributes);
+        if (renderer->frame_fence == EGL_NO_SYNC_KHR)
+            LOGE("EGL frame fence creation failed");
+        else
+            glFlush();
     }
     trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

@@ -19,6 +19,8 @@
 #include "android-wlegl-server-protocol.h"
 #include "wlr-layer-shell-unstable-v1-server-protocol.h"
 
+struct renderer_context;
+
 /* Keep these in sync with the protocol behavior implemented by this host.
  * wl_resource versions are negotiated per client, so raising the advertised
  * maximum does not force older clients to use newer protocol requests. */
@@ -179,6 +181,7 @@ struct wayland_server {
     int32_t output_height;
     uint32_t next_serial;
     bool valid;
+    struct renderer_context *renderer;
     bool egl_buffer_supported;
     /* Guest-reported render-node identity for future v4 dma-buf feedback. */
     struct trierarch_dmabuf_feedback_device *dmabuf_feedback_device;
@@ -234,6 +237,7 @@ void trierarch_layer_shell_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
+void trierarch_renderer_wait_idle(struct renderer_context *renderer);
 void trierarch_layer_surface_commit(struct compositor_surface *surface);
 void trierarch_surface_send_configure(struct compositor_surface *surface);
 void trierarch_surface_latch_frame_callbacks(struct wayland_server *server);
