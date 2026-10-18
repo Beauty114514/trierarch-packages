@@ -17,6 +17,7 @@
 #include "fractional-scale-v1-server-protocol.h"
 #include "relative-pointer-unstable-v1-server-protocol.h"
 #include "android-wlegl-server-protocol.h"
+#include "wlr-layer-shell-unstable-v1-server-protocol.h"
 
 /* Keep these in sync with the protocol behavior implemented by this host.
  * wl_resource versions are negotiated per client, so raising the advertised
@@ -69,6 +70,7 @@ struct compositor_surface {
     struct wl_resource *subsurface;
     struct wl_resource *viewport;
     struct wl_resource *fractional_scale;
+    struct wl_resource *layer_surface;
     struct compositor_surface *parent;
     /* A subsurface is linked into its parent's children list.  The list order
      * is the client-defined stacking order from wl_subsurface.place_*(). */
@@ -82,6 +84,18 @@ struct compositor_surface {
     bool pending_detach;
     int32_t width;
     int32_t height;
+    int32_t layer_x;
+    int32_t layer_y;
+    uint32_t layer_kind;
+    uint32_t layer_anchor;
+    uint32_t layer_width;
+    uint32_t layer_height;
+    int32_t layer_exclusive_zone;
+    int32_t layer_margin_top;
+    int32_t layer_margin_right;
+    int32_t layer_margin_bottom;
+    int32_t layer_margin_left;
+    bool layer_configured;
     bool configured;
     bool mapped;
     bool is_cursor;
@@ -216,9 +230,11 @@ void trierarch_fractional_scale_bind(struct wl_client *, void *, uint32_t, uint3
 void trierarch_relative_pointer_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_android_wlegl_bind(struct wl_client *, void *, uint32_t, uint32_t);
 void trierarch_data_device_bind(struct wl_client *, void *, uint32_t, uint32_t);
+void trierarch_layer_shell_bind(struct wl_client *, void *, uint32_t, uint32_t);
 
 struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *resource);
 void trierarch_surface_commit(struct compositor_surface *surface);
+void trierarch_layer_surface_commit(struct compositor_surface *surface);
 void trierarch_surface_send_configure(struct compositor_surface *surface);
 void trierarch_surface_latch_frame_callbacks(struct wayland_server *server);
 void trierarch_surface_requeue_frame_callbacks(struct wayland_server *server);

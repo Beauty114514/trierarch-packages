@@ -160,6 +160,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             server, trierarch_android_wlegl_bind);
     wl_global_create(server->display, &wl_data_device_manager_interface, 3,
             server, trierarch_data_device_bind);
+    wl_global_create(server->display, &zwlr_layer_shell_v1_interface, 4,
+            server, trierarch_layer_shell_bind);
     server->valid = true;
     return server;
 }

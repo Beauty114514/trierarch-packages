@@ -334,6 +334,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     }
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
+    trierarch_layer_surface_commit(surface);
     if (surface->damaged || frame_callbacks_committed)
         trierarch_wayland_request_render(surface->server);
 }

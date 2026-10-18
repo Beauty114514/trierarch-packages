@@ -569,8 +569,10 @@ static void draw_surface_tree(struct renderer_context *renderer,
         int parent_x, int parent_y) {
     if (!surface || surface == server->cursor_surface || !surface->mapped || !surface->current)
         return;
-    int own_x = parent_x + (surface->parent ? surface->subsurface_x : 0);
-    int own_y = parent_y + (surface->parent ? surface->subsurface_y : 0);
+    int own_x = parent_x + (surface->parent ? surface->subsurface_x :
+            (surface->layer_surface ? surface->layer_x : 0));
+    int own_y = parent_y + (surface->parent ? surface->subsurface_y :
+            (surface->layer_surface ? surface->layer_y : 0));
     draw_surface(renderer, surface, own_x, own_y);
     struct compositor_surface *child;
     wl_list_for_each(child, &surface->children, subsurface_link)
@@ -609,11 +611,25 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     /* Plasma uses tiny viewport-scaled root buffers during startup. Draw those
      * first so they cannot cover the actual desktop surface. */
     wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface->parent && surface->layer_surface &&
+                surface->layer_kind == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+            draw_surface_tree(renderer, server, surface, 0, 0);
+    }
+    wl_list_for_each(surface, &server->surfaces, link) {
         if (!surface->parent && surface != server->cursor_surface && is_tiny_viewport_underlay(surface))
             draw_surface_tree(renderer, server, surface, 0, 0);
     }
     wl_list_for_each(surface, &server->surfaces, link) {
-        if (!surface->parent && surface != server->cursor_surface && !is_tiny_viewport_underlay(surface))
+        if (!surface->parent && surface != server->cursor_surface &&
+                (!surface->layer_surface ||
+                 surface->layer_kind == ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM) &&
+                !is_tiny_viewport_underlay(surface))
+            draw_surface_tree(renderer, server, surface, 0, 0);
+    }
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface->parent && surface->layer_surface &&
+                (surface->layer_kind == ZWLR_LAYER_SHELL_V1_LAYER_TOP ||
+                 surface->layer_kind == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY))
             draw_surface_tree(renderer, server, surface, 0, 0);
     }
     if (server->cursor_visible && server->cursor_surface && server->cursor_surface->mapped &&
