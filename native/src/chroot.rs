@@ -19,6 +19,8 @@ const GUEST_SESSION_SUPERVISOR: &str =
     "/opt/trierarch/wayland-ime/trierarch-session-supervisor";
 const GUEST_SESSION_SUPERVISOR_LOG: &str =
     "/tmp/trierarch-wayland-host/ime/trierarch-session-supervisor.log";
+const GUEST_CHROOT_SUPERVISOR: &str =
+    "/opt/trierarch/chroot-supervisor/trierarch-session-supervisor";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
 const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarch-dmabuf-device-report";
@@ -48,6 +50,8 @@ pub struct ChrootSpec {
     pub graphics_environment: Vec<String>,
     /// App-private source copied into the rootfs by the privileged launcher.
     pub udev_compatibility_library: PathBuf,
+    /// Guest supervisor which owns the chroot session lifecycle.
+    pub chroot_supervisor: PathBuf,
 }
 
 impl ChrootSpec {
@@ -74,6 +78,13 @@ impl ChrootSpec {
         validate_argv(&self.launch_argv)?;
         validate_environment(&self.graphics_environment)?;
         validate_optional_file(&self.wayland_ime_bridge, "Wayland IME bridge")?;
+        if self.chroot_supervisor.as_os_str().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "chroot supervisor is required",
+            ));
+        }
+        validate_optional_file(&self.chroot_supervisor, "chroot supervisor")?;
         if !self.wayland_ime_bridge.as_os_str().is_empty()
             && self.wayland_runtime_directory.as_os_str().is_empty()
         {
@@ -98,7 +109,9 @@ impl ChrootSpec {
                 ),
             ));
         }
-        let guest_command = guest_command(self, x11, wayland);
+        let owner_pid = std::process::id();
+        let owner_start_time = process_start_time(owner_pid)?;
+        let guest_command = guest_command(self, x11, wayland, owner_pid, owner_start_time);
         let command = format!(
             "export HOME=/root TERM=xterm-256color LANG=C.UTF-8 USER=root \\
              LOGNAME=root TMP=/tmp TMPDIR=/tmp MAIL=/var/mail/root \\
@@ -120,7 +133,13 @@ impl ChrootSpec {
     }
 }
 
-fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
+fn guest_command(
+    spec: &ChrootSpec,
+    x11: bool,
+    wayland: bool,
+    owner_pid: u32,
+    owner_start_time: u64,
+) -> String {
     let command = if spec.launch_argv.is_empty() {
         format!("{} -i", shell_quote(&spec.shell))
     } else {
@@ -146,6 +165,18 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             destination = shell_quote(&destination),
         )
     };
+    let chroot_supervisor = spec
+        .rootfs
+        .join(GUEST_CHROOT_SUPERVISOR.trim_start_matches('/'));
+    let chroot_supervisor_parent = chroot_supervisor
+        .parent()
+        .expect("chroot supervisor has a parent");
+    let install_chroot_supervisor = format!(
+        "test -f {source} || {{ printf '%s\\n' 'Trierarch chroot supervisor is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
+        source = shell_quote(&spec.chroot_supervisor),
+        parent = shell_quote(chroot_supervisor_parent),
+        destination = shell_quote(&chroot_supervisor),
+    );
     if wayland && !spec.udev_compatibility_library.as_os_str().is_empty() {
         environment.push(format!("KDEWM={GUEST_KWIN_WAYLAND_WRAPPER}"));
     }
@@ -214,12 +245,17 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; \\
-             cleanup() {{ {system_cleanup} }}; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_chroot_supervisor=; \\
+             cleanup() {{ if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; {system_cleanup} }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
-             {install_compatibility}{install_ime_bridge}{system_mounts} \\
+             {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts} \\
+             /system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
              /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             rootfs = shell_quote(&spec.rootfs),
+            chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
+            install_chroot_supervisor = install_chroot_supervisor,
+            owner_pid = owner_pid,
+            owner_start_time = owner_start_time,
         );
     }
 
@@ -303,10 +339,11 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; trierarch_session_supervisor=; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; trierarch_session_supervisor=; trierarch_chroot_supervisor=; \\
              cleanup() {{ \\
                  if [ -n \"$trierarch_ime_bridge\" ]; then kill \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; wait \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; fi; \\
                  if [ -n \"$trierarch_session_supervisor\" ]; then kill \"$trierarch_session_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_session_supervisor\" >/dev/null 2>&1 || true; fi; \\
+                 if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; \\
                  /system/bin/toybox rm -f {ime_socket} >/dev/null 2>&1 || true; \\
                  /system/bin/toybox rm -rf {compatibility_directory} >/dev/null 2>&1 || true; \\
                  if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
@@ -316,14 +353,15 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
              }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
              {system_mounts} \\
-             {install_compatibility}{install_ime_bridge}{install_session_supervisor}{install_dmabuf_device_report}{install_kwin_wrapper} \\
+             {install_compatibility}{install_ime_bridge}{install_session_supervisor}{install_dmabuf_device_report}{install_kwin_wrapper}{install_chroot_supervisor} \\
               mkdir -p {runtime_target} || exit $?; \\
              if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
              {install_virgl} \\
              /system/bin/toybox mkdir -p {guest_runtime} && /system/bin/toybox chmod 700 {guest_runtime} || exit $?; \\
              if [ -e {guest_socket} ] || [ -L {guest_socket} ]; then /system/bin/toybox rm -f {guest_socket} || exit $?; fi; \\
              /system/bin/toybox ln -s {host_socket} {guest_socket} || exit $?; trierarch_wayland_socket_link=1; \\
-             {report_dmabuf_device}{start_ime_bridge}{start_session_supervisor}/system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
+             {report_dmabuf_device}{start_ime_bridge}{start_session_supervisor}/system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
+             /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
             runtime_target = shell_quote(&runtime_target),
             guest_runtime = shell_quote(&guest_runtime),
@@ -338,6 +376,10 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
             rootfs = shell_quote(&spec.rootfs),
             start_ime_bridge = start_ime_bridge,
             start_session_supervisor = start_session_supervisor,
+            chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
+            install_chroot_supervisor = install_chroot_supervisor,
+            owner_pid = owner_pid,
+            owner_start_time = owner_start_time,
             report_dmabuf_device = report_dmabuf_device,
             install_compatibility = install_compatibility,
             install_ime_bridge = install_ime_bridge,
@@ -369,18 +411,20 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
     let system_mounts = prepare_system_mounts(&spec.rootfs);
     let system_cleanup = cleanup_system_mounts(&spec.rootfs);
     format!(
-        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; trierarch_mount_virgl=0; \\
+        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; trierarch_mount_virgl=0; trierarch_chroot_supervisor=; \\
          cleanup() {{ \\
+             if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; \\
              if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
              if [ \"$trierarch_mount_x11\" = 1 ]; then /system/bin/toybox umount -l {target} >/dev/null 2>&1 || true; fi; \\
              {system_cleanup} \\
          }}; \\
          trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
          test -S {socket} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
-         {install_compatibility}{install_ime_bridge}{system_mounts} \\
+         {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts} \\
          mkdir -p {target} || exit $?; \\
          if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source} {target} || exit $?; trierarch_mount_x11=1; fi; \\
          {install_virgl} \\
+         /system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
          /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
         socket = shell_quote(&source),
         source = shell_quote(&spec.x11_socket_directory),
@@ -390,6 +434,10 @@ fn guest_command(spec: &ChrootSpec, x11: bool, wayland: bool) -> String {
         rootfs = shell_quote(&spec.rootfs),
         install_compatibility = install_compatibility,
         install_ime_bridge = install_ime_bridge,
+        install_chroot_supervisor = install_chroot_supervisor,
+        chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
+        owner_pid = owner_pid,
+        owner_start_time = owner_start_time,
         system_mounts = system_mounts,
         system_cleanup = system_cleanup,
     )
@@ -559,6 +607,19 @@ fn validate_guest_path(path: &Path, name: &str) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn process_start_time(pid: u32) -> io::Result<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let (_, fields) = stat.rsplit_once(") ").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "invalid process stat format")
+    })?;
+    fields
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing process start time"))?
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid process start time"))
 }
 
 fn validate_optional_file(path: &Path, name: &str) -> io::Result<()> {

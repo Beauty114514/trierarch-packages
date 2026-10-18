@@ -14,6 +14,21 @@ It does not match X11 sessions, a standalone KWin, or non-Plasma Wayland
 desktops. A shell it starts is stopped when the supervisor receives the parent
 session's termination signal.
 
+For chroot lifecycle ownership, the same executable has a dedicated watch
+mode. It watches the owning Trierarch process's PID and start time, then
+terminates the PTY session process group when that owner disappears:
+
+```sh
+dist/trierarch-session-supervisor \
+  --owner-pid "$TRIERARCH_PID" \
+  --owner-start-time "$TRIERARCH_START_TIME" \
+  --pgid "$SESSION_PGID"
+```
+
+This mode does not inspect desktop processes, use cgroups, or scan unrelated
+processes; it reads only the owner PID's `/proc/PID/stat` record to detect PID
+reuse safely.
+
 ```sh
 dist/trierarch-session-supervisor \
   --runtime-dir /tmp/trierarch-wayland-user \

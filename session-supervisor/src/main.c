@@ -228,6 +228,44 @@ static void free_environment(char **environment) {
     free(environment);
 }
 
+static bool owner_is_alive(pid_t owner_pid, unsigned long long owner_start_time) {
+    char path[64], line[512];
+    snprintf(path, sizeof(path), "/proc/%ld/stat", (long)owner_pid);
+    FILE *file = fopen(path, "r");
+    if (!file || !fgets(line, sizeof(line), file)) {
+        if (file) fclose(file);
+        return false;
+    }
+    fclose(file);
+    char *fields = strrchr(line, ')');
+    if (!fields) return false;
+    fields += 2;
+    char *cursor = fields;
+    for (int index = 0; index < 20; index++) {
+        char *end = NULL;
+        unsigned long long value = strtoull(cursor, &end, 10);
+        if (index == 19) return value == owner_start_time;
+        if (!end || *end == '\0') return false;
+        cursor = end + 1;
+        while (*cursor == ' ') cursor++;
+    }
+    return false;
+}
+
+static int watch_owner(pid_t owner_pid, unsigned long long owner_start_time, pid_t session_pgid) {
+    while (owner_is_alive(owner_pid, owner_start_time)) sleep_milliseconds(POLL_MS);
+
+    /* The Android App process disappeared or its PID was reused. The
+     * supervisor is independent from the shell, so it can terminate the whole
+     * chroot session even after Magisk su reparents that shell to magiskd. */
+    if (session_pgid > 1) {
+        kill(-session_pgid, SIGTERM);
+        sleep_milliseconds(250);
+        kill(-session_pgid, SIGKILL);
+    }
+    return 0;
+}
+
 static pid_t launch_plasmashell(FILE *log, pid_t plasma_session, const char *socket) {
     bool has_dbus = false, has_runtime = false;
     char **environment = session_environment(plasma_session, socket, &has_dbus, &has_runtime);
@@ -292,14 +330,27 @@ static long parse_milliseconds(const char *value) {
 int main(int argc, char **argv) {
     const char *runtime_directory = NULL, *log_path = NULL;
     long observe_milliseconds = DEFAULT_OBSERVE_MS;
+    pid_t owner_pid = 0;
+    unsigned long long owner_start_time = 0;
+    pid_t session_pgid = 0;
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--runtime-dir") == 0 && index + 1 < argc) runtime_directory = argv[++index];
         else if (strcmp(argv[index], "--log") == 0 && index + 1 < argc) log_path = argv[++index];
         else if (strcmp(argv[index], "--observe-ms") == 0 && index + 1 < argc) observe_milliseconds = parse_milliseconds(argv[++index]);
+        else if (strcmp(argv[index], "--owner-pid") == 0 && index + 1 < argc) owner_pid = (pid_t)strtol(argv[++index], NULL, 10);
+        else if (strcmp(argv[index], "--owner-start-time") == 0 && index + 1 < argc) owner_start_time = strtoull(argv[++index], NULL, 10);
+        else if (strcmp(argv[index], "--pgid") == 0 && index + 1 < argc) session_pgid = (pid_t)strtol(argv[++index], NULL, 10);
         else {
-            fprintf(stderr, "usage: %s --runtime-dir DIRECTORY --log FILE [--observe-ms 0..60000]\n", argv[0]);
+            fprintf(stderr, "usage: %s --runtime-dir DIRECTORY --log FILE [--observe-ms 0..60000] | --watch-fd FD --pgid PGID\n", argv[0]);
             return 2;
         }
+    }
+    if (owner_pid > 0 || owner_start_time > 0 || session_pgid > 0) {
+        if (owner_pid <= 1 || owner_start_time == 0 || session_pgid <= 1) {
+            fprintf(stderr, "--owner-pid, --owner-start-time, and --pgid are required together\n");
+            return 2;
+        }
+        return watch_owner(owner_pid, owner_start_time, session_pgid);
     }
     if (!runtime_directory || !log_path || observe_milliseconds < 0) {
         fprintf(stderr, "runtime directory, log file, and valid observation duration are required\n");
