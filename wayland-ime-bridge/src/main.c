@@ -129,7 +129,13 @@ static void try_commit(struct bridge *bridge) {
                         strlen(message->value.text), bridge->v2_serial,
                         bridge->queued_messages);
                 free(message->value.text);
+                committed++;
+            } else if (message->value.keysym.state != KEY_STATE_PRESSED) {
+                /* v2 has text operations, not key press/release events. */
+                trace("v2 ignored keysym release=0x%x; queue=%u\n",
+                        message->value.keysym.sym, bridge->queued_messages);
             } else {
+                bool handled = true;
                 switch (message->value.keysym.sym) {
                 case 0xff08: /* XK_BackSpace */
                     zwp_input_method_v2_delete_surrounding_text(
@@ -146,16 +152,20 @@ static void try_commit(struct bridge *bridge) {
                     zwp_input_method_v2_commit_string(bridge->input_method_v2, "\t");
                     break;
                 default:
+                    handled = false;
                     trace("dropped v2 keysym=0x%x; protocol has no keysym request\n",
                             message->value.keysym.sym);
                     break;
                 }
-                trace("v2 handled keysym=0x%x; queue=%u\n",
-                        message->value.keysym.sym, bridge->queued_messages);
+                if (handled) {
+                    trace("v2 handled pressed keysym=0x%x; queue=%u\n",
+                            message->value.keysym.sym, bridge->queued_messages);
+                    committed++;
+                }
             }
             free(message);
-            committed++;
         }
+        if (committed == 0) return;
         zwp_input_method_v2_commit(bridge->input_method_v2, bridge->v2_serial);
         bridge->sent = true;
         if (wl_display_flush(bridge->display) < 0 && errno != EAGAIN) {
