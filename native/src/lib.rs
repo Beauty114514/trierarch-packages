@@ -12,6 +12,7 @@ mod pty;
 pub mod cli;
 pub mod rootfs;
 mod session;
+mod wayland_ime_provider;
 mod virgl;
 
 #[cfg(target_os = "android")]

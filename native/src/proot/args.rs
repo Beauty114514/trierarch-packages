@@ -4,18 +4,19 @@
 //! old desktop-only mounts, host services and rootfs installer removed.
 
 use super::ProotSpec;
+use crate::wayland_ime_provider::{GUEST_PROVIDER_DESKTOP_PATH, PROVIDER_DESKTOP_ENTRY};
 use anyhow::{Context, Result};
 use std::ffi::CString;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
-const GUEST_WAYLAND_IME_DIRECTORY: &str = "/tmp/trierarch-wayland-ime-host";
-const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const GUEST_WAYLAND_IME_DIRECTORY: &str = "/tmp/trierarch-wayland-host/ime";
+const GUEST_WAYLAND_IME_BRIDGE: &str = crate::wayland_ime_provider::GUEST_PROVIDER_BRIDGE_PATH;
 const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarch-dmabuf-device-report";
-const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/dmabuf-feedback.sock";
-const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.sock";
-const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-ime-host/trierarch-ime.log";
+const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/dmabuf-feedback.sock";
+const GUEST_WAYLAND_IME_SOCKET: &str = crate::wayland_ime_provider::GUEST_PROVIDER_SOCKET_PATH;
+const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
@@ -283,6 +284,32 @@ fn prepare_wayland_ime_bridge(spec: &ProotSpec) -> Result<bool> {
     std::fs::rename(&temporary, &destination).with_context(|| {
         format!("install guest IME bridge at {}", destination.display())
     })?;
+    let desktop_path = spec
+        .rootfs
+        .join(GUEST_PROVIDER_DESKTOP_PATH.trim_start_matches('/'));
+    let desktop_parent = desktop_path
+        .parent()
+        .expect("IME provider desktop file has a parent");
+    std::fs::create_dir_all(desktop_parent).with_context(|| {
+        format!(
+            "create guest applications directory: {}",
+            desktop_parent.display()
+        )
+    })?;
+    std::fs::write(&desktop_path, PROVIDER_DESKTOP_ENTRY).with_context(|| {
+        format!(
+            "install KWin IME provider entry at {}",
+            desktop_path.display()
+        )
+    })?;
+    std::fs::set_permissions(&desktop_path, std::fs::Permissions::from_mode(0o644)).with_context(
+        || {
+            format!(
+                "set KWin IME provider entry permissions: {}",
+                desktop_path.display()
+            )
+        },
+    )?;
     Ok(true)
 }
 

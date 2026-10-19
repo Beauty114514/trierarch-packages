@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Trierarch Wayland Input Method
+GenericName=Input Method
+Comment=Forward Android keyboard text to the active Wayland text input
+Exec=/usr/bin/env TRIERARCH_IME_LOG=/tmp/trierarch-wayland-host/ime/trierarch-ime.log /opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge --socket /tmp/trierarch-wayland-host/ime/trierarch-ime.sock
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+X-KDE-Wayland-VirtualKeyboard=true

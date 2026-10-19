@@ -5,6 +5,7 @@
 //! each session, then removes only the mounts it created.
 
 use crate::LaunchSpec;
+use crate::wayland_ime_provider::{GUEST_PROVIDER_DESKTOP_PATH, PROVIDER_DESKTOP_ENTRY};
 use std::io;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
-const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
+const GUEST_WAYLAND_IME_SOCKET: &str = crate::wayland_ime_provider::GUEST_PROVIDER_SOCKET_PATH;
 const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log";
 const GUEST_SESSION_SUPERVISOR: &str =
     "/opt/trierarch/wayland-ime/trierarch-session-supervisor";
@@ -21,7 +22,7 @@ const GUEST_SESSION_SUPERVISOR_LOG: &str =
 const GUEST_CHROOT_SUPERVISOR: &str =
     "/opt/trierarch/chroot-supervisor/trierarch-session-supervisor";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
-const GUEST_WAYLAND_IME_BRIDGE: &str = "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
+const GUEST_WAYLAND_IME_BRIDGE: &str = crate::wayland_ime_provider::GUEST_PROVIDER_BRIDGE_PATH;
 const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarch-dmabuf-device-report";
 const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
 const WAYLAND_SOCKET: &str = "wayland-trierarch";
@@ -185,11 +186,16 @@ fn guest_command(
     } else {
         let destination = spec.rootfs.join(GUEST_WAYLAND_IME_BRIDGE.trim_start_matches('/'));
         let parent = destination.parent().expect("IME bridge has a parent");
+        let desktop = spec.rootfs.join(GUEST_PROVIDER_DESKTOP_PATH.trim_start_matches('/'));
+        let desktop_parent = desktop.parent().expect("IME provider desktop entry has a parent");
         format!(
-            "test -f {source} || {{ printf '%s\\n' 'Trierarch Wayland IME bridge is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
+            "test -f {source} || {{ printf '%s\\n' 'Trierarch Wayland IME bridge is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} {desktop_parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} && printf '%s' {desktop_entry} > {desktop} && /system/bin/toybox chmod 644 {desktop} || exit $?; ",
             source = shell_quote(&spec.wayland_ime_bridge),
             parent = shell_quote(parent),
             destination = shell_quote(&destination),
+            desktop_parent = shell_quote(desktop_parent),
+            desktop_entry = crate::privileged::shell_quote(Path::new(PROVIDER_DESKTOP_ENTRY)),
+            desktop = shell_quote(&desktop),
         )
     };
     let install_session_supervisor = if spec.wayland_ime_bridge.as_os_str().is_empty() {

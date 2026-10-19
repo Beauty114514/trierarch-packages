@@ -1,6 +1,9 @@
 //! Start and attach Trierarch's PTY to a DroidSpaces container.
 
 use crate::{privileged, LaunchSpec};
+use crate::wayland_ime_provider::{
+    GUEST_PROVIDER_BRIDGE_PATH, GUEST_PROVIDER_DESKTOP_PATH, PROVIDER_DESKTOP_ENTRY,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +15,7 @@ const WAYLAND_SOCKET: &str = "wayland-trierarch";
 const GUEST_WAYLAND_IME_BRIDGE: &str = "/tmp/trierarch-wayland-host/ime/trierarch-wayland-ime-bridge";
 const GUEST_DMABUF_DEVICE_REPORT: &str = "/tmp/trierarch-wayland-host/ime/trierarch-dmabuf-device-report";
 const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
-const GUEST_WAYLAND_IME_SOCKET: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
+const GUEST_WAYLAND_IME_SOCKET: &str = crate::wayland_ime_provider::GUEST_PROVIDER_SOCKET_PATH;
 const GUEST_SESSION_SUPERVISOR: &str = "/tmp/trierarch-wayland-host/ime/trierarch-session-supervisor";
 const GUEST_SESSION_SUPERVISOR_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-session-supervisor.log";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
@@ -123,10 +126,10 @@ impl DroidspacesSpec {
             self.x11_command()
         };
         // Android app-private bind mounts retain their app-UID permissions.
-        // Copy the compatibility library while DroidSpaces is root, before a
-        // graphical command switches to the configured guest user.
-        let prepare_compatibility = self.compatibility_command();
-        let run = format!("{prepare_compatibility}{run}");
+        // Install runtime assets and the KWin provider entry while DroidSpaces
+        // is root, before a graphical command switches to the guest user.
+        let prepare_runtime = self.runtime_setup_command();
+        let run = format!("{prepare_runtime}{run}");
 
         // `run` only joins an existing namespace. A bind option supplied to
         // it is ignored by DroidSpaces, so Trierarch owns the lifecycle:
@@ -431,15 +434,38 @@ impl DroidspacesSpec {
         )
     }
 
-    fn compatibility_command(&self) -> String {
-        if self.udev_compatibility_library.is_empty() {
+    fn runtime_setup_command(&self) -> String {
+        let mut setup = Vec::new();
+        if !self.udev_compatibility_library.is_empty() {
+            setup.push(self.compatibility_prelude());
+        }
+        if !self.wayland_ime_bridge.is_empty() {
+            let desktop_entry = privileged::shell_quote(Path::new(PROVIDER_DESKTOP_ENTRY));
+            let bridge_parent = Path::new(GUEST_PROVIDER_BRIDGE_PATH)
+                .parent()
+                .expect("provider bridge has a parent");
+            let desktop_parent = Path::new(GUEST_PROVIDER_DESKTOP_PATH)
+                .parent()
+                .expect("provider desktop entry has a parent");
+            setup.push(format!(
+                "test -x {source} || {{ printf '%s\\n' 'Trierarch Wayland IME bridge is missing.' >&2; exit 126; }}; \
+                 mkdir -p {bridge_parent} {desktop_parent} && cp {source} {bridge} && chmod 755 {bridge} && \
+                 printf '%s' {desktop_entry} > {desktop} && chmod 644 {desktop} || exit $?; ",
+                source = GUEST_WAYLAND_IME_BRIDGE,
+                bridge_parent = bridge_parent.display(),
+                desktop_parent = desktop_parent.display(),
+                bridge = GUEST_PROVIDER_BRIDGE_PATH,
+                desktop = GUEST_PROVIDER_DESKTOP_PATH,
+            ));
+        }
+        if setup.is_empty() {
             return String::new();
         }
         format!(
             "{} --name={} run /bin/sh -lc {} || exit $?; ",
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
-            privileged::shell_quote(&self.compatibility_prelude()),
+            privileged::shell_quote(&setup.join(" ")),
         )
     }
 }
@@ -502,4 +528,31 @@ fn validate_optional_file(value: &str, name: &str) -> io::Result<()> {
             format!("{name} is not accessible: {}", path.display())));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installs_kwin_provider_without_enabling_udev_compatibility() {
+        let spec = DroidspacesSpec {
+            container: "arch-test".into(),
+            user: "tester".into(),
+            x11_socket_directory: String::new(),
+            wayland_runtime_directory: String::new(),
+            wayland_ime_bridge: "/tmp/ime/trierarch-wayland-ime-bridge".into(),
+            virgl_runtime_directory: String::new(),
+            udev_compatibility_library: String::new(),
+            launch_argv: Vec::new(),
+            graphics_environment: Vec::new(),
+        };
+
+        let command = spec.runtime_setup_command();
+        assert!(command.contains(" run /bin/sh -lc "));
+        assert!(command.contains(GUEST_PROVIDER_BRIDGE_PATH));
+        assert!(command.contains(GUEST_PROVIDER_DESKTOP_PATH));
+        assert!(command.contains("X-KDE-Wayland-VirtualKeyboard=true"));
+        assert!(!command.contains("LD_PRELOAD"));
+    }
 }

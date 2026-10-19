@@ -487,6 +487,10 @@ int main(int argc, char **argv) {
         if (!text || !enqueue_text(&bridge, text)) return EXIT_FAILURE;
     }
     signal(SIGINT, stop); signal(SIGTERM, stop);
+    if (getenv("WAYLAND_SOCKET"))
+        trace("connecting through inherited WAYLAND_SOCKET\n");
+    else
+        trace("connecting through WAYLAND_DISPLAY\n");
     bridge.display = wl_display_connect(NULL);
     if (!bridge.display) { fputs("unable to connect to WAYLAND_DISPLAY\n", stderr); return EXIT_FAILURE; }
     struct wl_registry *registry = wl_display_get_registry(bridge.display);
