@@ -47,12 +47,21 @@ For a DroidSpaces profile with `graphics.renderer = "virgl"`, the app exposes
 a per-session vtest socket and launches the guest with the equivalent of:
 
 ```bash
+LIBGL_ALWAYS_SOFTWARE=1
 GALLIUM_DRIVER=virpipe
-MESA_LOADER_DRIVER_OVERRIDE=virpipe
-LIBGL_ALWAYS_SOFTWARE=0
 VTEST_SOCKET_NAME=/path/to/vtest.sock
 VTEST_RENDERER_SOCKET_NAME=/path/to/vtest.sock
 ```
 
-Qt Quick then sees a normal EGL/OpenGL implementation. It does not need a
-VirGL-specific Qt backend.
+This is Mesa's vtest/virpipe mode: `virpipe` sends Gallium rendering commands
+to the host renderer over the vtest socket. `LIBGL_ALWAYS_SOFTWARE=1` selects
+the software DRI frontend used by this mode; it does not mean the host renderer
+falls back to guest-side llvmpipe. Mesa's documented vtest path reads rendered
+results back and copies them to the client drawable, so this guest contract
+does not provide direct dma-buf presentation to the Wayland compositor.
+
+Do not set `MESA_LOADER_DRIVER_OVERRIDE=virpipe` here. That variable selects a
+Mesa driver binary, while `virpipe` is the Gallium driver selected through
+`GALLIUM_DRIVER`. Qt Quick can use its normal EGL/OpenGL integration; it does
+not need a VirGL-specific Qt backend. `QT_QUICK_BACKEND=software`, when set in
+the profile, is a separate Qt Quick choice and does not change KWin's renderer.
