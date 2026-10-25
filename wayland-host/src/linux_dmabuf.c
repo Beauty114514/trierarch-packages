@@ -265,22 +265,49 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
         { TRIERARCH_DRM_FORMAT_XBGR8888, 0, 0 },
         { TRIERARCH_DRM_FORMAT_ABGR8888, 0, 0 },
     };
-    bool format_table_sent = false;
+    bool format_table_prepared = false;
 #ifdef SYS_memfd_create
     int fd = (int)syscall(SYS_memfd_create, "trierarch-dmabuf-feedback", 0);
-    if (fd >= 0 && ftruncate(fd, (off_t)sizeof(entries)) == 0 &&
-            write(fd, entries, sizeof(entries)) == (ssize_t)sizeof(entries)) {
-        lseek(fd, 0, SEEK_SET);
-        zwp_linux_dmabuf_feedback_v1_send_format_table(resource, fd,
-                (uint32_t)sizeof(entries));
-        format_table_sent = true;
+    if (fd < 0) {
+        LOGW("dmabuf trace feedback memfd-create failed errno=%d", errno);
+    } else if (ftruncate(fd, (off_t)sizeof(entries)) != 0) {
+        LOGW("dmabuf trace feedback ftruncate failed fd=%d errno=%d", fd, errno);
         close(fd);
-    } else if (fd >= 0) {
-        close(fd);
+    } else {
+        ssize_t written = write(fd, entries, sizeof(entries));
+        if (written != (ssize_t)sizeof(entries)) {
+            LOGW("dmabuf trace feedback write failed fd=%d bytes=%zd expected=%zu errno=%d",
+                    fd, written, sizeof(entries), errno);
+            close(fd);
+        } else {
+            off_t offset = lseek(fd, 0, SEEK_SET);
+            if (offset != 0) {
+                LOGW("dmabuf trace feedback rewind failed fd=%d offset=%lld errno=%d",
+                        fd, (long long)offset, errno);
+                close(fd);
+            } else {
+                errno = 0;
+                int flags_before = fcntl(fd, F_GETFD);
+                int errno_before = errno;
+                LOGI("dmabuf trace feedback fd-before-event fd=%d flags=%d errno=%d size=%zu",
+                        fd, flags_before, errno_before, sizeof(entries));
+                if (flags_before >= 0) {
+                    zwp_linux_dmabuf_feedback_v1_send_format_table(resource, fd,
+                            (uint32_t)sizeof(entries));
+                    errno = 0;
+                    int flags_after = fcntl(fd, F_GETFD);
+                    int errno_after = errno;
+                    LOGI("dmabuf trace feedback event-call-returned fd=%d flags-after=%d errno-after=%d",
+                            fd, flags_after, errno_after);
+                    format_table_prepared = true;
+                }
+                close(fd);
+            }
+        }
     }
 #endif
-    if (!format_table_sent)
-        LOGW("dmabuf trace feedback format-table unavailable");
+    if (!format_table_prepared)
+        LOGW("dmabuf trace feedback format-table not prepared for event");
     struct wl_array device;
     wl_array_init(&device);
     void *device_data = wl_array_add(&device, sizeof(main_device));
@@ -297,8 +324,8 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
     }
     zwp_linux_dmabuf_feedback_v1_send_tranche_done(resource);
     zwp_linux_dmabuf_feedback_v1_send_done(resource);
-    LOGI("dmabuf trace feedback events queued format-table=%d tranches=1 done=1",
-            format_table_sent);
+    LOGI("dmabuf trace feedback metadata queued table-prepared=%d tranches=1 done=1; event API has no send result",
+            format_table_prepared);
     wl_array_release(&indices);
     wl_array_release(&device);
 }

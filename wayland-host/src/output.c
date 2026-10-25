@@ -1,6 +1,10 @@
 #include "server_internal.h"
 
+#include <android/log.h>
 #include <stdlib.h>
+#include <sys/types.h>
+
+#define TRIERARCH_OUTPUT_TAG "TrierarchWayland"
 
 struct output_resource {
     struct wl_list link;
@@ -63,6 +67,18 @@ void trierarch_output_bind(struct wl_client *client, void *data,
     wl_resource_set_implementation(resource, &output_impl, output,
             output_resource_destroy);
     send_output_state(server, resource);
+
+    /* A wl_output may be bound after a surface's initial commit. In that case,
+     * report the already-established output membership to the new resource. */
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (!surface->output_entered || !surface->wl_surface ||
+                wl_resource_get_client(surface->wl_surface) != client) continue;
+        wl_surface_send_enter(surface->wl_surface, resource);
+        __android_log_print(ANDROID_LOG_INFO, TRIERARCH_OUTPUT_TAG,
+                "surface trace output-enter surface=%p output-resource=%p reason=late-bind",
+                (void *)surface, (void *)resource);
+    }
 }
 
 void trierarch_wayland_set_output_size(wayland_server_t *opaque, int width, int height) {
@@ -87,10 +103,24 @@ void trierarch_wayland_set_output_size(wayland_server_t *opaque, int width, int 
 void trierarch_output_enter_surface(struct wayland_server *server,
         struct wl_resource *surface_resource) {
     if (!server || !surface_resource) return;
+    struct compositor_surface *surface =
+            trierarch_surface_from_resource(surface_resource);
+    if (!surface || surface->output_entered) return;
+    surface->output_entered = true;
     struct wl_client *client = wl_resource_get_client(surface_resource);
+    uint32_t entered_count = 0;
     struct output_resource *output;
     wl_list_for_each(output, &server->output_resources, link) {
-        if (output->resource && wl_resource_get_client(output->resource) == client)
+        if (output->resource && wl_resource_get_client(output->resource) == client) {
             wl_surface_send_enter(surface_resource, output->resource);
+            entered_count++;
+        }
     }
+    pid_t pid = -1;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    wl_client_get_credentials(client, &pid, &uid, &gid);
+    __android_log_print(ANDROID_LOG_INFO, TRIERARCH_OUTPUT_TAG,
+            "surface trace output-enter pid=%d uid=%u surface=%p outputs=%u reason=first-membership",
+            (int)pid, (unsigned int)uid, (void *)surface, entered_count);
 }

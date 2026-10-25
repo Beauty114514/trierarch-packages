@@ -351,6 +351,9 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
         __android_log_print(ANDROID_LOG_INFO, "TrierarchWayland",
                 "xdg initial commit received surface=%p pending=%p detach=%d",
                 (void *)surface, (void *)surface->pending, surface->pending_detach);
+        /* Nested compositors need output membership before they schedule their
+         * first real frame, which follows this initial bufferless commit. */
+        trierarch_output_enter_surface(surface->server, surface->wl_surface);
     }
     surface->perf_commits++;
     surface->server->perf_surface_commits++;

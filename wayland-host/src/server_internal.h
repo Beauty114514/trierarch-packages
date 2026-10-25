@@ -112,6 +112,7 @@ struct compositor_surface {
     bool xdg_initial_commit_received;
     bool configured;
     bool mapped;
+    bool output_entered;
     bool is_cursor;
     bool damaged;
     bool viewport_source_set;
