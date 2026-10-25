@@ -38,6 +38,8 @@ struct renderer_context;
 #define TRIERARCH_DRM_FORMAT_ABGR8888 0x34324241u
 
 struct shm_buffer {
+    unsigned int references;
+    void (*destroy)(struct shm_buffer *buffer);
     struct wl_resource *resource;
     struct shm_pool *pool;
     void *data;
@@ -61,6 +63,9 @@ struct shm_buffer {
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
+    struct wayland_server *server;
+    struct wl_listener egl_resource_destroy_listener;
+    bool egl_resource_destroy_listener_attached;
     struct wl_list pool_link;
 };
 
@@ -255,6 +260,9 @@ void trierarch_surface_send_frame_callbacks(struct wayland_server *server, uint3
 void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t time_ms);
 
 struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resource);
+void trierarch_buffer_ref(struct shm_buffer *buffer);
+void trierarch_buffer_unref(struct shm_buffer *buffer);
+void trierarch_buffer_destroy_storage(struct shm_buffer *buffer);
 void trierarch_shm_buffer_release(struct shm_buffer *buffer);
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource);
 void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer);

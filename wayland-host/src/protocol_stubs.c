@@ -141,9 +141,7 @@ static void android_buffer_destroy(struct wl_resource *resource) {
     struct shm_buffer *buffer = wl_resource_get_user_data(resource);
     if (!buffer) return;
     buffer->resource = NULL;
-    if (buffer->android_hardware_buffer)
-        AHardwareBuffer_release(buffer->android_hardware_buffer);
-    free(buffer);
+    trierarch_buffer_unref(buffer);
 }
 
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource) {
@@ -213,6 +211,8 @@ static void wlegl_create_buffer(struct wl_client *client, struct wl_resource *re
         wl_client_post_no_memory(client); return;
     }
     buffer->android_buffer = true;
+    buffer->references = 1;
+    buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->acquire_fence_fd = -1;
     buffer->android_hardware_buffer = hardware_buffer;
     buffer->width = width;

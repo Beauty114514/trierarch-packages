@@ -16,8 +16,7 @@ static void single_pixel_buffer_resource_destroy(struct wl_resource *resource) {
     struct shm_buffer *buffer = wl_resource_get_user_data(resource);
     if (!buffer) return;
     buffer->resource = NULL;
-    free(buffer->data);
-    free(buffer);
+    trierarch_buffer_unref(buffer);
 }
 
 static struct wl_resource *single_pixel_buffer_create(struct wl_client *client,
@@ -31,6 +30,8 @@ static struct wl_resource *single_pixel_buffer_create(struct wl_client *client,
     }
     *(uint32_t *)buffer->data = pixel;
     buffer->size = 4;
+    buffer->references = 1;
+    buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->width = 1;
     buffer->height = 1;
     buffer->stride = 4;

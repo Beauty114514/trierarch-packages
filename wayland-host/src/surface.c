@@ -45,6 +45,29 @@ static void frame_callback_destroy(struct wl_resource *resource) {
     free(callback);
 }
 
+static void surface_clear_frame_callbacks(struct wl_list *callbacks) {
+    while (!wl_list_empty(callbacks)) {
+        struct surface_frame_callback *callback =
+                wl_container_of(callbacks->next, callback, link);
+        if (callback->resource)
+            wl_resource_destroy(callback->resource);
+        else {
+            wl_list_remove(&callback->link);
+            free(callback);
+        }
+    }
+}
+
+static void surface_set_pending_buffer(struct compositor_surface *surface,
+        struct shm_buffer *buffer) {
+    if (!surface || surface->pending == buffer)
+        return;
+    trierarch_buffer_ref(buffer);
+    struct shm_buffer *old_pending = surface->pending;
+    surface->pending = buffer;
+    trierarch_buffer_unref(old_pending);
+}
+
 static void surface_frame(struct wl_client *client, struct wl_resource *resource,
         uint32_t callback_id) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
@@ -88,11 +111,11 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
         wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SIZE,
                 "unsupported wl_buffer type");
     } else if (!buffer_resource) {
-        surface->pending = NULL;
+        surface_set_pending_buffer(surface, NULL);
         surface->pending_detach = true;
     } else if (pending) {
         if (surface->pending != pending) {
-            surface->pending = pending;
+            surface_set_pending_buffer(surface, pending);
             surface->pending_detach = false;
         }
         static unsigned int attach_logs;
@@ -222,7 +245,7 @@ static void surface_resource_destroy(struct wl_resource *resource) {
         surface->current = NULL;
         trierarch_renderer_wait_idle(surface->server ? surface->server->renderer : NULL);
         trierarch_shm_buffer_release(current);
-        if (current->egl_buffer) free(current);
+        trierarch_buffer_unref(current);
     }
     if (surface->pending) {
         struct shm_buffer *pending = surface->pending;
@@ -233,8 +256,11 @@ static void surface_resource_destroy(struct wl_resource *resource) {
         }
         if (pending->explicit_release)
             wl_resource_destroy(pending->explicit_release);
-        if (pending->egl_buffer) free(pending);
+        trierarch_buffer_unref(pending);
     }
+    surface_clear_frame_callbacks(&surface->pending_frame_callbacks);
+    surface_clear_frame_callbacks(&surface->committed_frame_callbacks);
+    surface_clear_frame_callbacks(&surface->presented_frame_callbacks);
     if (surface->acquire_fence_fd >= 0)
         close(surface->acquire_fence_fd);
     if (surface->pending_explicit_release)
@@ -324,7 +350,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
                 surface->current = NULL;
                 trierarch_renderer_wait_idle(surface->server ? surface->server->renderer : NULL);
                 trierarch_shm_buffer_release(current);
-                if (current->egl_buffer) free(current);
+                trierarch_buffer_unref(current);
             }
             if (surface->pending) {
                 surface->pending->acquire_fence_fd = surface->acquire_fence_fd;
@@ -356,6 +382,8 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
              * output before committing their real desktop buffer. */
             trierarch_output_enter_surface(surface->server, surface->wl_surface);
         }
+        if (surface->pending == surface->current && !buffer_changed)
+            trierarch_buffer_unref(surface->pending);
         surface->pending = NULL;
         surface->pending_detach = false;
     }

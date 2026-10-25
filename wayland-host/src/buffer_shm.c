@@ -20,6 +20,23 @@ struct shm_pool {
 
 static void pool_unref(struct shm_pool *pool);
 
+void trierarch_buffer_ref(struct shm_buffer *buffer) {
+    if (buffer)
+        buffer->references++;
+}
+
+void trierarch_buffer_unref(struct shm_buffer *buffer) {
+    if (!buffer || buffer->references == 0)
+        return;
+    buffer->references--;
+    if (buffer->references == 0) {
+        if (buffer->destroy)
+            buffer->destroy(buffer);
+        else
+            free(buffer);
+    }
+}
+
 static void pool_unref(struct shm_pool *pool) {
     if (!pool || --pool->references != 0) return;
     munmap(pool->data, pool->size);
@@ -36,27 +53,27 @@ static const struct wl_buffer_interface buffer_impl = {
     .destroy = buffer_destroy,
 };
 
-static void buffer_resource_destroy(struct wl_resource *resource) {
-    struct shm_buffer *buffer = wl_resource_get_user_data(resource);
+void trierarch_buffer_destroy_storage(struct shm_buffer *buffer) {
     if (!buffer) return;
-    buffer->resource = NULL;
-    if (buffer->android_buffer) {
-        if (buffer->android_hardware_buffer)
-            AHardwareBuffer_release(buffer->android_hardware_buffer);
-        free(buffer);
-        return;
-    }
-    if (buffer->dmabuf) {
-        if (buffer->dmabuf_mapping)
-            munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
-        if (buffer->dmabuf_fd >= 0) close(buffer->dmabuf_fd);
-        free(buffer);
-        return;
-    }
+    if (buffer->egl_buffer && buffer->egl_resource_destroy_listener_attached)
+        wl_list_remove(&buffer->egl_resource_destroy_listener.link);
+    if (buffer->android_hardware_buffer)
+        AHardwareBuffer_release(buffer->android_hardware_buffer);
+    if (buffer->dmabuf && buffer->dmabuf_mapping)
+        munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
+    if (buffer->dmabuf && buffer->dmabuf_fd >= 0)
+        close(buffer->dmabuf_fd);
     if (buffer->pool) wl_list_remove(&buffer->pool_link);
     if (buffer->pool) pool_unref(buffer->pool);
     if (buffer->single_pixel) free(buffer->data);
     free(buffer);
+}
+
+static void buffer_resource_destroy(struct wl_resource *resource) {
+    struct shm_buffer *buffer = wl_resource_get_user_data(resource);
+    if (!buffer) return;
+    buffer->resource = NULL;
+    trierarch_buffer_unref(buffer);
 }
 
 static void pool_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -99,6 +116,8 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *res
     buffer->stride = stride;
     buffer->format = format;
     buffer->single_pixel = false;
+    buffer->references = 1;
+    buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->dmabuf_fd = -1;
     buffer->acquire_fence_fd = -1;
     wl_list_init(&buffer->pool_link);

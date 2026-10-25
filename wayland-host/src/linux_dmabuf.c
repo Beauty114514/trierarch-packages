@@ -44,11 +44,7 @@ static void dmabuf_buffer_destroy(struct wl_resource *resource) {
     struct shm_buffer *buffer = wl_resource_get_user_data(resource);
     if (!buffer) return;
     buffer->resource = NULL;
-    if (buffer->dmabuf_mapping)
-        munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
-    if (buffer->dmabuf_fd >= 0)
-        close(buffer->dmabuf_fd);
-    free(buffer);
+    trierarch_buffer_unref(buffer);
 }
 
 static void dmabuf_buffer_destroy_request(struct wl_client *client,
@@ -86,6 +82,8 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
         params->fd = -1;
         return NULL;
     }
+    buffer->references = 1;
+    buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->dmabuf = true;
     buffer->acquire_fence_fd = -1;
     buffer->dmabuf_fd = params->fd;

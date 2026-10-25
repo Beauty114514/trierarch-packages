@@ -469,7 +469,7 @@ static void draw_surface(struct renderer_context *renderer,
             }
         }
     }
-    if (image == EGL_NO_IMAGE_KHR && buffer->egl_buffer &&
+    if (image == EGL_NO_IMAGE_KHR && buffer->egl_buffer && buffer->egl_resource &&
             renderer->create_image && renderer->image_target) {
         image = renderer->create_image(renderer->display, renderer->context,
                 EGL_WAYLAND_BUFFER_WL, (EGLClientBuffer)buffer->egl_resource, NULL);
