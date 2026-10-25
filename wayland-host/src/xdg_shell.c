@@ -133,10 +133,6 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
     surface->xdg_toplevel = toplevel;
     wl_resource_set_implementation(toplevel, &xdg_toplevel_impl, surface,
             xdg_toplevel_resource_destroy);
-    // Nested desktop clients need their initial configure before they commit
-    // the first real output buffer. Advertise both states so KWin allocates
-    // the fullscreen output instead of retaining its 1x1 bootstrap surface.
-    trierarch_surface_send_configure(surface);
 }
 
 static void xdg_surface_get_popup(struct wl_client *client, struct wl_resource *resource,

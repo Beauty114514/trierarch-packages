@@ -403,6 +403,8 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
         surface->pending = NULL;
         surface->pending_detach = false;
     }
+    /* xdg-shell's initial configure responds to the client's first
+     * bufferless commit; do not send it while assigning the role. */
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
     trierarch_layer_surface_commit(surface);
