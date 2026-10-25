@@ -196,6 +196,8 @@ struct wayland_server {
     bool egl_buffer_supported;
     /* Guest-reported render-node identity for future v4 dma-buf feedback. */
     struct trierarch_dmabuf_feedback_device *dmabuf_feedback_device;
+    /* Published only after a valid guest device report is registered. */
+    struct wl_global *dmabuf_global;
     /* Output repaint state. Requests are coalesced until the next output tick,
      * so a burst of commits produces at most one composition. */
     bool repaint_needed;
@@ -267,6 +269,7 @@ void trierarch_shm_buffer_release(struct shm_buffer *buffer);
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource);
 void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer);
 void trierarch_dmabuf_bind(struct wl_client *, void *, uint32_t, uint32_t);
+bool trierarch_dmabuf_global_create(struct wayland_server *server);
 struct shm_buffer *trierarch_egl_buffer_from_resource(struct wl_resource *resource,
         struct wayland_server *server);
 struct shm_buffer *trierarch_android_buffer_from_resource(struct wl_resource *resource);

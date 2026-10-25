@@ -128,11 +128,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             trierarch_subcompositor_bind);
     wl_global_create(server->display, &wl_shm_interface, 1, server,
             trierarch_shm_bind);
-    /* Experimental: advertise the existing dma-buf implementation so client
-     * buffer selection and Android EGL import behaviour can be validated on
-     * device.  The renderer still falls back to CPU mapping when possible. */
-    wl_global_create(server->display, &zwp_linux_dmabuf_v1_interface, 4, server,
-            trierarch_dmabuf_bind);
+    /* linux-dmabuf v4 is published after the guest reports its render device,
+     * so clients never bind v4 before the host can provide complete feedback. */
     wl_global_create(server->display, &wp_single_pixel_buffer_manager_v1_interface, 1,
             server, trierarch_single_pixel_bind);
     wl_global_create(server->display, &wp_viewporter_interface, 1,

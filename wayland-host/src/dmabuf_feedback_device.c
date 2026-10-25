@@ -64,8 +64,15 @@ static int client_readable(int fd, uint32_t mask, void *data) {
     } else if (received == (ssize_t)sizeof(report)) {
         device->device = makedev(report.major, report.minor);
         device->known = true;
-        ack.status = TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_ACCEPTED;
-        LOGI("guest dma-buf main-device reported as %u:%u", report.major, report.minor);
+        if (trierarch_dmabuf_global_create(device->server)) {
+            ack.status = TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_ACCEPTED;
+            LOGI("guest dma-buf main-device registered as %u:%u",
+                    report.major, report.minor);
+        } else {
+            device->known = false;
+            device->device = 0;
+            LOGW("guest dma-buf device report was not accepted: global publication failed");
+        }
     } else {
         LOGW("discarded incomplete dma-buf device report");
     }
