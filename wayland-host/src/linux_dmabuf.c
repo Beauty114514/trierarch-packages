@@ -265,6 +265,11 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
         { TRIERARCH_DRM_FORMAT_XBGR8888, 0, 0 },
         { TRIERARCH_DRM_FORMAT_ABGR8888, 0, 0 },
     };
+    struct wl_client *client = wl_resource_get_client(resource);
+    pid_t client_pid = -1;
+    uid_t client_uid = (uid_t)-1;
+    gid_t client_gid = (gid_t)-1;
+    if (client) wl_client_get_credentials(client, &client_pid, &client_uid, &client_gid);
     bool format_table_prepared = false;
 #ifdef SYS_memfd_create
     int fd = (int)syscall(SYS_memfd_create, "trierarch-dmabuf-feedback", 0);
@@ -289,16 +294,23 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
                 errno = 0;
                 int flags_before = fcntl(fd, F_GETFD);
                 int errno_before = errno;
-                LOGI("dmabuf trace feedback fd-before-event fd=%d flags=%d errno=%d size=%zu",
-                        fd, flags_before, errno_before, sizeof(entries));
+                errno = 0;
+                int duplicate_probe = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+                int duplicate_errno = errno;
+                if (duplicate_probe >= 0) close(duplicate_probe);
+                LOGI("dmabuf trace feedback event=before-format-table client-pid=%d uid=%u "
+                        "fd=%d flags=%d errno=%d dup-probe=%d dup-errno=%d size=%zu",
+                        (int)client_pid, (unsigned int)client_uid, fd, flags_before,
+                        errno_before, duplicate_probe, duplicate_errno, sizeof(entries));
                 if (flags_before >= 0) {
                     zwp_linux_dmabuf_feedback_v1_send_format_table(resource, fd,
                             (uint32_t)sizeof(entries));
                     errno = 0;
                     int flags_after = fcntl(fd, F_GETFD);
                     int errno_after = errno;
-                    LOGI("dmabuf trace feedback event-call-returned fd=%d flags-after=%d errno-after=%d",
-                            fd, flags_after, errno_after);
+                    LOGI("dmabuf trace feedback event=after-format-table client-pid=%d "
+                            "fd=%d flags=%d errno=%d",
+                            (int)client_pid, fd, flags_after, errno_after);
                     format_table_prepared = true;
                 }
                 close(fd);
