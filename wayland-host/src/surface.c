@@ -345,6 +345,13 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 
 void trierarch_surface_commit(struct compositor_surface *surface) {
     if (!surface) return;
+    if (surface->xdg_surface && !surface->xdg_initial_commit_received) {
+        surface->xdg_initial_commit_received = true;
+        /* The first xdg_surface commit is required to have no buffer. */
+        __android_log_print(ANDROID_LOG_INFO, "TrierarchWayland",
+                "xdg initial commit received surface=%p pending=%p detach=%d",
+                (void *)surface, (void *)surface->pending, surface->pending_detach);
+    }
     surface->perf_commits++;
     surface->server->perf_surface_commits++;
     bool frame_callbacks_committed = false;

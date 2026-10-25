@@ -18,11 +18,12 @@ static void trace_xdg_event(const char *event, struct wl_client *client,
     if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
     __android_log_print(ANDROID_LOG_INFO, TRIERARCH_XDG_TAG,
             "xdg trace event=%s pid=%d uid=%u surface=%p xdg=%p toplevel=%p "
-            "configured=%d output=%dx%d value=%u",
+            "configured=%d initial_commit=%d output=%dx%d value=%u",
             event, (int)pid, (unsigned int)uid, (void *)surface,
             surface ? (void *)surface->xdg_surface : NULL,
             surface ? (void *)surface->xdg_toplevel : NULL,
             surface ? surface->configured : 0,
+            surface ? surface->xdg_initial_commit_received : 0,
             surface && surface->server ? surface->server->output_width : 0,
             surface && surface->server ? surface->server->output_height : 0, value);
 }
@@ -56,30 +57,30 @@ static void xdg_toplevel_set_max_size(struct wl_client *c, struct wl_resource *r
 static void xdg_toplevel_set_min_size(struct wl_client *c, struct wl_resource *r, int32_t w, int32_t h) { (void)c;(void)r;(void)w;(void)h; }
 static void xdg_toplevel_set_maximized(struct wl_client *client,
         struct wl_resource *resource) {
-    (void)client;
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    trace_xdg_event("set_maximized", client, surface, 0);
     if (surface) trierarch_surface_send_configure(surface);
 }
 
 static void xdg_toplevel_unset_maximized(struct wl_client *client,
         struct wl_resource *resource) {
-    (void)client;
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    trace_xdg_event("unset_maximized", client, surface, 0);
     if (surface) trierarch_surface_send_configure(surface);
 }
 
 static void xdg_toplevel_set_fullscreen(struct wl_client *client,
         struct wl_resource *resource, struct wl_resource *output) {
-    (void)client;
     (void)output;
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    trace_xdg_event("set_fullscreen", client, surface, 0);
     if (surface) trierarch_surface_send_configure(surface);
 }
 
 static void xdg_toplevel_unset_fullscreen(struct wl_client *client,
         struct wl_resource *resource) {
-    (void)client;
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    trace_xdg_event("unset_fullscreen", client, surface, 0);
     if (surface) trierarch_surface_send_configure(surface);
 }
 static void xdg_toplevel_set_minimized(struct wl_client *c, struct wl_resource *r) { (void)c;(void)r; }
@@ -252,6 +253,10 @@ static const struct xdg_wm_base_interface wm_base_impl = {
 
 void trierarch_surface_send_configure(struct compositor_surface *surface) {
     if (!surface || !surface->xdg_surface || !surface->xdg_toplevel) return;
+    /* xdg-shell requires the initial configure to follow the client's first
+     * bufferless wl_surface.commit. State requests received before then are
+     * recorded in the trace and answered by that initial commit path. */
+    if (!surface->xdg_initial_commit_received) return;
     struct wl_array states;
     wl_array_init(&states);
     uint32_t *fullscreen = wl_array_add(&states, sizeof(*fullscreen));

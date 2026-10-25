@@ -109,6 +109,7 @@ struct compositor_surface {
     int32_t layer_margin_bottom;
     int32_t layer_margin_left;
     bool layer_configured;
+    bool xdg_initial_commit_received;
     bool configured;
     bool mapped;
     bool is_cursor;
