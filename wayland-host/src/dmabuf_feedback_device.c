@@ -52,16 +52,28 @@ static int client_readable(int fd, uint32_t mask, void *data) {
     struct trierarch_dmabuf_device_report report = {0};
     ssize_t received = recv(device->client_fd, &report, sizeof(report), MSG_DONTWAIT);
     if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
-    close_client(device);
+    struct trierarch_dmabuf_device_report_ack ack = {
+        .magic = TRIERARCH_DMABUF_DEVICE_REPORT_MAGIC,
+        .version = TRIERARCH_DMABUF_DEVICE_REPORT_VERSION,
+        .status = TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_INVALID,
+    };
     if (received != (ssize_t)sizeof(report) ||
             report.magic != TRIERARCH_DMABUF_DEVICE_REPORT_MAGIC ||
             report.version != TRIERARCH_DMABUF_DEVICE_REPORT_VERSION) {
         LOGW("discarded malformed dma-buf device report");
-        return 0;
+    } else if (received == (ssize_t)sizeof(report)) {
+        device->device = makedev(report.major, report.minor);
+        device->known = true;
+        ack.status = TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_ACCEPTED;
+        LOGI("guest dma-buf main-device reported as %u:%u", report.major, report.minor);
+    } else {
+        LOGW("discarded incomplete dma-buf device report");
     }
-    device->device = makedev(report.major, report.minor);
-    device->known = true;
-    LOGI("guest dma-buf main-device reported as %u:%u", report.major, report.minor);
+    if (device->client_fd >= 0 && send(device->client_fd, &ack, sizeof(ack),
+            MSG_NOSIGNAL) != (ssize_t)sizeof(ack)) {
+        LOGW("unable to acknowledge dma-buf device report: %s", strerror(errno));
+    }
+    close_client(device);
     return 0;
 }
 
