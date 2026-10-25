@@ -134,8 +134,11 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
             server, trierarch_single_pixel_bind);
     wl_global_create(server->display, &wp_viewporter_interface, 1,
             server, trierarch_viewporter_bind);
-    wl_global_create(server->display, &wl_output_interface, 4, server,
-            trierarch_output_bind);
+    struct wl_global *output_global = wl_global_create(server->display,
+            &wl_output_interface, 4, server, trierarch_output_bind);
+    __android_log_print(output_global ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            TRIERARCH_TAG, "wl_output global %s version=4",
+            output_global ? "created" : "creation-failed");
     wl_global_create(server->display, &wl_seat_interface,
             TRIERARCH_WL_SEAT_VERSION, server,
             trierarch_seat_bind);

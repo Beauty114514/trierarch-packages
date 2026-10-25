@@ -6,6 +6,22 @@
 
 #define TRIERARCH_OUTPUT_TAG "TrierarchWayland"
 
+static unsigned int output_trace_count;
+
+static void trace_output_bind(struct wl_client *client, uint32_t version,
+        uint32_t id, struct wl_resource *resource) {
+    if (output_trace_count++ >= 32) return;
+    pid_t pid = -1;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    wl_client_get_credentials(client, &pid, &uid, &gid);
+    __android_log_print(ANDROID_LOG_INFO, TRIERARCH_OUTPUT_TAG,
+            "output trace event=wl_output-bind pid=%d uid=%u requested-version=%u "
+            "id=%u resource=%p negotiated-version=%d",
+            (int)pid, (unsigned int)uid, version, id, (void *)resource,
+            resource ? wl_resource_get_version(resource) : 0);
+}
+
 struct output_resource {
     struct wl_list link;
     struct wl_resource *resource;
@@ -52,6 +68,7 @@ void trierarch_output_bind(struct wl_client *client, void *data,
     struct wl_resource *resource = wl_resource_create(
             client, &wl_output_interface, bind_version, id);
     if (!resource) {
+        trace_output_bind(client, version, id, NULL);
         wl_client_post_no_memory(client);
         return;
     }
@@ -66,6 +83,7 @@ void trierarch_output_bind(struct wl_client *client, void *data,
     wl_list_insert(&server->output_resources, &output->link);
     wl_resource_set_implementation(resource, &output_impl, output,
             output_resource_destroy);
+    trace_output_bind(client, version, id, resource);
     send_output_state(server, resource);
 
     /* A wl_output may be bound after a surface's initial commit. In that case,
@@ -76,7 +94,8 @@ void trierarch_output_bind(struct wl_client *client, void *data,
                 wl_resource_get_client(surface->wl_surface) != client) continue;
         wl_surface_send_enter(surface->wl_surface, resource);
         __android_log_print(ANDROID_LOG_INFO, TRIERARCH_OUTPUT_TAG,
-                "surface trace output-enter surface=%p output-resource=%p reason=late-bind",
+                "surface trace event=wl_surface.enter surface=%p output-resource=%p "
+                "reason=late-bind",
                 (void *)surface, (void *)resource);
     }
 }
@@ -114,6 +133,10 @@ void trierarch_output_enter_surface(struct wayland_server *server,
         if (output->resource && wl_resource_get_client(output->resource) == client) {
             wl_surface_send_enter(surface_resource, output->resource);
             entered_count++;
+            __android_log_print(ANDROID_LOG_INFO, TRIERARCH_OUTPUT_TAG,
+                    "surface trace event=wl_surface.enter surface=%p output-resource=%p "
+                    "reason=first-membership",
+                    (void *)surface, (void *)output->resource);
         }
     }
     pid_t pid = -1;
