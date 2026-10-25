@@ -6,6 +6,14 @@
 
 #define TRIERARCH_TAG "TrierarchWayland"
 
+static const char *surface_buffer_type(const struct shm_buffer *buffer) {
+    if (!buffer) return "none";
+    if (buffer->dmabuf) return "dmabuf";
+    if (buffer->android_buffer) return "android-wlegl";
+    if (buffer->egl_buffer) return "egl-wl";
+    return "shm";
+}
+
 static void region_destroy(struct wl_client *client, struct wl_resource *resource) {
     (void)client;
     wl_resource_destroy(resource);
@@ -121,11 +129,9 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
         static unsigned int attach_logs;
         if (attach_logs++ < 64) {
             __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                    "attach buffer type=%s size=%dx%d format=0x%x",
-                    pending->dmabuf ? "dmabuf" :
-                    pending->android_buffer ? "android-wlegl" :
-                    pending->egl_buffer ? "egl-wl" : "shm",
-                    pending->width, pending->height, pending->format);
+                    "surface trace request=attach type=%s size=%dx%d format=0x%x",
+                    surface_buffer_type(pending), pending->width,
+                    pending->height, pending->format);
         }
     }
 }
@@ -159,10 +165,20 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
         gid_t gid = (gid_t)-1;
         if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
         __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
-                "surface trace request=commit pid=%d uid=%u surface=%p xdg=%p toplevel=%p",
+                "surface trace request=commit pid=%d uid=%u surface=%p "
+                "xdg=%p toplevel=%p pending=%s/%dx%d current=%s/%dx%d "
+                "detach=%d configured=%d",
                 (int)pid, (unsigned int)uid, (void *)surface,
                 surface ? (void *)surface->xdg_surface : NULL,
-                surface ? (void *)surface->xdg_toplevel : NULL);
+                surface ? (void *)surface->xdg_toplevel : NULL,
+                surface_buffer_type(surface ? surface->pending : NULL),
+                surface && surface->pending ? surface->pending->width : 0,
+                surface && surface->pending ? surface->pending->height : 0,
+                surface_buffer_type(surface ? surface->current : NULL),
+                surface && surface->current ? surface->current->width : 0,
+                surface && surface->current ? surface->current->height : 0,
+                surface ? surface->pending_detach : 0,
+                surface ? surface->configured : 0);
     }
     if (surface) trierarch_surface_commit(surface);
 }

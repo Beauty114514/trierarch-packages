@@ -122,9 +122,22 @@ static void params_destroy(struct wl_client *client, struct wl_resource *resourc
 static void params_add(struct wl_client *client, struct wl_resource *resource,
         int32_t fd, uint32_t plane, uint32_t offset, uint32_t stride,
         uint32_t modifier_hi, uint32_t modifier_lo) {
-    (void)client;
     struct dmabuf_params *params = wl_resource_get_user_data(resource);
+    static unsigned int trace_count;
+    if (trace_count++ < 64) {
+        pid_t pid = -1;
+        uid_t uid = (uid_t)-1;
+        gid_t gid = (gid_t)-1;
+        if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
+        LOGI("dmabuf trace request=params_add pid=%d uid=%u params=%u fd=%d "
+                "plane=%u offset=%u stride=%u modifier=0x%08x%08x",
+                (int)pid, (unsigned int)uid, wl_resource_get_id(resource), fd,
+                plane, offset, stride, modifier_hi, modifier_lo);
+    }
     if (!params || params->used || params->added || plane != 0 || fd < 0) {
+        LOGW("dmabuf trace result=params_add rejected params=%u used=%d added=%d "
+                "plane=%u fd=%d", wl_resource_get_id(resource),
+                params ? params->used : 0, params ? params->added : 0, plane, fd);
         if (fd >= 0) close(fd);
         if (params) wl_resource_post_error(resource,
                 ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED, "invalid parameters");
@@ -142,12 +155,28 @@ static void params_create(struct wl_client *client, struct wl_resource *resource
     (void)flags;
     struct dmabuf_params *params = wl_resource_get_user_data(resource);
     if (!params || params->used) return;
+    static unsigned int trace_count;
+    bool trace = trace_count++ < 64;
+    pid_t pid = -1;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
+    if (trace)
+        LOGI("dmabuf trace request=create pid=%d uid=%u params=%u size=%dx%d "
+                "fmt=0x%x added=%d", (int)pid, (unsigned int)uid,
+                wl_resource_get_id(resource), width, height, format, params->added);
     struct shm_buffer *buffer = make_dmabuf_buffer(client, 0, width, height, format, params);
     params->used = true;
     if (!buffer) {
+        if (trace)
+            LOGW("dmabuf trace result=create failed params=%u size=%dx%d fmt=0x%x",
+                    wl_resource_get_id(resource), width, height, format);
         zwp_linux_buffer_params_v1_send_failed(resource);
         return;
     }
+    if (trace)
+        LOGI("dmabuf trace result=create succeeded buffer=%u",
+                wl_resource_get_id(buffer->resource));
     zwp_linux_buffer_params_v1_send_created(resource, buffer->resource);
 }
 
@@ -156,12 +185,31 @@ static void params_create_immed(struct wl_client *client, struct wl_resource *re
     (void)flags;
     struct dmabuf_params *params = wl_resource_get_user_data(resource);
     if (!params || params->used) return;
+    static unsigned int trace_count;
+    bool trace = trace_count++ < 64;
+    pid_t pid = -1;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
+    if (trace)
+        LOGI("dmabuf trace request=create_immed pid=%d uid=%u params=%u buffer=%u "
+                "size=%dx%d fmt=0x%x added=%d", (int)pid, (unsigned int)uid,
+                wl_resource_get_id(resource), buffer_id, width, height, format,
+                params->added);
     struct shm_buffer *buffer = make_dmabuf_buffer(client, (int)buffer_id,
             width, height, format, params);
     params->used = true;
-    if (!buffer)
+    if (!buffer) {
+        if (trace)
+            LOGW("dmabuf trace result=create_immed failed params=%u buffer=%u "
+                    "size=%dx%d fmt=0x%x", wl_resource_get_id(resource),
+                    buffer_id, width, height, format);
         wl_resource_post_error(resource,
                 ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "unsupported dmabuf parameters");
+    } else {
+        if (trace)
+            LOGI("dmabuf trace result=create_immed succeeded buffer=%u", buffer_id);
+    }
 }
 
 static void params_resource_destroy(struct wl_resource *resource) {
@@ -217,6 +265,7 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
         { TRIERARCH_DRM_FORMAT_XBGR8888, 0, 0 },
         { TRIERARCH_DRM_FORMAT_ABGR8888, 0, 0 },
     };
+    bool format_table_sent = false;
 #ifdef SYS_memfd_create
     int fd = (int)syscall(SYS_memfd_create, "trierarch-dmabuf-feedback", 0);
     if (fd >= 0 && ftruncate(fd, (off_t)sizeof(entries)) == 0 &&
@@ -224,11 +273,14 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
         lseek(fd, 0, SEEK_SET);
         zwp_linux_dmabuf_feedback_v1_send_format_table(resource, fd,
                 (uint32_t)sizeof(entries));
+        format_table_sent = true;
         close(fd);
     } else if (fd >= 0) {
         close(fd);
     }
 #endif
+    if (!format_table_sent)
+        LOGW("dmabuf trace feedback format-table unavailable");
     struct wl_array device;
     wl_array_init(&device);
     void *device_data = wl_array_add(&device, sizeof(main_device));
@@ -245,16 +297,26 @@ static void send_feedback(struct wl_resource *resource, dev_t main_device) {
     }
     zwp_linux_dmabuf_feedback_v1_send_tranche_done(resource);
     zwp_linux_dmabuf_feedback_v1_send_done(resource);
+    LOGI("dmabuf trace feedback events queued format-table=%d tranches=1 done=1",
+            format_table_sent);
     wl_array_release(&indices);
     wl_array_release(&device);
 }
 
-static void dmabuf_get_default_feedback(struct wl_client *client,
-        struct wl_resource *resource, uint32_t id) {
+static void dmabuf_get_feedback(struct wl_client *client,
+        struct wl_resource *resource, uint32_t id, const char *kind) {
     struct wayland_server *server = wl_resource_get_user_data(resource);
+    pid_t pid = -1;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    if (client) wl_client_get_credentials(client, &pid, &uid, &gid);
+    LOGI("dmabuf trace request=get_%s_feedback pid=%d uid=%u version=%u id=%u",
+            kind, (int)pid, (unsigned int)uid,
+            wl_resource_get_version(resource), id);
     dev_t main_device;
     if (!trierarch_dmabuf_feedback_device_get(server->dmabuf_feedback_device,
             &main_device)) {
+        LOGW("dmabuf trace result=feedback unavailable id=%u", id);
         wl_client_post_implementation_error(client,
                 "linux-dmabuf v4 global has no registered feedback device");
         return;
@@ -267,12 +329,19 @@ static void dmabuf_get_default_feedback(struct wl_client *client,
     }
     wl_resource_set_implementation(feedback, &feedback_impl, NULL, NULL);
     send_feedback(feedback, main_device);
+    LOGI("dmabuf trace result=feedback sent kind=%s id=%u main-device=%llu formats=4",
+            kind, id, (unsigned long long)main_device);
+}
+
+static void dmabuf_get_default_feedback(struct wl_client *client,
+        struct wl_resource *resource, uint32_t id) {
+    dmabuf_get_feedback(client, resource, id, "default");
 }
 
 static void dmabuf_get_surface_feedback(struct wl_client *client,
         struct wl_resource *resource, uint32_t id, struct wl_resource *surface) {
     (void)surface;
-    dmabuf_get_default_feedback(client, resource, id);
+    dmabuf_get_feedback(client, resource, id, "surface");
 }
 
 static void dmabuf_destroy(struct wl_client *client, struct wl_resource *resource) {
