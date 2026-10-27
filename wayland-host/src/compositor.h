@@ -6,7 +6,7 @@
 
 typedef struct wayland_server wayland_server_t;
 
-wayland_server_t *trierarch_wayland_create(const char *runtime_dir);
+wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled);
 void trierarch_wayland_destroy(wayland_server_t *server);
 void trierarch_wayland_dispatch(wayland_server_t *server);
 void trierarch_wayland_wake(wayland_server_t *server);

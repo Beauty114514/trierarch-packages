@@ -290,6 +290,12 @@ static const struct zwp_linux_dmabuf_v1_interface dmabuf_impl = {
 bool trierarch_dmabuf_global_create(struct wayland_server *server) {
     if (!server || !server->display) return false;
     if (server->dmabuf_global) return true;
+    if (!server->dmabuf_enabled) {
+        /* The profile selected the shm path; never publish a dmabuf global
+         * that the guest cannot back with a device. */
+        LOGI("linux-dmabuf disabled by the profile buffer plan");
+        return false;
+    }
     dev_t main_device;
     if (!trierarch_dmabuf_feedback_device_get(server->dmabuf_feedback_device,
             &main_device)) {

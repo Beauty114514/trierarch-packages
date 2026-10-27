@@ -194,6 +194,9 @@ struct wayland_server {
     bool valid;
     struct renderer_context *renderer;
     bool egl_buffer_supported;
+    /* Buffer path requested by the profile.  linux-dmabuf is only ever
+     * published when this is true and the guest reported a usable device. */
+    bool dmabuf_enabled;
     /* Guest-reported render-node identity for future v4 dma-buf feedback. */
     struct trierarch_dmabuf_feedback_device *dmabuf_feedback_device;
     /* Published only after a valid guest device report is registered. */

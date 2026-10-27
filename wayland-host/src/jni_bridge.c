@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define TAG "TrierarchWayland"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -17,6 +18,9 @@
 static pthread_mutex_t server_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t command_mutex = PTHREAD_MUTEX_INITIALIZER;
 static wayland_server_t *server;
+/* Buffer plan the live server was created with; the struct itself is opaque
+ * here on purpose, so the JNI layer owns this small piece of state. */
+static bool server_dmabuf_enabled;
 static pthread_t dispatch_thread;
 static bool dispatch_running;
 static bool dispatch_thread_started;
@@ -168,14 +172,26 @@ static void *dispatch_loop(void *argument) {
 
 JNIEXPORT jboolean JNICALL
 Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object,
-        jstring runtime_directory) {
+        jstring runtime_directory, jstring buffer_mode) {
     (void)object;
     const char *runtime = (*env)->GetStringUTFChars(env, runtime_directory, NULL);
     if (!runtime) return JNI_FALSE;
+    const char *mode = buffer_mode ? (*env)->GetStringUTFChars(env, buffer_mode, NULL) : NULL;
+    /* Default to dmabuf for unknown/missing values so an older caller keeps
+     * the historical behaviour. */
+    const bool dmabuf_enabled = !mode || strcmp(mode, "shm") != 0;
     pthread_mutex_lock(&server_mutex);
-    if (!server) {
-        server = trierarch_wayland_create(runtime);
+    bool mode_conflict = false;
+    if (server) {
+        /* A live server cannot swap buffer paths without disconnecting its
+         * clients; the Java layer refuses conflicting sessions.  If one still
+         * arrives, report failure instead of silently serving the wrong plan. */
+        mode_conflict = server_dmabuf_enabled != dmabuf_enabled;
+    }
+    if (!server && !mode_conflict) {
+        server = trierarch_wayland_create(runtime, dmabuf_enabled);
         if (server) {
+            server_dmabuf_enabled = dmabuf_enabled;
             dispatch_running = true;
             if (native_window) {
                 struct host_command *command = new_command(HOST_COMMAND_ATTACH_WINDOW);
@@ -192,11 +208,16 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object
                 discard_commands();
                 trierarch_wayland_destroy(server);
                 server = NULL;
+                server_dmabuf_enabled = false;
             }
         }
     }
-    bool started = server != NULL;
+    bool started = server != NULL && !mode_conflict;
+    if (mode_conflict) {
+        LOGE("Wayland host already running with a different buffer mode");
+    }
     pthread_mutex_unlock(&server_mutex);
+    if (mode) (*env)->ReleaseStringUTFChars(env, buffer_mode, mode);
     (*env)->ReleaseStringUTFChars(env, runtime_directory, runtime);
     return started ? JNI_TRUE : JNI_FALSE;
 }
@@ -220,6 +241,7 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStop(JNIEnv *env, jobject object)
     renderer = NULL;
     trierarch_wayland_destroy(server);
     server = NULL;
+    server_dmabuf_enabled = false;
     if (native_window) {
         ANativeWindow_release(native_window);
         native_window = NULL;

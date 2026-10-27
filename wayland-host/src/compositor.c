@@ -50,9 +50,10 @@ static int repaint_timer_fired(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
-wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
+wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled) {
     struct wayland_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
+    server->dmabuf_enabled = dmabuf_enabled;
     server->wake_fd = -1;
     server->telemetry_fd = -1;
     server->repaint_fd = -1;
@@ -119,8 +120,22 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir) {
     if (socket_length > 0 && (size_t)socket_length < sizeof(socket_path)) {
         chmod(socket_path, 0666);
     }
-    server->dmabuf_feedback_device = trierarch_dmabuf_feedback_device_create(server,
-            server->runtime_dir);
+    if (server->dmabuf_enabled) {
+        server->dmabuf_feedback_device = trierarch_dmabuf_feedback_device_create(server,
+                server->runtime_dir);
+    } else {
+        /* The profile runs the shm path; remove a socket left behind by an
+         * earlier dmabuf session so the guest reporter fails fast instead of
+         * talking to a stale listener path. */
+        char feedback_path[PATH_MAX];
+        int feedback_length = snprintf(feedback_path, sizeof(feedback_path),
+                "%s/dmabuf-feedback.sock", server->runtime_dir);
+        if (feedback_length > 0 && (size_t)feedback_length < sizeof(feedback_path))
+            unlink(feedback_path);
+    }
+    __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
+            "buffer plan: dmabuf=%s (linux-dmabuf %s)", dmabuf_enabled ? "enabled" : "disabled",
+            dmabuf_enabled ? "published after guest device report" : "not advertised");
     wl_global_create(server->display, &wl_compositor_interface,
             TRIERARCH_WL_COMPOSITOR_VERSION, server,
             trierarch_surface_bind);
