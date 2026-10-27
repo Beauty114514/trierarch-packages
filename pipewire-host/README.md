@@ -29,16 +29,17 @@ AAudio sink is an independent executable, not a PipeWire module. The fetch
 script takes its source URL as an argument so upstream provenance remains
 documented here rather than embedded in Trierarch's build code.
 
-The runtime is currently enabled only for DroidSpaces profiles:
+The runtime is enabled for DroidSpaces, PRoot, and chroot profiles:
 
 ```toml
 [audio]
 backend = "pipewire"
 ```
 
-The Android service creates both sockets before container startup and exposes
-them through the session's `/tmp/trierarch-pipewire` bind mount. The first
-guest-side verification is `pactl info`, followed by playback using `paplay`.
+The Android service creates both sockets before session startup. Each runtime
+exposes them through `/tmp/trierarch-pipewire` (DroidSpaces bind mount, PRoot
+directory bind, or chroot bind mount). The first guest-side verification is
+`pactl info`, followed by playback using `paplay`.
 
 ## Attribution and limits
 

@@ -19,6 +19,9 @@ const GUEST_WAYLAND_IME_SOCKET: &str = crate::wayland_ime_provider::GUEST_PROVID
 const GUEST_WAYLAND_IME_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-ime.log";
 const VIRGL_SOCKET: &str = "vtest.sock";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
+const GUEST_PIPEWIRE_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-pipewire";
+const PIPEWIRE_SOCKET: &str = "pipewire-0";
+const PULSE_SOCKET: &str = "pulse/native";
 const GUEST_UDEV_COMPATIBILITY_LIBRARY: &str = "/opt/trierarch/compat/libtrierarch-udev-compat.so";
 const GUEST_KWIN_WAYLAND_WRAPPER: &str = "/usr/sbin/kwin_wayland_wrapper";
 const GUEST_KWIN_WAYLAND_WRAPPER_REAL: &str = "/opt/trierarch/compat/kwin_wayland_wrapper.real";
@@ -62,6 +65,7 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     let x11 = !spec.x11_socket_directory.as_os_str().is_empty();
     let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
     let virgl = !spec.virgl_runtime_directory.as_os_str().is_empty();
+    let pipewire = !spec.pipewire_runtime_directory.as_os_str().is_empty();
     let udev_compatibility = prepare_udev_compatibility_library(spec)?;
     let wayland_ime_bridge = prepare_wayland_ime_bridge(spec)?;
     let wayland_dmabuf_device_report = prepare_wayland_dmabuf_device_report(spec)?;
@@ -121,6 +125,9 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             VIRGL_SOCKET,
             "VirGL",
         )?;
+    }
+    if pipewire {
+        bind_pipewire_directory(&mut argv, &spec.rootfs, &spec.pipewire_runtime_directory)?;
     }
     if wayland && udev_compatibility {
         bind_kwin_wayland_wrapper(&mut argv, spec)?;
@@ -202,6 +209,9 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         let socket = format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}");
         env.push(format!("VTEST_SOCKET_NAME={socket}"));
         env.push(format!("VTEST_RENDERER_SOCKET_NAME={socket}"));
+    }
+    if pipewire {
+        env.extend(pipewire_environment());
     }
     validate_environment(&spec.graphics_environment)?;
     env.extend(spec.graphics_environment.iter().cloned());
@@ -386,6 +396,9 @@ fn validate(spec: &ProotSpec, proot: &std::path::Path, loader: &std::path::Path)
             "VirGL runtime socket",
         )?;
     }
+    if !spec.pipewire_runtime_directory.as_os_str().is_empty() {
+        validate_pipewire_runtime_directory(&spec.pipewire_runtime_directory)?;
+    }
     for value in &spec.launch_argv {
         anyhow::ensure!(
             !value.is_empty() && !value.contains('\0'),
@@ -458,6 +471,42 @@ fn validate_socket(path: &std::path::Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn bind_pipewire_directory(
+    argv: &mut Vec<String>,
+    rootfs: &std::path::Path,
+    host_directory: &std::path::Path,
+) -> Result<()> {
+    bind_directory(
+        argv,
+        rootfs,
+        host_directory,
+        GUEST_PIPEWIRE_RUNTIME_DIRECTORY,
+        "PipeWire runtime",
+    )
+}
+
+fn validate_pipewire_runtime_directory(host_directory: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(
+        host_directory.is_absolute() && host_directory.is_dir(),
+        "PipeWire runtime directory is not accessible: {}",
+        host_directory.display(),
+    );
+    validate_socket(&host_directory.join(PIPEWIRE_SOCKET), "PipeWire runtime")?;
+    validate_socket(
+        &host_directory.join(PULSE_SOCKET),
+        "PulseAudio compatibility",
+    )?;
+    Ok(())
+}
+
+fn pipewire_environment() -> [String; 3] {
+    [
+        format!("PIPEWIRE_RUNTIME_DIR={GUEST_PIPEWIRE_RUNTIME_DIRECTORY}"),
+        "PIPEWIRE_REMOTE=pipewire-0".into(),
+        format!("PULSE_SERVER=unix:{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}/{PULSE_SOCKET}"),
+    ]
+}
+
 fn bind_socket(
     argv: &mut Vec<String>,
     rootfs: &std::path::Path,
@@ -526,4 +575,56 @@ fn strings(values: &[String]) -> Result<Vec<CString>> {
         .iter()
         .map(|value| CString::new(value.as_bytes()).context("PRoot argv/environment contains NUL"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipewire_runtime_is_bound_and_exported_to_guest() {
+        let base = std::env::temp_dir().join(format!(
+            "trierarch-proot-pipewire-test-{}",
+            std::process::id()
+        ));
+        let rootfs = base.join("rootfs");
+        let runtime = base.join("pipewire-run");
+        for directory in [
+            rootfs.join("bin"),
+            rootfs.join("proc"),
+            rootfs.join("sys/.empty"),
+            rootfs.join("tmp"),
+            runtime.clone(),
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        for path in [
+            rootfs.join("bin/bash"),
+            rootfs.join("proc/.loadavg"),
+            rootfs.join("proc/.stat"),
+            rootfs.join("proc/.uptime"),
+            rootfs.join("proc/.version"),
+            rootfs.join("proc/.vmstat"),
+            rootfs.join("proc/.sysctl_entry_cap_last_cap"),
+            rootfs.join("proc/.sysctl_inotify_max_user_watches"),
+        ] {
+            std::fs::write(path, []).unwrap();
+        }
+        let mut argv = Vec::new();
+        bind_pipewire_directory(&mut argv, &rootfs, &runtime).unwrap();
+        assert_eq!(
+            argv,
+            [format!("--bind={}:/tmp/trierarch-pipewire", runtime.display())]
+        );
+        assert_eq!(
+            pipewire_environment(),
+            [
+                "PIPEWIRE_RUNTIME_DIR=/tmp/trierarch-pipewire",
+                "PIPEWIRE_REMOTE=pipewire-0",
+                "PULSE_SERVER=unix:/tmp/trierarch-pipewire/pulse/native",
+            ]
+        );
+        assert!(validate_pipewire_runtime_directory(&runtime).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }

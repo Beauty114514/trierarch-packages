@@ -28,6 +28,8 @@ pub struct ProotSpec {
     pub wayland_ime_bridge: PathBuf,
     /// Empty unless this PRoot session uses the Trierarch VirGL vtest host.
     pub virgl_runtime_directory: PathBuf,
+    /// Empty unless this PRoot session uses the Android PipeWire host.
+    pub pipewire_runtime_directory: PathBuf,
     /// Optional app-private Linux guest compatibility library.
     pub udev_compatibility_library: PathBuf,
     /// Empty starts the configured interactive shell.

@@ -2,7 +2,7 @@
 //!
 //! PipeWire and WirePlumber run in the Android app process context. A separate
 //! PipeWire client owns the AAudio stream and registers an Audio/Sink node.
-//! DroidSpaces receives the native and PulseAudio-compatible sockets through
+//! Runtime guests receive the native and PulseAudio-compatible sockets through
 //! the session's `/tmp/trierarch-pipewire` bind mount.
 
 use std::fs::{self, File, OpenOptions};
