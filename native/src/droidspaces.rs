@@ -328,8 +328,13 @@ impl DroidspacesSpec {
         );
         // Report the guest-visible render-node identity before the desktop
         // connects. A missing node is normal on software-only sessions, so it
-        // is diagnostic only and must not prevent a Wayland launch.
-        let report_dmabuf_device = if self.wayland_ime_bridge.is_empty() {
+        // is diagnostic only and must not prevent a Wayland launch.  The shm
+        // plan skips it entirely: the host is not listening for a report.
+        let shm_plan = self
+            .graphics_environment
+            .iter()
+            .any(|entry| entry == "TRIERARCH_BUFFER=shm");
+        let report_dmabuf_device = if self.wayland_ime_bridge.is_empty() || shm_plan {
             String::new()
         } else {
             format!(

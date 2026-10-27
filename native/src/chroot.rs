@@ -387,15 +387,23 @@ fn guest_command(
                 log = GUEST_SESSION_SUPERVISOR_LOG,
             )
         };
-        let report_dmabuf_device = if spec.wayland_ime_bridge.as_os_str().is_empty() {
-            String::new()
-        } else {
-            format!(
-                "/system/bin/chroot {rootfs} {reporter} --socket {socket} >/tmp/trierarch-dmabuf-device-report.log 2>&1 || true; ",
-                rootfs = shell_quote(&spec.rootfs), reporter = GUEST_DMABUF_DEVICE_REPORT,
-                socket = GUEST_DMABUF_FEEDBACK_SOCKET,
-            )
-        };
+        // The profile buffer plan decides whether a render-node report may be
+        // sent at all: in shm mode the host does not listen for one, and a
+        // report would only leave a failed connection in the session log.
+        let shm_plan = spec
+            .graphics_environment
+            .iter()
+            .any(|entry| entry == "TRIERARCH_BUFFER=shm");
+        let report_dmabuf_device =
+            if spec.wayland_ime_bridge.as_os_str().is_empty() || shm_plan {
+                String::new()
+            } else {
+                format!(
+                    "/system/bin/chroot {rootfs} {reporter} --socket {socket} >/tmp/trierarch-dmabuf-device-report.log 2>&1 || true; ",
+                    rootfs = shell_quote(&spec.rootfs), reporter = GUEST_DMABUF_DEVICE_REPORT,
+                    socket = GUEST_DMABUF_FEEDBACK_SOCKET,
+                )
+            };
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
