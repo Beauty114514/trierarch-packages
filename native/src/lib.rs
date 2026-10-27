@@ -17,6 +17,8 @@ mod virgl;
 
 #[cfg(target_os = "android")]
 mod jni_bridge;
+#[cfg(target_os = "android")]
+mod pipewire;
 
 pub use chroot::ChrootSpec;
 pub use droidspaces::DroidspacesSpec;

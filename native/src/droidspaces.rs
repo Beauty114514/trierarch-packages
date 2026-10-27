@@ -20,6 +20,9 @@ const GUEST_SESSION_SUPERVISOR: &str = "/tmp/trierarch-wayland-host/ime/trierarc
 const GUEST_SESSION_SUPERVISOR_LOG: &str = "/tmp/trierarch-wayland-host/ime/trierarch-session-supervisor.log";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
 const VIRGL_SOCKET: &str = "vtest.sock";
+const GUEST_PIPEWIRE_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-pipewire";
+const PIPEWIRE_SOCKET: &str = "pipewire-0";
+const PULSE_SOCKET: &str = "pulse/native";
 const GUEST_COMPATIBILITY_SOURCE_DIRECTORY: &str = "/tmp/trierarch-compat-source";
 const GUEST_COMPATIBILITY_DIRECTORY: &str = "/tmp/trierarch-compat";
 const GUEST_COMPATIBILITY_LIBRARY: &str = "/tmp/trierarch-compat/libtrierarch-udev-compat.so";
@@ -40,6 +43,8 @@ pub struct DroidspacesSpec {
     pub wayland_ime_bridge: String,
     /// Host directory containing Trierarch's VirGL vtest socket, if enabled.
     pub virgl_runtime_directory: String,
+    /// Host PipeWire runtime directory, if audio playback is enabled.
+    pub pipewire_runtime_directory: String,
     /// App-private guest-glibc library, bind-mounted only while starting.
     pub udev_compatibility_library: String,
     /// Empty keeps DroidSpaces' interactive-shell default.
@@ -111,11 +116,13 @@ impl DroidspacesSpec {
         let x11_bind = self.x11_bind()?;
         let wayland_bind = self.wayland_bind()?;
         let virgl_bind = self.virgl_bind()?;
+        let pipewire_bind = self.pipewire_bind()?;
         let compatibility_bind = self.compatibility_bind()?;
         let start = self.start_command(
             x11_bind.as_deref(),
             wayland_bind.as_deref(),
             virgl_bind.as_deref(),
+            pipewire_bind.as_deref(),
             compatibility_bind.as_deref(),
         );
         let run = if !self.wayland_runtime_directory.is_empty() {
@@ -140,6 +147,20 @@ impl DroidspacesSpec {
             privileged::shell_quote(DROIDSPACES_BINARY),
             privileged::shell_quote(&self.container),
         );
+        let mut attached_sockets = Vec::new();
+        if x11_bind.is_some() {
+            attached_sockets.push(GUEST_X11_SOCKET.to_owned());
+        }
+        if wayland_bind.is_some() {
+            attached_sockets.push(format!("{GUEST_WAYLAND_HOST_DIRECTORY}/{WAYLAND_SOCKET}"));
+        }
+        if virgl_bind.is_some() {
+            attached_sockets.push(format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}"));
+        }
+        if pipewire_bind.is_some() {
+            attached_sockets.push(format!("{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}/{PIPEWIRE_SOCKET}"));
+            attached_sockets.push(format!("{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}/{PULSE_SOCKET}"));
+        }
         if let Some(x11_bind) = x11_bind {
             let host_socket = x11_bind
                 .split_once(':')
@@ -151,20 +172,13 @@ impl DroidspacesSpec {
                 privileged::shell_quote(host_socket),
             );
             Ok(format!(
-                "export TERM=xterm-256color LANG=C.UTF-8; {wait_for_socket} {running} {start} || exit $?;; *) {} || {{ printf '%s\\n' 'DroidSpaces container is already running without this X11 attachment; stop it, then start this Trierarch profile.' >&2; exit 125; }};; esac; {run}",
-                self.existing_container_attachment_check(&[GUEST_X11_SOCKET]),
+                "export TERM=xterm-256color LANG=C.UTF-8; {wait_for_socket} {running} {start} || exit $?;; *) {} || {{ printf '%s\\n' 'DroidSpaces container is already running without a required Trierarch attachment; stop it, then start this profile.' >&2; exit 125; }};; esac; {run}",
+                self.existing_container_attachment_check(&attached_sockets),
             ))
-        } else if wayland_bind.is_some() || virgl_bind.is_some() {
-            let mut sockets = Vec::new();
-            if wayland_bind.is_some() {
-                sockets.push(format!("{GUEST_WAYLAND_HOST_DIRECTORY}/{WAYLAND_SOCKET}"));
-            }
-            if virgl_bind.is_some() {
-                sockets.push(format!("{GUEST_VIRGL_RUNTIME_DIRECTORY}/{VIRGL_SOCKET}"));
-            }
+        } else if !attached_sockets.is_empty() {
             Ok(format!(
-                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; *) {} || {{ printf '%s\\n' 'DroidSpaces container is already running without this Trierarch graphical attachment; stop it, then start this profile.' >&2; exit 125; }};; esac; {run}",
-                self.existing_container_attachment_check(&sockets),
+                "export TERM=xterm-256color LANG=C.UTF-8; {running} {start} || exit $?;; *) {} || {{ printf '%s\\n' 'DroidSpaces container is already running without a required Trierarch attachment; stop it, then start this profile.' >&2; exit 125; }};; esac; {run}",
+                self.existing_container_attachment_check(&attached_sockets),
             ))
         } else {
             Ok(format!(
@@ -195,6 +209,7 @@ impl DroidspacesSpec {
         x11_bind: Option<&str>,
         wayland_bind: Option<&str>,
         virgl_bind: Option<&str>,
+        pipewire_bind: Option<&str>,
         compatibility_bind: Option<&str>,
     ) -> String {
         let mut bind_arguments = String::new();
@@ -205,6 +220,9 @@ impl DroidspacesSpec {
             bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
         }
         if let Some(bind) = virgl_bind {
+            bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
+        }
+        if let Some(bind) = pipewire_bind {
             bind_arguments.push_str(&format!(" --bind={}", privileged::shell_quote(bind)));
         }
         if let Some(bind) = compatibility_bind {
@@ -219,27 +237,46 @@ impl DroidspacesSpec {
     }
 
     fn terminal_command(&self) -> String {
-        if self.launch_argv.is_empty() {
+        let audio_environment = self.guest_audio_environment();
+        if self.launch_argv.is_empty() && audio_environment.is_empty() {
             format!(
                 "export TERM=xterm-256color LANG=C.UTF-8; exec {} --name={} enter {}",
                 privileged::shell_quote(DROIDSPACES_BINARY),
                 privileged::shell_quote(&self.container),
                 privileged::shell_quote(&self.user),
             )
+        } else if self.launch_argv.is_empty() {
+            let environment = shell_words(&audio_environment);
+            format!(
+                "export TERM=xterm-256color LANG=C.UTF-8; exec {} --name={} run /bin/sh -lc {}",
+                privileged::shell_quote(DROIDSPACES_BINARY),
+                privileged::shell_quote(&self.container),
+                privileged::shell_quote(&format!(
+                    "export {environment}; exec /usr/bin/su -l -w PIPEWIRE_RUNTIME_DIR,PIPEWIRE_REMOTE,PULSE_SERVER {}",
+                    privileged::shell_quote(&self.user),
+                )),
+            )
         } else {
-            let environment = shell_words(&self.guest_graphics_environment());
+            let mut environment = self.guest_graphics_environment();
+            environment.extend(audio_environment);
+            let environment = shell_words(&environment);
             format!(
                 "export TERM=xterm-256color LANG=C.UTF-8; exec {} --name={} --user={} run /bin/sh -lc {}",
                 privileged::shell_quote(DROIDSPACES_BINARY),
                 privileged::shell_quote(&self.container),
                 privileged::shell_quote(&self.user),
-                privileged::shell_quote(&format!("exec /usr/bin/env {environment} {}", shell_words(&self.launch_argv))),
+                privileged::shell_quote(&format!(
+                    "exec /usr/bin/env {environment} {}",
+                    shell_words(&self.launch_argv)
+                )),
             )
         }
     }
 
     fn x11_command(&self) -> String {
-        let graphics_environment = shell_words(&self.guest_graphics_environment());
+        let mut environment = self.guest_graphics_environment();
+        environment.extend(self.guest_audio_environment());
+        let graphics_environment = shell_words(&environment);
         // DroidSpaces creates this per-user runtime directory as part of its
         // systemd container session.  Plasma/KWin uses it even in an X11
         // session, so preserve it across the login `su` below rather than
@@ -255,12 +292,12 @@ impl DroidspacesSpec {
             // select its own configured login shell while preserving only the
             // terminal and X11 variables required by this session.
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,VTEST_SOCKET_NAME,VTEST_RENDERER_SOCKET_NAME,LD_PRELOAD,TERM {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,VTEST_SOCKET_NAME,VTEST_RENDERER_SOCKET_NAME,LD_PRELOAD,PIPEWIRE_RUNTIME_DIR,PIPEWIRE_REMOTE,PULSE_SERVER,TERM {}",
                 privileged::shell_quote(&self.user),
             )
         } else {
             format!(
-                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,VTEST_SOCKET_NAME,VTEST_RENDERER_SOCKET_NAME,LD_PRELOAD,TERM {} -c {}",
+                "{prefix} /usr/bin/su -l -w DISPLAY,XDG_SESSION_TYPE,XDG_RUNTIME_DIR,QT_QUICK_BACKEND,LIBGL_ALWAYS_SOFTWARE,GALLIUM_DRIVER,MESA_LOADER_DRIVER_OVERRIDE,VTEST_SOCKET_NAME,VTEST_RENDERER_SOCKET_NAME,LD_PRELOAD,PIPEWIRE_RUNTIME_DIR,PIPEWIRE_REMOTE,PULSE_SERVER,TERM {} -c {}",
                 privileged::shell_quote(&self.user),
                 privileged::shell_quote(shell_words(&self.launch_argv)),
             )
@@ -381,6 +418,24 @@ impl DroidspacesSpec {
         Ok(Some(format!("{}:{GUEST_VIRGL_RUNTIME_DIRECTORY}", directory.display())))
     }
 
+    fn pipewire_bind(&self) -> io::Result<Option<String>> {
+        if self.pipewire_runtime_directory.is_empty() {
+            return Ok(None);
+        }
+        let directory = Path::new(&self.pipewire_runtime_directory);
+        if !directory.is_absolute()
+            || !directory.is_dir()
+            || !is_socket(&directory.join(PIPEWIRE_SOCKET))
+            || !is_socket(&directory.join(PULSE_SOCKET))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("PipeWire runtime sockets are not accessible: {}", directory.display()),
+            ));
+        }
+        Ok(Some(format!("{}:{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}", directory.display())))
+    }
+
     fn compatibility_bind(&self) -> io::Result<Option<String>> {
         if self.udev_compatibility_library.is_empty() {
             return Ok(None);
@@ -410,10 +465,22 @@ impl DroidspacesSpec {
     /// only for KWin, which is the sole consumer of the udev workaround.
     fn wayland_graphics_environment(&self) -> Vec<String> {
         let mut environment = self.guest_graphics_environment();
+        environment.extend(self.guest_audio_environment());
         if !self.udev_compatibility_library.is_empty() {
             environment.push(format!("KDEWM={GUEST_KWIN_WRAPPER}"));
         }
         environment
+    }
+
+    fn guest_audio_environment(&self) -> Vec<String> {
+        if self.pipewire_runtime_directory.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            format!("PIPEWIRE_RUNTIME_DIR={GUEST_PIPEWIRE_RUNTIME_DIRECTORY}"),
+            "PIPEWIRE_REMOTE=pipewire-0".to_owned(),
+            format!("PULSE_SERVER=unix:{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}/{PULSE_SOCKET}"),
+        ]
     }
 
     fn compatibility_prelude(&self) -> String {
@@ -543,6 +610,7 @@ mod tests {
             wayland_runtime_directory: String::new(),
             wayland_ime_bridge: "/tmp/ime/trierarch-wayland-ime-bridge".into(),
             virgl_runtime_directory: String::new(),
+            pipewire_runtime_directory: String::new(),
             udev_compatibility_library: String::new(),
             launch_argv: Vec::new(),
             graphics_environment: Vec::new(),
@@ -554,5 +622,32 @@ mod tests {
         assert!(command.contains(GUEST_PROVIDER_DESKTOP_PATH));
         assert!(command.contains("X-KDE-Wayland-VirtualKeyboard=true"));
         assert!(!command.contains("LD_PRELOAD"));
+    }
+
+    #[test]
+    fn passes_pipewire_and_pulse_socket_locations_to_droidspaces_sessions() {
+        let spec = DroidspacesSpec {
+            container: "arch-audio-test".into(),
+            user: "tester".into(),
+            x11_socket_directory: String::new(),
+            wayland_runtime_directory: String::new(),
+            wayland_ime_bridge: String::new(),
+            virgl_runtime_directory: String::new(),
+            pipewire_runtime_directory: "/tmp/pipewire-runtime".into(),
+            udev_compatibility_library: String::new(),
+            launch_argv: vec!["pw-play".into(), "sample.wav".into()],
+            graphics_environment: Vec::new(),
+        };
+
+        let environment = spec.guest_audio_environment();
+        assert!(environment.contains(&format!(
+            "PIPEWIRE_RUNTIME_DIR={GUEST_PIPEWIRE_RUNTIME_DIRECTORY}"
+        )));
+        assert!(environment.contains(&"PIPEWIRE_REMOTE=pipewire-0".to_owned()));
+        assert!(environment.contains(&format!(
+            "PULSE_SERVER=unix:{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}/{PULSE_SOCKET}"
+        )));
+        assert!(spec.terminal_command().contains("PIPEWIRE_RUNTIME_DIR"));
+        assert!(spec.terminal_command().contains("PULSE_SERVER"));
     }
 }

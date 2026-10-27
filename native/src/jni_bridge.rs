@@ -209,6 +209,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
     wayland_runtime_directory: JString,
     wayland_ime_bridge: JString,
     virgl_runtime_directory: JString,
+    pipewire_runtime_directory: JString,
     udev_compatibility_library: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
@@ -224,6 +225,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             wayland_runtime_directory: java_string(&mut env, wayland_runtime_directory)?,
             wayland_ime_bridge: java_string(&mut env, wayland_ime_bridge)?,
             virgl_runtime_directory: java_string(&mut env, virgl_runtime_directory)?,
+            pipewire_runtime_directory: java_string(&mut env, pipewire_runtime_directory)?,
             udev_compatibility_library: java_string(&mut env, udev_compatibility_library)?,
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
@@ -281,6 +283,35 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_stopVirgl
     _: JObject,
 ) {
     crate::virgl::stop();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_startPipeWireHost(
+    mut env: JNIEnv,
+    _: JObject,
+    runtime_directory: JString,
+    payload_directory: JString,
+    native_library_directory: JString,
+) {
+    let result = (|| {
+        crate::pipewire::start(
+            &PathBuf::from(java_string(&mut env, runtime_directory)?),
+            &PathBuf::from(java_string(&mut env, payload_directory)?),
+            &PathBuf::from(java_string(&mut env, native_library_directory)?),
+        )
+        .map_err(|error| error.to_string())
+    })();
+    if let Err(message) = result {
+        throw_illegal_argument(&mut env, &message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_stopPipeWireHost(
+    _: JNIEnv,
+    _: JObject,
+) {
+    crate::pipewire::stop();
 }
 
 /// Repairs only Trierarch's private X11 socket directory after an old build
