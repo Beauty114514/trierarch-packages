@@ -55,6 +55,13 @@ static const struct wl_buffer_interface buffer_impl = {
 
 void trierarch_buffer_destroy_storage(struct shm_buffer *buffer) {
     if (!buffer) return;
+    /* A pending buffer release is owned by this buffer; drop it before the
+     * buffer memory goes away so its destroy hook does not touch freed state. */
+    if (buffer->explicit_release) {
+        struct wl_resource *release = buffer->explicit_release;
+        buffer->explicit_release = NULL;
+        wl_resource_destroy(release);
+    }
     if (buffer->egl_buffer && buffer->egl_resource_destroy_listener_attached)
         wl_list_remove(&buffer->egl_resource_destroy_listener.link);
     if (buffer->android_hardware_buffer)
@@ -127,6 +134,10 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *res
     buffer->resource = wl_resource_create(client, &wl_buffer_interface,
             1, id);
     if (!buffer->resource) {
+        /* The buffer is already linked into pool->buffers; removing the link
+         * before freeing keeps later pool_resize()/pool_unref() walks from
+         * dereferencing a freed node. */
+        wl_list_remove(&buffer->pool_link);
         pool_unref(pool);
         free(buffer);
         wl_client_post_no_memory(client);

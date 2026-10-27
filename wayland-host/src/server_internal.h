@@ -256,6 +256,8 @@ struct compositor_surface *trierarch_surface_from_resource(struct wl_resource *r
 void trierarch_surface_commit(struct compositor_surface *surface);
 void trierarch_explicit_sync_wait(struct shm_buffer *buffer);
 void trierarch_explicit_sync_buffer_release(struct shm_buffer *buffer);
+void trierarch_explicit_sync_adopt_release(struct wl_resource *release,
+        struct shm_buffer *buffer);
 void trierarch_renderer_wait_idle(struct renderer_context *renderer);
 void trierarch_layer_surface_commit(struct compositor_surface *surface);
 void trierarch_surface_send_configure(struct compositor_surface *surface);

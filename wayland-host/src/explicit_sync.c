@@ -3,15 +3,38 @@
 #include <android/log.h>
 #include <errno.h>
 #include <poll.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #define TAG "TrierarchExplicitSync"
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
+/* A buffer release object is created while the commit is still pending and
+ * only later attached to the buffer it releases.  Keep both owners in one
+ * binding so the object's destroy hook can always clear the live pointer,
+ * whichever side still references it. */
+struct release_binding {
+    struct compositor_surface *surface;
+    struct shm_buffer *buffer;
+};
+
 static void release_destroy(struct wl_resource *resource) {
-    struct shm_buffer *buffer = wl_resource_get_user_data(resource);
-    if (buffer && buffer->explicit_release == resource)
-        buffer->explicit_release = NULL;
+    struct release_binding *binding = wl_resource_get_user_data(resource);
+    if (!binding) return;
+    if (binding->surface && binding->surface->pending_explicit_release == resource)
+        binding->surface->pending_explicit_release = NULL;
+    if (binding->buffer && binding->buffer->explicit_release == resource)
+        binding->buffer->explicit_release = NULL;
+    free(binding);
+}
+
+void trierarch_explicit_sync_adopt_release(struct wl_resource *release,
+        struct shm_buffer *buffer) {
+    if (!release || !buffer) return;
+    struct release_binding *binding = wl_resource_get_user_data(release);
+    if (!binding) return;
+    binding->surface = NULL;
+    binding->buffer = buffer;
 }
 
 static void sync_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -59,13 +82,20 @@ static void sync_get_release(struct wl_client *client,
                 "release already set for this commit");
         return;
     }
-    struct wl_resource *release = wl_resource_create(client,
-            &zwp_linux_buffer_release_v1_interface, 1, id);
-    if (!release) {
+    struct release_binding *binding = calloc(1, sizeof(*binding));
+    if (!binding) {
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(release, NULL, NULL, release_destroy);
+    binding->surface = surface;
+    struct wl_resource *release = wl_resource_create(client,
+            &zwp_linux_buffer_release_v1_interface, 1, id);
+    if (!release) {
+        free(binding);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(release, NULL, binding, release_destroy);
     surface->pending_explicit_release = release;
 }
 

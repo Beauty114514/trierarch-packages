@@ -218,6 +218,25 @@ static const struct wl_surface_interface surface_impl = {
 static void surface_resource_destroy(struct wl_resource *resource) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
     if (!surface) return;
+    /* Role objects keep this surface as their user data.  Destroy them while
+     * the surface is still alive; otherwise a late request or destroy on a
+     * role resource (including during client teardown) dereferences freed
+     * memory.  Destroying a role also runs its cleanup, e.g. unlinking a
+     * subsurface or closing an acquire fence. */
+    if (surface->xdg_toplevel) wl_resource_destroy(surface->xdg_toplevel);
+    if (surface->xdg_surface) wl_resource_destroy(surface->xdg_surface);
+    if (surface->subsurface) wl_resource_destroy(surface->subsurface);
+    if (surface->viewport) wl_resource_destroy(surface->viewport);
+    if (surface->fractional_scale) wl_resource_destroy(surface->fractional_scale);
+    if (surface->layer_surface) wl_resource_destroy(surface->layer_surface);
+    if (surface->explicit_sync) wl_resource_destroy(surface->explicit_sync);
+    surface->xdg_toplevel = NULL;
+    surface->xdg_surface = NULL;
+    surface->subsurface = NULL;
+    surface->viewport = NULL;
+    surface->fractional_scale = NULL;
+    surface->layer_surface = NULL;
+    surface->explicit_sync = NULL;
     if (surface->parent) {
         wl_list_remove(&surface->subsurface_link);
         wl_list_init(&surface->subsurface_link);
@@ -356,7 +375,13 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
                 surface->pending->acquire_fence_fd = surface->acquire_fence_fd;
                 surface->acquire_fence_fd = -1;
                 trierarch_explicit_sync_wait(surface->pending);
+                /* A reused buffer can still carry the release object of an
+                 * earlier commit; drop it instead of overwriting the field. */
+                if (surface->pending->explicit_release)
+                    wl_resource_destroy(surface->pending->explicit_release);
                 surface->pending->explicit_release = surface->pending_explicit_release;
+                trierarch_explicit_sync_adopt_release(surface->pending->explicit_release,
+                        surface->pending);
                 surface->pending_explicit_release = NULL;
             } else {
                 if (surface->acquire_fence_fd >= 0) close(surface->acquire_fence_fd);
