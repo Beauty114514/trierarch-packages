@@ -160,6 +160,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
     wayland_ime_bridge: JString,
     chroot_supervisor: JString,
     virgl_runtime_directory: JString,
+    pipewire_runtime_directory: JString,
     launch_argv: JObjectArray,
     graphics_environment: JObjectArray,
     udev_compatibility_library: JString,
@@ -176,6 +177,10 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChroo
             wayland_ime_bridge: PathBuf::from(java_string(&mut env, wayland_ime_bridge)?),
             chroot_supervisor: PathBuf::from(java_string(&mut env, chroot_supervisor)?),
             virgl_runtime_directory: PathBuf::from(java_string(&mut env, virgl_runtime_directory)?),
+            pipewire_runtime_directory: PathBuf::from(java_string(
+                &mut env,
+                pipewire_runtime_directory,
+            )?),
             launch_argv: java_string_array(&mut env, launch_argv)?,
             graphics_environment: java_string_array(&mut env, graphics_environment)?,
             udev_compatibility_library: PathBuf::from(java_string(&mut env, udev_compatibility_library)?),

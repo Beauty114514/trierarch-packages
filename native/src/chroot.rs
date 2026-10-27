@@ -22,6 +22,9 @@ const GUEST_SESSION_SUPERVISOR_LOG: &str =
 const GUEST_CHROOT_SUPERVISOR: &str =
     "/opt/trierarch/chroot-supervisor/trierarch-session-supervisor";
 const GUEST_VIRGL_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-virgl-host";
+const GUEST_PIPEWIRE_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-pipewire";
+const PIPEWIRE_SOCKET: &str = "pipewire-0";
+const PULSE_SOCKET: &str = "pulse/native";
 const GUEST_WAYLAND_IME_BRIDGE: &str = crate::wayland_ime_provider::GUEST_PROVIDER_BRIDGE_PATH;
 const GUEST_DMABUF_DEVICE_REPORT: &str = "/opt/trierarch/wayland-dmabuf/trierarch-dmabuf-device-report";
 const GUEST_DMABUF_FEEDBACK_SOCKET: &str = "/tmp/trierarch-wayland-host/dmabuf-feedback.sock";
@@ -44,6 +47,8 @@ pub struct ChrootSpec {
     pub wayland_ime_bridge: PathBuf,
     /// Empty unless this chroot session uses the Trierarch VirGL vtest host.
     pub virgl_runtime_directory: PathBuf,
+    /// Empty unless this chroot session uses the Android PipeWire host.
+    pub pipewire_runtime_directory: PathBuf,
     /// Empty starts the configured interactive shell.
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.
@@ -109,6 +114,20 @@ impl ChrootSpec {
                 ),
             ));
         }
+        if !self.pipewire_runtime_directory.as_os_str().is_empty()
+            && (!self.pipewire_runtime_directory.is_absolute()
+                || !self.pipewire_runtime_directory.is_dir()
+                || !is_socket(&self.pipewire_runtime_directory.join(PIPEWIRE_SOCKET))
+                || !is_socket(&self.pipewire_runtime_directory.join(PULSE_SOCKET)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "PipeWire runtime sockets are not accessible under: {}",
+                    self.pipewire_runtime_directory.display(),
+                ),
+            ));
+        }
         let owner_pid = std::process::id();
         let owner_start_time = process_start_time(owner_pid)?;
         let guest_command = guest_command(self, x11, wayland, owner_pid, owner_start_time);
@@ -151,6 +170,35 @@ fn guest_command(
         environment.push(format!("VTEST_SOCKET_NAME={socket}"));
         environment.push(format!("VTEST_RENDERER_SOCKET_NAME={socket}"));
     }
+    let pipewire_target = spec
+        .rootfs
+        .join(GUEST_PIPEWIRE_RUNTIME_DIRECTORY.trim_start_matches('/'));
+    let install_pipewire = if spec.pipewire_runtime_directory.as_os_str().is_empty() {
+        String::new()
+    } else {
+        environment.push(format!(
+            "PIPEWIRE_RUNTIME_DIR={GUEST_PIPEWIRE_RUNTIME_DIRECTORY}"
+        ));
+        environment.push("PIPEWIRE_REMOTE=pipewire-0".to_owned());
+        environment.push(format!(
+            "PULSE_SERVER=unix:{GUEST_PIPEWIRE_RUNTIME_DIRECTORY}/{PULSE_SOCKET}"
+        ));
+        format!(
+            "mkdir -p {target} || exit $?; \
+             if ! /system/bin/toybox mountpoint -q {target}; then \
+                 /system/bin/toybox mount --bind {source} {target} || exit $?; \
+                 trierarch_mount_pipewire=1; \
+             fi; ",
+            source = shell_quote(&spec.pipewire_runtime_directory),
+            target = shell_quote(&pipewire_target),
+        )
+    };
+    let cleanup_pipewire = format!(
+        "if [ \"${{trierarch_mount_pipewire}}\" = 1 ]; then \
+             /system/bin/toybox umount -l {target} >/dev/null 2>&1 || true; \
+         fi; ",
+        target = shell_quote(&pipewire_target),
+    );
     let install_compatibility = if spec.udev_compatibility_library.as_os_str().is_empty() {
         String::new()
     } else {
@@ -250,15 +298,17 @@ fn guest_command(
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_chroot_supervisor=; \\
-             cleanup() {{ if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; {system_cleanup} }}; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_pipewire=0; trierarch_chroot_supervisor=; \\
+             cleanup() {{ if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; {cleanup_pipewire}{system_cleanup} }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
-             {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts} \\
+             {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts}{install_pipewire} \\
              /system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
              /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             rootfs = shell_quote(&spec.rootfs),
             chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
             install_chroot_supervisor = install_chroot_supervisor,
+            install_pipewire = install_pipewire,
+            cleanup_pipewire = cleanup_pipewire,
             owner_pid = owner_pid,
             owner_start_time = owner_start_time,
         );
@@ -349,7 +399,7 @@ fn guest_command(
         let system_mounts = prepare_system_mounts(&spec.rootfs);
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
-            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; trierarch_session_supervisor=; trierarch_chroot_supervisor=; \\
+            "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_wayland=0; trierarch_mount_virgl=0; trierarch_mount_pipewire=0; trierarch_wayland_socket_link=0; trierarch_ime_bridge=; trierarch_session_supervisor=; trierarch_chroot_supervisor=; \\
              cleanup() {{ \\
                  if [ -n \"$trierarch_ime_bridge\" ]; then kill \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; wait \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; fi; \\
                  if [ -n \"$trierarch_session_supervisor\" ]; then kill \"$trierarch_session_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_session_supervisor\" >/dev/null 2>&1 || true; fi; \\
@@ -359,10 +409,11 @@ fn guest_command(
                  if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
                  if [ \"$trierarch_mount_wayland\" = 1 ]; then /system/bin/toybox umount -l {runtime_target} >/dev/null 2>&1 || true; fi; \\
+                 {cleanup_pipewire} \\
                  {system_cleanup} \\
              }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
-             {system_mounts} \\
+             {system_mounts}{install_pipewire} \\
              {install_compatibility}{install_ime_bridge}{install_session_supervisor}{install_dmabuf_device_report}{install_kwin_wrapper}{install_chroot_supervisor} \\
               mkdir -p {runtime_target} || exit $?; \\
              if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
@@ -379,6 +430,8 @@ fn guest_command(
             host_socket = shell_quote(&host_socket),
             virgl_target = shell_quote(&virgl_target),
             install_virgl = install_virgl,
+            install_pipewire = install_pipewire,
+            cleanup_pipewire = cleanup_pipewire,
             compatibility_directory = shell_quote(&spec.rootfs.join(
                 GUEST_COMPATIBILITY_DIRECTORY.trim_start_matches('/'),
             )),
@@ -421,16 +474,17 @@ fn guest_command(
     let system_mounts = prepare_system_mounts(&spec.rootfs);
     let system_cleanup = cleanup_system_mounts(&spec.rootfs);
     format!(
-        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; trierarch_mount_virgl=0; trierarch_chroot_supervisor=; \\
+        "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; trierarch_mount_virgl=0; trierarch_mount_pipewire=0; trierarch_chroot_supervisor=; \\
          cleanup() {{ \\
              if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; \\
              if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
              if [ \"$trierarch_mount_x11\" = 1 ]; then /system/bin/toybox umount -l {target} >/dev/null 2>&1 || true; fi; \\
+             {cleanup_pipewire} \\
              {system_cleanup} \\
          }}; \\
          trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
          test -S {socket} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
-         {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts} \\
+         {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts}{install_pipewire} \\
          mkdir -p {target} || exit $?; \\
          if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source} {target} || exit $?; trierarch_mount_x11=1; fi; \\
          {install_virgl} \\
@@ -441,6 +495,8 @@ fn guest_command(
         target = shell_quote(&target),
         virgl_target = shell_quote(&virgl_target),
         install_virgl = install_virgl,
+        install_pipewire = install_pipewire,
+        cleanup_pipewire = cleanup_pipewire,
         rootfs = shell_quote(&spec.rootfs),
         install_compatibility = install_compatibility,
         install_ime_bridge = install_ime_bridge,
@@ -647,4 +703,63 @@ fn shell_quote(value: &Path) -> String {
     let value = value.as_os_str().as_encoded_bytes();
     let value = String::from_utf8_lossy(value);
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_spec(audio: bool) -> ChrootSpec {
+        ChrootSpec {
+            rootfs: PathBuf::from("/guest/rootfs"),
+            shell: PathBuf::from("/bin/bash"),
+            x11_socket_directory: PathBuf::from("/host/x11"),
+            wayland_runtime_directory: PathBuf::from("/host/wayland"),
+            wayland_ime_bridge: PathBuf::new(),
+            virgl_runtime_directory: PathBuf::new(),
+            pipewire_runtime_directory: if audio {
+                PathBuf::from("/host/pipewire-run")
+            } else {
+                PathBuf::new()
+            },
+            launch_argv: vec!["startplasma-wayland".into()],
+            graphics_environment: Vec::new(),
+            udev_compatibility_library: PathBuf::new(),
+            chroot_supervisor: PathBuf::from("/host/supervisor"),
+        }
+    }
+
+    #[test]
+    fn pipewire_is_bound_and_exported_for_terminal_sessions() {
+        let command = guest_command(&test_spec(true), false, false, 123, 456);
+        assert!(
+            command.contains(
+                "mount --bind '/host/pipewire-run' '/guest/rootfs/tmp/trierarch-pipewire'"
+            )
+        );
+        assert!(command.contains("PIPEWIRE_RUNTIME_DIR=/tmp/trierarch-pipewire"));
+        assert!(command.contains("PIPEWIRE_REMOTE=pipewire-0"));
+        assert!(command.contains("PULSE_SERVER=unix:/tmp/trierarch-pipewire/pulse/native"));
+        assert!(command.contains("umount -l '/guest/rootfs/tmp/trierarch-pipewire'"));
+    }
+
+    #[test]
+    fn pipewire_environment_is_applied_to_display_sessions() {
+        for (x11, wayland) in [(true, false), (false, true)] {
+            let command = guest_command(&test_spec(true), x11, wayland, 123, 456);
+            assert!(command.contains(
+                "mount --bind '/host/pipewire-run' '/guest/rootfs/tmp/trierarch-pipewire'"
+            ));
+            assert!(command.contains("PIPEWIRE_RUNTIME_DIR=/tmp/trierarch-pipewire"));
+            assert!(command.contains("PULSE_SERVER=unix:/tmp/trierarch-pipewire/pulse/native"));
+        }
+    }
+
+    #[test]
+    fn pipewire_is_not_exposed_when_disabled() {
+        let command = guest_command(&test_spec(false), false, false, 123, 456);
+        assert!(!command.contains("mount --bind '/host/pipewire-run'"));
+        assert!(!command.contains("PIPEWIRE_RUNTIME_DIR="));
+        assert!(!command.contains("PULSE_SERVER="));
+    }
 }
