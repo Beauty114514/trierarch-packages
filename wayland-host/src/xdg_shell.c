@@ -166,7 +166,14 @@ static void xdg_surface_set_window_geometry(struct wl_client *client,
 
 static void xdg_surface_ack_configure(struct wl_client *client,
         struct wl_resource *resource, uint32_t serial) {
-    trace_xdg_event("ack_configure", client, wl_resource_get_user_data(resource), serial);
+    struct compositor_surface *surface = wl_resource_get_user_data(resource);
+    trace_xdg_event("ack_configure", client, surface, serial);
+    /* `configured` tracks the client's acknowledgement, not the send.  The
+     * initial configure is sent when the role is assigned, which can happen
+     * before the client's first empty commit.  Marking the surface configured
+     * at send time suppressed the post-commit configure when a client ignored
+     * that early event, leaving it on its bootstrap buffer forever. */
+    if (surface) surface->configured = true;
 }
 
 static void xdg_surface_resource_destroy(struct wl_resource *resource) {
@@ -269,7 +276,6 @@ void trierarch_surface_send_configure(struct compositor_surface *surface) {
     trace_xdg_event("send_configure", wl_resource_get_client(surface->xdg_surface),
             surface, serial);
     xdg_surface_send_configure(surface->xdg_surface, serial);
-    surface->configured = true;
 }
 
 void trierarch_xdg_shell_bind(struct wl_client *client, void *data,

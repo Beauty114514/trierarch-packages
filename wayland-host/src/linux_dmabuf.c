@@ -66,6 +66,16 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
             params->stride > INT32_MAX) {
         return NULL;
     }
+    /* The feedback advertises LINEAR only.  Accepting a tiled or unknown
+     * modifier would create a buffer the renderer can neither import (host
+     * EGL has no dma-buf import here) nor safely mmap, which presents as a
+     * silent black frame instead of a failed create the client can fall back
+     * from.  Reject it here so the protocol error reaches the producer. */
+    if (params->modifier != 0) {
+        LOGW("rejecting dmabuf with unsupported modifier 0x%llx fmt=0x%x stride=%u",
+                (unsigned long long)params->modifier, format, params->stride);
+        return NULL;
+    }
     size_t end = 0;
     void *mapping = NULL;
     end = (size_t)params->offset + (size_t)params->stride * (size_t)height;
@@ -159,9 +169,16 @@ static void params_create_immed(struct wl_client *client, struct wl_resource *re
     struct shm_buffer *buffer = make_dmabuf_buffer(client, (int)buffer_id,
             width, height, format, params);
     params->used = true;
-    if (!buffer)
+    if (!buffer) {
+        /* `create_immed` can only fail through a protocol error.  Distinguish
+         * a missing plane from an unsupported format/modifier so the client's
+         * disconnect message is actionable. */
         wl_resource_post_error(resource,
-                ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "unsupported dmabuf parameters");
+                params->added ? ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT
+                              : ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+                params->added ? "unsupported dmabuf format or modifier"
+                              : "dmabuf parameters are incomplete");
+    }
 }
 
 static void params_resource_destroy(struct wl_resource *resource) {
