@@ -1,45 +1,52 @@
-# Android PipeWire host runtime
+# Trierarch Android PipeWire host runtime
 
-This package supplies the Android-side playback service used by DroidSpaces
-profiles with `audio.backend = "pipewire"`. The app expects a bionic/arm64
-runtime under `dist/android/arm64-v8a/` with this layout:
+Trierarch runs PipeWire, its PulseAudio-protocol server, WirePlumber, and a
+separate PipeWire client that exposes an AAudio-backed `Audio/Sink` on Android.
+Container clients connect through the native PipeWire socket or the
+PulseAudio-compatible socket.
 
 ```text
-bin/pipewire
-bin/pipewire-pulse
-etc/pipewire/pipewire.conf
-etc/pipewire/pipewire-pulse.conf
-lib/*.so
-lib/pipewire-0.3/*.so
-lib/spa-0.2/**/*.so
+guest audio client -> bind-mounted PipeWire/Pulse socket -> host PipeWire
+                   -> standalone AAudio sink client -> Android AAudio
 ```
 
-The payload must include an Android AAudio playback module and load it from
-`pipewire-pulse.conf`. The minimum host service starts `pipewire` and
-`pipewire-pulse`; it does not require WirePlumber for this PulseAudio playback
-path. Host PipeWire and PulseAudio-protocol sockets are exposed to the
-container at `/tmp/trierarch-pipewire/pipewire-0` and
-`/tmp/trierarch-pipewire/pulse/native`; the app sets the matching guest
-environment and bind-mounts that runtime directory when DroidSpaces starts.
+The initial runtime packages prebuilt Termux PipeWire 1.4.9-1 and WirePlumber
+0.5.13 artifacts, plus an AAudio sink executable, from the pinned upstream
+reference revision `0543368d3262e098b92ff0305e149ff0d1fce3e1`. This packaging
+step does not patch or rebuild PipeWire.
 
-The Android lifecycle and socket integration are in place, but this directory
-does not yet contain the source-build/staging scripts or runtime artifacts.
-Consequently PipeWire profiles fail with an explicit missing-payload error
-until this package is built. No binaries are checked into Git.
+## Prepare the Android runtime
 
-Enable the backend only in a DroidSpaces profile:
+```bash
+cd trierarch-packages/pipewire-host
+bash scripts/fetch.sh https://github.com/localdesktop/localdesktop.github.io.git
+bash scripts/package-android.sh
+```
+
+The result is placed under `dist/android/arm64-v8a/` and consumed by the app's
+asset packaging task. Generated source and binaries are ignored by Git. The
+AAudio sink is an independent executable, not a PipeWire module. The fetch
+script takes its source URL as an argument so upstream provenance remains
+documented here rather than embedded in Trierarch's build code.
+
+The runtime is currently enabled only for DroidSpaces profiles:
 
 ```toml
 [audio]
 backend = "pipewire"
 ```
 
-After a runtime is available, a first guest-side check is `pactl info` with
-`PULSE_SERVER` set by Trierarch; the reported server should be PipeWire. Then
-play a short WAV with `paplay` or `pw-play`. These runtime checks cannot pass
-until the Android payload and AAudio module are built and packaged.
+The Android service creates both sockets before container startup and exposes
+them through the session's `/tmp/trierarch-pipewire` bind mount. The first
+guest-side verification is `pactl info`, followed by playback using `paplay`.
 
-Implementation references:
+## Attribution and limits
 
-- [Local Desktop PipeWire/AAudio architecture](https://localdesktop.github.io/docs/developer/pipewire-standalone-aaudio-poc/)
-- [PipeWire AAudio/Oboe Android build](https://github.com/leefm0204/pipewire-termux-proot)
+The standalone AAudio sink and its reference implementation come from the
+[Local Desktop project](https://github.com/localdesktop/localdesktop.github.io/tree/0543368d3262e098b92ff0305e149ff0d1fce3e1),
+licensed under GPL-3.0. The bundle manifest records the pinned revision; source
+attribution is kept here. PipeWire, WirePlumber, and the Termux-built runtime
+artifacts retain their respective upstream licenses. This is an initial
+playback implementation, not microphone capture or audio-focus support.
+
+- [Reference design notes](https://localdesktop.github.io/docs/developer/pipewire-standalone-aaudio-poc/)
