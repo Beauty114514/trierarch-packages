@@ -49,7 +49,10 @@ struct shm_buffer {
     int32_t height;
     int32_t stride;
     uint32_t format;
-    bool busy;
+    /* Number of surfaces whose committed state still uses this buffer.  A
+     * wl_buffer may be attached to more than one surface, so release must be
+     * sent only when the last user drops it. */
+    unsigned int busy_users;
     bool single_pixel;
     bool dmabuf;
     bool egl_buffer;
@@ -59,6 +62,10 @@ struct shm_buffer {
     int dmabuf_fd;
     int acquire_fence_fd;
     struct wl_resource *explicit_release;
+    /* EGL buffers are cached per wl_resource so repeated attaches reuse one
+     * wrapper instead of allocating a new one every frame. */
+    struct wl_list egl_cache_link;
+    bool egl_cache_linked;
     void *dmabuf_mapping;
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
@@ -165,6 +172,8 @@ struct wayland_server {
     int telemetry_fd;
     int repaint_fd;
     struct wl_list surfaces;
+    /* One compositor-side wrapper per live EGL wl_buffer resource. */
+    struct wl_list egl_buffers;
     struct wl_list output_resources;
     struct wl_list xdg_output_resources;
     struct wl_list pointer_resources;

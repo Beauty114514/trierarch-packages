@@ -62,6 +62,10 @@ void trierarch_buffer_destroy_storage(struct shm_buffer *buffer) {
         buffer->explicit_release = NULL;
         wl_resource_destroy(release);
     }
+    if (buffer->egl_cache_linked) {
+        wl_list_remove(&buffer->egl_cache_link);
+        buffer->egl_cache_linked = false;
+    }
     if (buffer->egl_buffer && buffer->egl_resource_destroy_listener_attached)
         wl_list_remove(&buffer->egl_resource_destroy_listener.link);
     if (buffer->android_hardware_buffer)
@@ -246,8 +250,10 @@ struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resour
 }
 
 void trierarch_shm_buffer_release(struct shm_buffer *buffer) {
-    if (!buffer || !buffer->busy) return;
-    buffer->busy = false;
+    if (!buffer || buffer->busy_users == 0) return;
+    /* A wl_buffer may be attached to several surfaces at once; release only
+     * when the last surface stops using it. */
+    if (--buffer->busy_users > 0) return;
     if (buffer->resource)
         wl_buffer_send_release(buffer->resource);
     trierarch_explicit_sync_buffer_release(buffer);

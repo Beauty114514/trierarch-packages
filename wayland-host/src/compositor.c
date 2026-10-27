@@ -83,6 +83,7 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
     server->next_serial = 1;
     server->egl_buffer_supported = false;
     wl_list_init(&server->surfaces);
+    wl_list_init(&server->egl_buffers);
     wl_list_init(&server->output_resources);
     wl_list_init(&server->xdg_output_resources);
     wl_list_init(&server->pointer_resources);

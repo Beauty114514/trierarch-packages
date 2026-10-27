@@ -363,8 +363,6 @@ struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *res
 }
 
 void trierarch_dmabuf_buffer_release(struct shm_buffer *buffer) {
-    if (!buffer || !buffer->resource || !buffer->busy) return;
-    buffer->busy = false;
-    wl_buffer_send_release(buffer->resource);
-    trierarch_explicit_sync_buffer_release(buffer);
+    /* dma-buf and shm buffers share the same per-surface busy accounting. */
+    trierarch_shm_buffer_release(buffer);
 }

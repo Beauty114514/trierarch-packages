@@ -392,7 +392,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
             }
             surface->current = surface->pending;
             if (surface->current) {
-                surface->current->busy = true;
+                surface->current->busy_users++;
                 surface->width = surface->current->width;
                 surface->height = surface->current->height;
                 surface->mapped = true;
