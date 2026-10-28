@@ -1,0 +1,902 @@
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+--- a/src/venus/vkr_buffer.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_buffer.c	2026-10-27 11:14:29.835954211 +0800
+@@ -6,6 +6,7 @@
+ #include "vkr_buffer.h"
+ 
+ #include "vkr_buffer_gen.h"
++#include "vkr_device_memory.h"
+ #include "vkr_physical_device.h"
+ 
+ static void
+@@ -37,7 +38,78 @@
+     * vkr_physical_device_init_memory_properties as well.
+     */
+ 
++   vkr_log("venus trace create buffer request device=%p output=%p info=%p",
++           (void *)args->device, (void *)args->pBuffer,
++           (void *)args->pCreateInfo);
++   if (args->pCreateInfo) {
++      vkr_log("venus trace create buffer input size=%llu usage=0x%x flags=0x%x "
++              "sharing=%u queue_count=%u queue_indices=%p pNext=%p",
++              (unsigned long long)args->pCreateInfo->size,
++              args->pCreateInfo->usage, args->pCreateInfo->flags,
++              args->pCreateInfo->sharingMode,
++              args->pCreateInfo->queueFamilyIndexCount,
++              (void *)args->pCreateInfo->pQueueFamilyIndices,
++              (void *)args->pCreateInfo->pNext);
++   }
++
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   struct vkr_physical_device *physical_dev = dev->physical_device;
++   const VkBufferCreateInfo *original_create_info = args->pCreateInfo;
++   VkBufferCreateInfo adjusted_create_info;
++   VkExternalMemoryBufferCreateInfo external_create_info;
++   if (args->pCreateInfo && physical_dev->KHR_external_memory_fd &&
++       !vkr_find_struct(args->pCreateInfo->pNext,
++                        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO)) {
++      const VkPhysicalDeviceExternalBufferInfo external_info = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
++         .flags = args->pCreateInfo->flags,
++         .usage = args->pCreateInfo->usage,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++      };
++      VkExternalBufferProperties external_properties = {
++         .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES,
++      };
++      physical_dev->proc_table.GetPhysicalDeviceExternalBufferProperties(
++         physical_dev->base.handle.physical_device, &external_info,
++         &external_properties);
++      const VkExternalMemoryFeatureFlags features =
++         external_properties.externalMemoryProperties.externalMemoryFeatures;
++      const bool can_export_dedicated_only =
++         (features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0 &&
++         (features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0;
++      vkr_log("venus trace buffer export decision features=0x%x exportable=%u "
++              "dedicated_only=%u pNext=%p eligible=%u",
++              features,
++              (features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0,
++              (features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) != 0,
++              (void *)args->pCreateInfo->pNext, can_export_dedicated_only);
++      if (args->pCreateInfo->size >= 1024 * 1024) {
++         vkr_log("venus trace external buffer usage=0x%x flags=0x%x handle=opaque-fd "
++                 "features=0x%x export_from_imported=0x%x compatible=0x%x",
++                 external_info.usage, external_info.flags, features,
++                 external_properties.externalMemoryProperties.exportFromImportedHandleTypes,
++                 external_properties.externalMemoryProperties.compatibleHandleTypes);
++      }
++
++      if (can_export_dedicated_only) {
++         external_create_info = (VkExternalMemoryBufferCreateInfo){
++            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
++            .pNext = args->pCreateInfo->pNext,
++            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++         };
++         adjusted_create_info = *args->pCreateInfo;
++         adjusted_create_info.pNext = &external_create_info;
++         args->pCreateInfo = &adjusted_create_info;
++         vkr_log("venus trace buffer externalization usage=0x%x size=%llu "
++                 "handle=opaque-fd dedicated-only=1 original=%p forwarded=%p pNext=%p",
++                 external_info.usage, (unsigned long long)adjusted_create_info.size,
++                 (void *)original_create_info, (void *)args->pCreateInfo,
++                 (void *)args->pCreateInfo->pNext);
++      }
++   }
++
+    vkr_buffer_create_and_add(dispatch->data, args);
++   args->pCreateInfo = original_create_info;
+ }
+ 
+ static void
+@@ -81,6 +153,12 @@
+    vn_replace_vkBindBufferMemory_args_handle(args);
+    args->ret =
+       vk->BindBufferMemory(args->device, args->buffer, args->memory, args->memoryOffset);
++   struct vkr_buffer *buffer = vkr_buffer_from_handle(args->buffer);
++   struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
++   vkr_log("venus trace bind buffer id=%u memory_id=%u type=%u size=%llu offset=%llu result=%d",
++           buffer->base.id, mem->base.id, mem->memory_type_index,
++           (unsigned long long)mem->allocation_size,
++           (unsigned long long)args->memoryOffset, args->ret);
+ }
+ 
+ static void
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+--- a/src/venus/vkr_context.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_context.c	2026-10-26 21:56:08.350961594 +0800
+@@ -320,6 +320,11 @@
+    if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY)
+       return false;
+ 
++   vkr_log("venus trace export blob resource_id=%u memory_id=%u memory_type=%u size=%llu blob_size=%llu flags=0x%x",
++           res_id, mem->base.id, mem->memory_type_index,
++           (unsigned long long)mem->allocation_size,
++           (unsigned long long)blob_size, blob_flags);
++
+    struct virgl_context_blob blob;
+    if (!vkr_device_memory_export_blob(mem, blob_size, blob_flags, &blob))
+       return false;
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_device_memory.c	2026-10-27 00:46:53.127829244 +0800
+@@ -237,6 +237,10 @@
+    struct vkr_physical_device *physical_dev = dev->physical_device;
+ 
+    VkMemoryAllocateInfo *alloc_info = (VkMemoryAllocateInfo *)args->pAllocateInfo;
++   const VkExportMemoryAllocateInfo *requested_export_info =
++      vkr_find_struct(alloc_info->pNext, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
++   const VkMemoryDedicatedAllocateInfo *dedicated_info =
++      vkr_find_struct(alloc_info->pNext, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
+    const uint32_t mem_type_index = alloc_info->memoryTypeIndex;
+    if (unlikely(mem_type_index >= physical_dev->memory_properties.memoryTypeCount)) {
+       args->ret = VK_ERROR_UNKNOWN;
+@@ -277,6 +281,15 @@
+     */
+    const uint32_t property_flags =
+       physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags;
++   vkr_log("venus trace allocate memory size=%llu memory_type=%u property_flags=0x%x "
++           "requested_export=%u requested_handles=0x%x dedicated=%u dedicated_buffer=%u "
++           "dedicated_image=%u",
++           (unsigned long long)alloc_info->allocationSize, mem_type_index, property_flags,
++           requested_export_info != NULL,
++           requested_export_info ? requested_export_info->handleTypes : 0,
++           dedicated_info != NULL,
++           dedicated_info && dedicated_info->buffer != VK_NULL_HANDLE,
++           dedicated_info && dedicated_info->image != VK_NULL_HANDLE);
+    uint32_t valid_fd_types = 0;
+    int udmabuf_fd = -1;
+    void *gbm_bo = NULL;
+@@ -382,6 +395,15 @@
+    mem->gbm_bo = gbm_bo;
+    mem->allocation_size = alloc_info->allocationSize;
+    mem->memory_type_index = mem_type_index;
++   vkr_log("venus trace allocated memory id=%u requested_size=%llu type=%u "
++           "requested_handles=0x%x dedicated=%u dedicated_buffer=%u dedicated_image=%u "
++           "final_handles=0x%x valid_fd_types=0x%x might_export=%u",
++           mem->base.id, (unsigned long long)alloc_info->allocationSize, mem_type_index,
++           requested_export_info ? requested_export_info->handleTypes : 0,
++           dedicated_info != NULL,
++           dedicated_info && dedicated_info->buffer != VK_NULL_HANDLE,
++           dedicated_info && dedicated_info->image != VK_NULL_HANDLE,
++           export_info ? export_info->handleTypes : 0, valid_fd_types, might_export);
+ }
+ 
+ static void
+@@ -586,7 +608,12 @@
+       };
+       VkResult ret = vk->GetMemoryFdKHR(mem->device->base.handle.device, &fd_info, &fd);
+       if (ret != VK_SUCCESS) {
+-         vkr_log("mem fd export failed (vk ret %d)", ret);
++         vkr_log("mem fd export failed (memory_id=%u vk ret %d handle_type=0x%x memory_type=%u "
++                 "property_flags=0x%x allocation_size=%llu blob_size=%llu "
++                 "blob_flags=0x%x valid_fd_types=0x%x)",
++                 mem->base.id, ret, handle_type, mem->memory_type_index, mem->property_flags,
++                 (unsigned long long)mem->allocation_size,
++                 (unsigned long long)blob_size, blob_flags, mem->valid_fd_types);
+          return false;
+       }
+    }
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_device_object.py b/src/venus/vkr_device_object.py
+--- a/src/venus/vkr_device_object.py	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_device_object.py	2026-10-27 03:33:26.390777130 +0800
+@@ -18,8 +18,17 @@
+ 
+    /* handles in args are replaced */
+    vn_replace_{create_cmd}_args_handle(args);
++   if ("{create_cmd}"[0] == 'v' && "{create_cmd}"[1] == 'k' &&
++       "{create_cmd}"[2] == 'C' && "{create_cmd}"[3] == 'r')
++      vkr_log("venus trace driver create begin cmd={create_cmd} device=%p proc=%p info=%p",
++              (void *)args->device, (void *)vk->{proc_create},
++              (void *)args->{create_info});
+    args->ret = vk->{proc_create}(args->device, args->{create_info}, NULL,
+       &obj->base.handle.{vkr_type});
++   if ("{create_cmd}"[0] == 'v' && "{create_cmd}"[1] == 'k' &&
++       "{create_cmd}"[2] == 'C' && "{create_cmd}"[3] == 'r')
++      vkr_log("venus trace driver create end cmd={create_cmd} result=%d handle=%p",
++              (int)args->ret, (void *)obj->base.handle.{vkr_type});
+    return args->ret;
+ }}
+ '''
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_image.c	2026-10-27 17:52:01.084501250 +0800
+@@ -6,12 +6,118 @@
+ #include "vkr_image.h"
+ 
+ #include "vkr_image_gen.h"
++#include "vkr_device_memory.h"
++#include "vkr_device.h"
+ #include "vkr_physical_device.h"
+ 
+ static void
+ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkCreateImage *args)
+ {
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   struct vkr_physical_device *physical_dev = dev->physical_device;
++   const VkImageCreateInfo *original_create_info = args->pCreateInfo;
++   VkImageCreateInfo adjusted_create_info;
++   VkExternalMemoryImageCreateInfo external_create_info;
++
++   /* Venus may export host-visible allocations as vtest blobs even when the
++    * guest image was not explicitly created as external. If the Android Vulkan
++    * driver only permits OPAQUE_FD export for a dedicated image allocation,
++    * expose that requirement at image creation so the guest's subsequent
++    * memory-requirements query and allocation can honor it. Otherwise
++    * vkGetMemoryFdKHR can fail on the forced, non-dedicated allocation.
++    */
++   if (args->pCreateInfo && physical_dev->KHR_external_memory_fd &&
++       !vkr_find_struct(args->pCreateInfo->pNext,
++                        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO)) {
++      const VkPhysicalDeviceExternalImageFormatInfo external_info = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++      };
++      const VkPhysicalDeviceImageFormatInfo2 format_info = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
++         .pNext = &external_info,
++         .format = args->pCreateInfo->format,
++         .type = args->pCreateInfo->imageType,
++         .tiling = args->pCreateInfo->tiling,
++         .usage = args->pCreateInfo->usage,
++         .flags = args->pCreateInfo->flags,
++      };
++      VkExternalImageFormatProperties external_props = {
++         .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
++      };
++      VkImageFormatProperties2 format_props = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
++         .pNext = &external_props,
++      };
++      const VkResult query_result =
++         physical_dev->proc_table.GetPhysicalDeviceImageFormatProperties2(
++            physical_dev->base.handle.physical_device, &format_info, &format_props);
++      const VkExternalMemoryProperties *memory_props =
++         &external_props.externalMemoryProperties;
++      const VkExternalMemoryFeatureFlags features =
++         memory_props->externalMemoryFeatures;
++      const bool needs_dedicated_export = query_result == VK_SUCCESS &&
++         (features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) &&
++         (features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT);
++      if (needs_dedicated_export) {
++         external_create_info = (VkExternalMemoryImageCreateInfo){
++            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
++            .pNext = args->pCreateInfo->pNext,
++            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++         };
++         adjusted_create_info = *args->pCreateInfo;
++         adjusted_create_info.pNext = &external_create_info;
++         args->pCreateInfo = &adjusted_create_info;
++         vkr_log("venus image externalized for opaque-fd export format=%u type=%u "
++                 "tiling=%u usage=0x%x flags=0x%x features=0x%x dedicated-only=1",
++                 format_info.format, format_info.type, format_info.tiling,
++                 format_info.usage, format_info.flags, features);
++      }
++   }
++
++   static atomic_uint trace_count = ATOMIC_VAR_INIT(0);
++   const unsigned trace_index = atomic_fetch_add_explicit(
++      &trace_count, 1, memory_order_relaxed);
++   if (trace_index < 32) {
++      struct vkr_device *dev = vkr_device_from_handle(args->device);
++      struct vkr_physical_device *physical_dev = dev->physical_device;
++      const VkPhysicalDeviceExternalImageFormatInfo external_info = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
++      };
++      const VkPhysicalDeviceImageFormatInfo2 format_info = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
++         .pNext = &external_info,
++         .format = args->pCreateInfo->format,
++         .type = args->pCreateInfo->imageType,
++         .tiling = args->pCreateInfo->tiling,
++         .usage = args->pCreateInfo->usage,
++         .flags = args->pCreateInfo->flags,
++      };
++      VkExternalImageFormatProperties external_props = {
++         .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
++      };
++      VkImageFormatProperties2 format_props = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
++         .pNext = &external_props,
++      };
++      const VkResult query_result =
++         physical_dev->proc_table.GetPhysicalDeviceImageFormatProperties2(
++            physical_dev->base.handle.physical_device, &format_info, &format_props);
++      const VkExternalMemoryProperties *memory_props =
++         &external_props.externalMemoryProperties;
++      vkr_log("venus trace image opaque-fd query index=%u format=%u type=%u "
++              "tiling=%u usage=0x%x flags=0x%x result=%d features=0x%x "
++              "compatible=0x%x export_from_imported=0x%x dedicated_only=%u",
++              trace_index, format_info.format, format_info.type, format_info.tiling,
++              format_info.usage, format_info.flags, query_result,
++              memory_props->externalMemoryFeatures, memory_props->compatibleHandleTypes,
++              memory_props->exportFromImportedHandleTypes,
++              !!(memory_props->externalMemoryFeatures &
++                 VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT));
++   }
++
+    /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is
+     * good.  If it is not chained, we might still bind an external memory to
+     * the image, because vkr_dispatch_vkAllocateMemory makes any HOST_VISIBLE
+@@ -32,6 +138,7 @@
+     */
+ 
+    vkr_image_create_and_add(dispatch->data, args);
++   args->pCreateInfo = original_create_info;
+ }
+ 
+ static void
+@@ -60,9 +167,27 @@
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
++   bool has_dedicated_requirements = false;
++   VkMemoryDedicatedRequirements *dedicated = NULL;
++   for (VkBaseOutStructure *pnext =
++           (VkBaseOutStructure *)args->pMemoryRequirements->pNext;
++        pnext; pnext = pnext->pNext) {
++      if (pnext->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS) {
++         has_dedicated_requirements = true;
++         dedicated = (VkMemoryDedicatedRequirements *)pnext;
++         break;
++      }
++   }
+ 
+    vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
+    vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++   vkr_log("venus image requirements image=%p size=%llu dedicated-query=%u "
++           "prefers-dedicated=%u requires-dedicated=%u",
++           (void *)args->pInfo->image,
++           (unsigned long long)args->pMemoryRequirements->memoryRequirements.size,
++           has_dedicated_requirements,
++           dedicated ? dedicated->prefersDedicatedAllocation : 0,
++           dedicated ? dedicated->requiresDedicatedAllocation : 0);
+ }
+ 
+ static void
+@@ -103,6 +228,12 @@
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+       vk->BindImageMemory(args->device, args->image, args->memory, args->memoryOffset);
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++   struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
++   vkr_log("venus trace bind image id=%u memory_id=%u type=%u size=%llu offset=%llu result=%d",
++           image->base.id, mem->base.id, mem->memory_type_index,
++           (unsigned long long)mem->allocation_size,
++           (unsigned long long)args->memoryOffset, args->ret);
+ }
+ 
+ static void
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+--- a/src/venus/vkr_physical_device.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_physical_device.c	2026-10-26 20:46:49.569277474 +0800
+@@ -240,6 +240,14 @@
+       else
+          vkr_log("missing VK_EXT_external_memory_dma_buf for udmabuf import!");
+    }
++
++   vkr_log("host memory export caps: dma_buf_ext=%u external_memory_fd=%u "
++           "dma_buf_export=%u opaque_fd_export=%u gbm=%u udmabuf_fd=%d",
++           physical_dev->EXT_external_memory_dma_buf,
++           physical_dev->KHR_external_memory_fd,
++           physical_dev->is_dma_buf_fd_export_supported,
++           physical_dev->is_opaque_fd_export_supported,
++           physical_dev->gbm_device != NULL, physical_dev->udmabuf_dev_fd);
+ }
+ 
+ static void
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+--- a/src/venus/vkr_ring.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/venus/vkr_ring.c	2026-10-26 22:47:23.155728047 +0800
+@@ -13,6 +13,8 @@
+ 
+ #include "vkr_context.h"
+ 
++static atomic_uint trierarch_venus_trace_sequence = ATOMIC_VAR_INIT(0);
++
+ static inline void *
+ get_resource_pointer(const struct vkr_resource *res, size_t offset)
+ {
+@@ -222,7 +224,21 @@
+    vkr_cs_decoder_set_buffer_stream(dec, buffer, size);
+ 
+    while (vkr_cs_decoder_has_command(dec)) {
++      const uint32_t trace_sequence = atomic_fetch_add_explicit(
++         &trierarch_venus_trace_sequence, 1, memory_order_relaxed);
++      const bool trace_command = trace_sequence < 512;
++      uint32_t command_type = UINT32_MAX;
++      if (trace_command)
++         vkr_cs_decoder_peek(dec, sizeof(command_type), &command_type,
++                             sizeof(command_type));
++      if (trace_command)
++         vkr_log("venus trace command begin seq=%u type=%u name=%s", trace_sequence,
++                 command_type, vn_dispatch_command_name((VkCommandTypeEXT)command_type));
+       vn_dispatch_command(&ring->dispatch);
++      if (trace_command)
++         vkr_log("venus trace command end seq=%u type=%u name=%s fatal=%u", trace_sequence,
++                 command_type, vn_dispatch_command_name((VkCommandTypeEXT)command_type),
++                 vkr_cs_decoder_get_fatal(dec));
+       if (vkr_cs_decoder_get_fatal(dec)) {
+          vkr_log("ring_submit_cmd: vn_dispatch_command failed");
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/virglrenderer.c b/src/virglrenderer.c
+--- a/src/virglrenderer.c	2026-02-10 21:43:59.000000000 +0800
++++ b/src/virglrenderer.c	2026-10-28 17:10:25.771406352 +0800
+@@ -44,6 +44,7 @@
+ #include "drm_renderer.h"
+ #include "proxy/proxy_renderer.h"
+ #include "vrend/vrend_renderer.h"
++#include "vrend/vrend_winsys_egl.h"
+ #include "vrend/vrend_winsys.h"
+ 
+ #ifndef WIN32
+@@ -56,6 +57,7 @@
+ #include "virgl_context.h"
+ #include "virgl_fence.h"
+ #include "virgl_resource.h"
++#include "vrend/vrend_renderer.h"
+ #include "virgl_util.h"
+ 
+ struct global_state {
+@@ -118,6 +120,8 @@
+       return -ENOMEM;
+ 
+    res->map_info = map_info;
++   fprintf(stderr, "resource create handle=%u res=%p pipe=%p\n",
++           args->handle, (void *)res, (void *)pipe_res);
+ 
+    return 0;
+ }
+@@ -1116,6 +1120,31 @@
+    return 0;
+ }
+ 
++int virgl_renderer_present_ahb_current(uint32_t res_id, void *ahb,
++                                           uint32_t width, uint32_t height)
++{
++   extern struct virgl_egl *egl;
++   struct virgl_resource *res = virgl_resource_lookup(res_id);
++   struct vrend_resource *vres;
++   if (!res || !res->pipe_resource || !egl)
++      return -1;
++   vres = (struct vrend_resource *)res->pipe_resource;
++   if (!vres->gl_id)
++      return -1;
++   return virgl_egl_present_ahb(egl, vres->gl_id, vres->target, ahb, width, height);
++}
++
++int virgl_renderer_present_ahb(uint32_t res_id, void *ahb,
++                                  uint32_t width, uint32_t height)
++{
++   struct virgl_resource *res = virgl_resource_lookup(res_id);
++   fprintf(stderr, "present: res_id=%u res=%p pipe=%p\n", res_id,
++           (void *)res, res ? (void *)res->pipe_resource : NULL);
++   if (!res || !res->pipe_resource)
++      return -1;
++   return vrend_renderer_present_ahb(res->pipe_resource, ahb, width, height);
++}
++
+ int virgl_renderer_execute(void *execute_args, uint32_t execute_size)
+ {
+    TRACE_FUNC();
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/virglrenderer.h b/src/virglrenderer.h
+--- a/src/virglrenderer.h	2026-10-28 17:59:24.993512833 +0800
++++ b/src/virglrenderer.h	2026-10-28 17:10:25.765497613 +0800
+@@ -391,6 +391,8 @@
+ 
+ VIRGL_EXPORT int virgl_renderer_present_ahb(uint32_t res_id, void *ahb,
+                                             uint32_t width, uint32_t height);
++VIRGL_EXPORT int virgl_renderer_present_ahb_current(uint32_t res_id, void *ahb,
++                                                    uint32_t width, uint32_t height);
+ 
+ #define VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK 0xff
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+--- a/src/vrend/vrend_renderer.c	2026-10-28 17:59:24.995734895 +0800
++++ b/src/vrend/vrend_renderer.c	2026-10-28 17:06:39.356975341 +0800
+@@ -13012,6 +13012,9 @@
+    if (!present_gl_context)
+       return -1;
+    vrend_clicbs->make_current(present_gl_context);
++   fprintf(stderr, "present vrend: gl_id=%u target=0x%x size=%ux%u samples=%u istex=%d\n",
++           res->gl_id, res->target, res->base.width0, res->base.height0,
++           res->base.nr_samples, glIsTexture(res->gl_id));
+ 
+    return virgl_egl_present_ahb(egl, res->gl_id, res->target, ahb, width, height);
+ }
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/src/vrend/vrend_winsys_egl.c b/src/vrend/vrend_winsys_egl.c
+--- a/src/vrend/vrend_winsys_egl.c	2026-10-28 17:59:25.003484613 +0800
++++ b/src/vrend/vrend_winsys_egl.c	2026-10-28 17:16:28.295830526 +0800
+@@ -1023,3 +1023,90 @@
+     default: return "Unknown error";
+     }
+ }
++
++/* Copy a virgl texture into an Android AHardwareBuffer.  The AHB must already
++ * be imported by the caller.  Runs on the caller's current EGL context. */
++int virgl_egl_present_ahb(struct virgl_egl *egl, uint32_t tex_id, uint32_t target,
++                          void *ahb, uint32_t width, uint32_t height)
++{
++   if (!egl || !tex_id || !ahb || !width || !height)
++      return -1;
++   fprintf(stderr, "present egl: tex=%u target=0x%x size=%ux%u\n",
++           tex_id, target, width, height);
++
++#ifndef EGL_NATIVE_BUFFER_ANDROID
++#define EGL_NATIVE_BUFFER_ANDROID 0x3140
++#endif
++
++   typedef void *(*get_native_buffer_fn)(const void *);
++   typedef void (*image_target_fn)(unsigned int, void *);
++   get_native_buffer_fn get_buffer =
++      (get_native_buffer_fn)eglGetProcAddress("eglGetNativeClientBufferANDROID");
++   image_target_fn image_target =
++      (image_target_fn)eglGetProcAddress("glEGLImageTargetTexture2DOES");
++   if (!get_buffer || !image_target)
++      return -1;
++
++   EGLClientBuffer client = get_buffer(ahb);
++   if (!client)
++      return -1;
++
++   const EGLint attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
++   EGLImageKHR image = eglCreateImageKHR(egl->egl_display, EGL_NO_CONTEXT,
++         EGL_NATIVE_BUFFER_ANDROID, client, attrs);
++   if (image == EGL_NO_IMAGE_KHR)
++      return -1;
++
++   /* This runs in the vtest client's context.  Its GL state belongs to the
++    * guest, so save and restore everything this helper touches. */
++   GLint prev_fbo = 0;
++   GLint prev_tex = 0;
++   GLint prev_active = GL_TEXTURE0;
++   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
++   glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
++   glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
++
++   GLuint ahb_tex = 0;
++   GLuint fbo = 0;
++   int result = -1;
++
++   glGenTextures(1, &ahb_tex);
++   glBindTexture(GL_TEXTURE_2D, ahb_tex);
++   image_target(GL_TEXTURE_2D, image);
++   GLenum image_error = glGetError();
++   fprintf(stderr, "present egl: image_target err=0x%x\n", image_error);
++   if (image_error != GL_NO_ERROR)
++      goto out;
++
++   glGenFramebuffers(1, &fbo);
++   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
++   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                          target, tex_id, 0);
++   GLenum attach_error = glGetError();
++   GLenum fbo_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++   fprintf(stderr, "present egl: attach err=0x%x istex=%d fbo status=0x%x\n",
++           attach_error, glIsTexture(tex_id), fbo_status);
++   if (fbo_status != GL_FRAMEBUFFER_COMPLETE)
++      goto out;
++
++   glBindTexture(GL_TEXTURE_2D, ahb_tex);
++   glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
++                       (GLsizei)width, (GLsizei)height);
++   GLenum copy_error = glGetError();
++   fprintf(stderr, "present egl: copy err=0x%x\n", copy_error);
++   if (copy_error != GL_NO_ERROR)
++      goto out;
++   glFinish();
++   result = 0;
++
++out:
++   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prev_fbo);
++   glActiveTexture((GLenum)prev_active);
++   glBindTexture(GL_TEXTURE_2D, (GLuint)prev_tex);
++   if (fbo)
++      glDeleteFramebuffers(1, &fbo);
++   if (ahb_tex)
++      glDeleteTextures(1, &ahb_tex);
++   eglDestroyImageKHR(egl->egl_display, image);
++   return result;
++}
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/vtest/vtest_present.c b/vtest/vtest_present.c
+--- a/vtest/vtest_present.c	2026-10-28 17:59:25.004170018 +0800
++++ b/vtest/vtest_present.c	2026-10-28 17:10:47.745158056 +0800
+@@ -4,6 +4,7 @@
+ 
+ #include "vtest_present.h"
+ #include "virglrenderer.h"
++#include "vtest_server.h"
+ 
+ #include <errno.h>
+ #include <pthread.h>
+@@ -101,13 +102,8 @@
+                     "vtest present: ino=%u res_id=%u imported AHB %ux%u fmt=0x%x usage=0x%llx\n",
+                     header.ino, header.res_id, desc.width, desc.height,
+                     desc.format, (unsigned long long)desc.usage);
+-            for (int attempt = 0; attempt < 50; attempt++) {
+-               status = virgl_renderer_present_ahb(header.res_id, buffer,
+-                                                   desc.width, desc.height);
+-               if (status == 0)
+-                  break;
+-               usleep(10 * 1000);
+-            }
++            status = vtest_server_present_ahb(header.res_id, buffer,
++                                              desc.width, desc.height);
+             fprintf(stderr, "vtest present: res_id=%u blit status=%d\n",
+                     header.res_id, status);
+             release(buffer);
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/vtest/vtest_renderer.c b/vtest/vtest_renderer.c
+--- a/vtest/vtest_renderer.c	2026-02-10 21:43:59.000000000 +0800
++++ b/vtest/vtest_renderer.c	2026-10-27 15:11:38.773552263 +0800
+@@ -28,6 +28,7 @@
+ 
+ #include <stdlib.h>
+ #include <stdio.h>
++#include <errno.h>
+ #include <string.h>
+ #include <time.h>
+ #include <unistd.h>
+@@ -1412,8 +1413,14 @@
+          vtest_unref_resource(res);
+          return report_failed_call("virgl_renderer_resource_export_blob", ret);
+       }
++      /* The vtest reply transports only an fd, so opaque fds are safe only
++       * for private host3D blobs that are not re-exported to another device.
++       */
++      const bool private_opaque_blob =
++         fd_type == VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE &&
++         !(args.blob_flags & (VCMD_BLOB_FLAG_SHAREABLE | VCMD_BLOB_FLAG_CROSS_DEVICE));
+       if (fd_type != VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF &&
+-          fd_type != VIRGL_RENDERER_BLOB_FD_TYPE_SHM) {
++          fd_type != VIRGL_RENDERER_BLOB_FD_TYPE_SHM && !private_opaque_blob) {
+          close(fd);
+          vtest_unref_resource(res);
+          return report_failed_call("virgl_renderer_resource_export_blob", -EINVAL);
+@@ -3024,7 +3031,7 @@
+    uint32_t vcmd_resource_export_fd[VCMD_RESOURCE_EXPORT_FD_SIZE];
+    uint32_t resp_buf[VTEST_HDR_SIZE];
+    uint32_t res_id;
+-   int ret, fd;
++   int ret, fd = -1;
+ 
+    ret = ctx->input->read(ctx->input, &vcmd_resource_export_fd,
+                           sizeof(vcmd_resource_export_fd));
+@@ -3033,10 +3040,27 @@
+ 
+    res_id = vcmd_resource_export_fd[VCMD_RESOURCE_EXPORT_FD_RES_HANDLE];
+ 
+-   uint32_t fd_type;
++   uint32_t fd_type = 0;
++   fprintf(stderr, "trierarch-vtest-export request resource=%u protocol=%u\n",
++           res_id, ctx->protocol_version);
+    ret = virgl_renderer_resource_export_blob(res_id, &fd_type, &fd);
+-   if (ret)
++   if (ret) {
++      fprintf(stderr, "trierarch-vtest-export result=failed resource=%u ret=%d fd=%d\n",
++              res_id, ret, fd);
+       return ret;
++   }
++
++   int fd_flags = fd >= 0 ? fcntl(fd, F_GETFD) : -1;
++   const char *fd_type_name = fd_type == VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF ? "dmabuf" :
++         fd_type == VIRGL_RENDERER_BLOB_FD_TYPE_SHM ? "shm" :
++         fd_type == VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE ? "opaque" : "unknown";
++   fprintf(stderr, "trierarch-vtest-export result=success resource=%u type=%s(%u) fd=%d valid=%d\n",
++           res_id, fd_type_name, fd_type, fd, fd_flags >= 0);
++   if (fd_flags < 0) {
++      fprintf(stderr, "trierarch-vtest-export result=invalid-fd resource=%u errno=%d\n",
++              res_id, errno);
++      return report_failed_call("virgl_renderer_resource_export_blob returned invalid fd", -EINVAL);
++   }
+ 
+    resp_buf[VTEST_CMD_LEN] = 0;
+    resp_buf[VTEST_CMD_ID] = VCMD_RESOURCE_EXPORT_FD;
+@@ -3046,6 +3070,7 @@
+       goto out;
+ 
+    ret = vtest_send_fd(ctx->out_fd, fd);
++   fprintf(stderr, "trierarch-vtest-export result=sent resource=%u ret=%d\n", res_id, ret);
+ 
+ out:
+    close(fd);
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/vtest/vtest_server.c b/vtest/vtest_server.c
+--- a/vtest/vtest_server.c	2026-10-28 17:59:24.986842870 +0800
++++ b/vtest/vtest_server.c	2026-10-28 17:12:37.810315663 +0800
+@@ -38,6 +38,8 @@
+ #include <fcntl.h>
+ #include <getopt.h>
+ #include <string.h>
++#include <pthread.h>
++#include <stdint.h>
+ 
+ #include "util.h"
+ #include "util/list.h"
+@@ -77,6 +79,19 @@
+    bool context_need_poll;
+ };
+ 
++struct vtest_present_request
++{
++   uint32_t res_id;
++   void *ahb;
++   uint32_t width;
++   uint32_t height;
++   int status;
++   bool done;
++   pthread_mutex_t lock;
++   pthread_cond_t cond;
++   struct vtest_present_request *next;
++};
++
+ struct vtest_server
+ {
+    const char *socket_name;
+@@ -104,6 +119,10 @@
+    struct list_head new_clients;
+    struct list_head active_clients;
+    struct list_head inactive_clients;
++
++   int present_pipe[2];
++   pthread_mutex_t present_lock;
++   struct vtest_present_request *present_requests;
+ };
+ 
+ struct vtest_server server = {
+@@ -131,6 +150,7 @@
+ static void vtest_server_run(void);
+ static void vtest_server_close_socket(void);
+ static int vtest_client_dispatch_commands(struct vtest_client *client);
++static void vtest_server_dispatch_presents(void);
+ 
+ 
+ int vtest_main(int argc, char **argv)
+@@ -141,6 +161,15 @@
+ 
+    vtest_server_getenv();
+    vtest_server_parse_args(argc, argv);
++   if (pipe(server.present_pipe) != 0) {
++      perror("Failed to create present pipe");
++      exit(1);
++   }
++   for (int i = 0; i < 2; i++) {
++      int flags = fcntl(server.present_pipe[i], F_GETFL, 0);
++      fcntl(server.present_pipe[i], F_SETFL, flags | O_NONBLOCK);
++   }
++   pthread_mutex_init(&server.present_lock, NULL);
+    vtest_present_start(server.socket_name);
+ 
+    list_inithead(&server.new_clients);
+@@ -444,6 +473,11 @@
+ 
+    FD_ZERO(&read_fds);
+ 
++   if (server.present_pipe[0] >= 0) {
++      FD_SET(server.present_pipe[0], &read_fds);
++      max_fd = MAX2(server.present_pipe[0], max_fd);
++   }
++
+    LIST_FOR_EACH_ENTRY(client, &server.active_clients, head) {
+       FD_SET(client->in_fd, &read_fds);
+       max_fd = MAX2(client->in_fd, max_fd);
+@@ -454,8 +488,11 @@
+       }
+    }
+ 
+-   /* accept new clients when there is none or when multi_clients is set */
+-   if (server.socket >= 0 && (max_fd < 0 || server.multi_clients)) {
++   /* accept new clients when there is none or when multi_clients is set.
++    * The present pipe keeps max_fd >= 0 even with no clients, so test the
++    * client list instead of max_fd here. */
++   if (server.socket >= 0 &&
++       (list_is_empty(&server.active_clients) || server.multi_clients)) {
+       FD_SET(server.socket, &read_fds);
+       max_fd = MAX2(server.socket, max_fd);
+    }
+@@ -501,6 +538,11 @@
+          exit(1);
+       }
+    }
++
++   if (server.present_pipe[0] >= 0 &&
++       FD_ISSET(server.present_pipe[0], &read_fds)) {
++      vtest_server_dispatch_presents();
++   }
+ }
+ 
+ static const char *vtest_client_result_string(enum vtest_client_result ret)
+@@ -545,6 +587,76 @@
+    }
+ }
+ 
++int vtest_server_present_ahb(uint32_t res_id, void *ahb,
++                              uint32_t width, uint32_t height)
++{
++   struct vtest_present_request *request = calloc(1, sizeof(*request));
++   if (!request)
++      return -1;
++   request->res_id = res_id;
++   request->ahb = ahb;
++   request->width = width;
++   request->height = height;
++   request->status = -1;
++   pthread_mutex_init(&request->lock, NULL);
++   pthread_cond_init(&request->cond, NULL);
++
++   pthread_mutex_lock(&server.present_lock);
++   request->next = server.present_requests;
++   server.present_requests = request;
++   pthread_mutex_unlock(&server.present_lock);
++   (void)write(server.present_pipe[1], "p", 1);
++
++   pthread_mutex_lock(&request->lock);
++   while (!request->done)
++      pthread_cond_wait(&request->cond, &request->lock);
++   pthread_mutex_unlock(&request->lock);
++
++   int status = request->status;
++   pthread_cond_destroy(&request->cond);
++   pthread_mutex_destroy(&request->lock);
++   free(request);
++   return status;
++}
++
++static void vtest_server_dispatch_presents(void)
++{
++   char drain[64];
++   while (read(server.present_pipe[0], drain, sizeof(drain)) > 0)
++      ;
++
++   for (;;) {
++      struct vtest_present_request *request;
++      pthread_mutex_lock(&server.present_lock);
++      request = server.present_requests;
++      if (request)
++         server.present_requests = request->next;
++      pthread_mutex_unlock(&server.present_lock);
++      if (!request)
++         break;
++
++      int status = -1;
++      struct vtest_client *client;
++      LIST_FOR_EACH_ENTRY(client, &server.active_clients, head) {
++         if (!client->context)
++            continue;
++         vtest_set_current_context(client->context);
++         status = virgl_renderer_present_ahb_current(request->res_id,
++                                                     request->ahb,
++                                                     request->width,
++                                                     request->height);
++         if (status == 0)
++            break;
++      }
++
++      pthread_mutex_lock(&request->lock);
++      request->status = status;
++      request->done = true;
++      pthread_cond_signal(&request->cond);
++      pthread_mutex_unlock(&request->lock);
++   }
++}
++
+ static pid_t vtest_server_fork(void)
+ {
+    pid_t pid = fork();
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' a/vtest/vtest_server.h b/vtest/vtest_server.h
+--- a/vtest/vtest_server.h	2026-02-10 21:43:59.000000000 +0800
++++ b/vtest/vtest_server.h	2026-10-28 17:10:31.470321137 +0800
+@@ -25,7 +25,14 @@
+ #ifndef VTEST_SERVER_H
+ #define VTEST_SERVER_H
+ 
++#include <stdint.h>
++
+ int vtest_main(int argc, char **argv);
+ 
++/* Blocks until the server thread has blitted res_id into the AHB using the
++ * context that owns the resource. */
++int vtest_server_present_ahb(uint32_t res_id, void *ahb,
++                             uint32_t width, uint32_t height);
++
+ #endif
+ 

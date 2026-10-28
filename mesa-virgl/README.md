@@ -180,3 +180,45 @@ PASS
 4. `TVG_PRESENT`：把 virgl 资源 blit 到 AHB，走现有 AHB 显示路径，然后跑未修改的 KWin。
 
 见 `considerations/last-cell-feasibility-2026-10-28.md`。
+
+## POC 运行方式（2026-10-28）
+
+构建（Arch guest 内，输出到 `/opt/trierarch/mesa`）：
+
+```bash
+scripts/build-26.2.5.sh
+```
+
+KWin 与普通应用必须使用不同的 Mesa：
+
+- **KWin**（GBM/EGL，virpipe）：由 KWin wrapper 设置
+  ```sh
+  unset MESA_LOADER_DRIVER_OVERRIDE
+  export LD_LIBRARY_PATH=/opt/trierarch/mesa/lib:$LD_LIBRARY_PATH
+  export GBM_BACKENDS_PATH=/opt/trierarch/mesa/lib/gbm
+  export GALLIUM_DRIVER=virpipe
+  export LIBGL_ALWAYS_SOFTWARE=1
+  export VK_ICD_FILENAMES=/nonexistent
+  export VK_DRIVER_FILES=/nonexistent
+  ```
+- **普通 Wayland 应用**：session 环境不要带 `/opt` 的 Mesa，使用系统 Mesa
+  ```sh
+  unset LD_LIBRARY_PATH
+  unset GBM_BACKENDS_PATH
+  export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+  export GALLIUM_DRIVER=llvmpipe
+  export LIBGL_ALWAYS_SOFTWARE=1
+  ```
+
+profile 使用：
+
+```toml
+[graphics]
+renderer = "virgl"
+buffer = "dmabuf"
+qt_quick_backend = "software"
+```
+
+原因：virpipe/vtest 只有 headless/GBM winsys；普通 Wayland GL 应用的
+EGL 需要 Wayland winsys，当前会回退到 llvmpipe。应用加速需要 Venus/Zink
+或给 virpipe 增加 Wayland winsys。

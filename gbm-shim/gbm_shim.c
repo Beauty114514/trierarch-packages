@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -61,7 +62,6 @@ struct gbm_bo {
 
 static pthread_mutex_t token_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct gbm_bo *token_bos;
-static int tvg_fd = -1;
 
 static bool is_token_bo(struct gbm_bo *bo) {
     if (!bo)
@@ -76,6 +76,22 @@ static bool is_token_bo(struct gbm_bo *bo) {
     }
     pthread_mutex_unlock(&token_lock);
     return found;
+}
+
+static void shim_log(const char *format, ...) {
+    int fd = open("/tmp/trierarch-wayland/gbm-shim.log",
+                  O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0)
+        return;
+    va_list args;
+    va_start(args, format);
+    vdprintf(fd, format, args);
+    va_end(args);
+    close(fd);
+}
+
+__attribute__((constructor)) static void shim_loaded(void) {
+    shim_log("loaded pid=%d\n", (int)getpid());
 }
 
 static bool addr_is_mesa(void *addr) {
@@ -150,11 +166,10 @@ static struct gbm_bo *create_token_bo(struct gbm_device *gbm,
     if (width == 0 || height == 0)
         return NULL;
 
-    pthread_mutex_lock(&token_lock);
-    if (tvg_fd < 0)
-        tvg_fd = connect_tvg();
-    int fd = tvg_fd;
-    pthread_mutex_unlock(&token_lock);
+    /* The host token service answers one request per connection.  Do not
+     * cache the control socket: reconnecting per buffer avoids stale
+     * "Broken pipe" failures on every allocation after the first. */
+    int fd = connect_tvg();
     if (fd < 0)
         return NULL;
 
@@ -171,12 +186,14 @@ static struct gbm_bo *create_token_bo(struct gbm_device *gbm,
     if (send(fd, &request, sizeof(request), MSG_NOSIGNAL) !=
             (ssize_t)sizeof(request)) {
         fprintf(stderr, "gbm-shim: token request failed: %s\n", strerror(errno));
+        close(fd);
         return NULL;
     }
 
     struct tvg_alloc_reply reply;
     memset(&reply, 0, sizeof(reply));
     int token_fd = receive_reply(fd, &reply);
+    close(fd);
     if (token_fd < 0 || reply.magic != TVG_MAGIC || reply.status != 0) {
         fprintf(stderr, "gbm-shim: token allocation failed (status=%d)\n",
                 reply.status);
@@ -196,6 +213,7 @@ static struct gbm_bo *create_token_bo(struct gbm_device *gbm,
     bo->stride = reply.stride ? reply.stride : width * 4;
     bo->format = format;
     bo->modifier = modifier;
+    shim_log("token bo=%p fd=%d %ux%u\n", (void *)bo, token_fd, width, height);
 
     pthread_mutex_lock(&token_lock);
     bo->next = token_bos;
@@ -211,6 +229,10 @@ static struct gbm_bo *create_token_bo(struct gbm_device *gbm,
 struct gbm_bo *gbm_bo_create(struct gbm_device *gbm, uint32_t width,
         uint32_t height, uint32_t format, uint32_t flags) {
     void *caller = __builtin_return_address(0);
+    Dl_info caller_info;
+    const char *caller_name = dladdr(caller, &caller_info) && caller_info.dli_fname
+        ? caller_info.dli_fname : "?";
+    shim_log("create caller=%s mesa=%d\n", caller_name, addr_is_mesa(caller));
     if (addr_is_mesa(caller)) {
         REAL(gbm_bo_create);
         return real_gbm_bo_create
@@ -238,7 +260,12 @@ struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
 struct gbm_bo *gbm_bo_create_with_modifiers2(struct gbm_device *gbm,
         uint32_t width, uint32_t height, uint32_t format,
         const uint64_t *modifiers, const unsigned int count, uint32_t flags) {
-    if (addr_is_mesa(__builtin_return_address(0))) {
+    Dl_info caller_info;
+    void *caller = __builtin_return_address(0);
+    shim_log("create_modifiers2 caller=%s mesa=%d\n",
+            dladdr(caller, &caller_info) && caller_info.dli_fname ? caller_info.dli_fname : "?",
+            addr_is_mesa(caller));
+    if (addr_is_mesa(caller)) {
         REAL(gbm_bo_create_with_modifiers2);
         return real_gbm_bo_create_with_modifiers2
                 ? real_gbm_bo_create_with_modifiers2(gbm, width, height, format,

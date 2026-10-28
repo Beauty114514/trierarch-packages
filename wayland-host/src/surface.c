@@ -1,4 +1,5 @@
 #include "server_internal.h"
+#include "tvg_scanout.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -415,6 +416,9 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
     trierarch_layer_surface_commit(surface);
+    if (surface->current && surface->current->tvg_token &&
+        surface->current->tvg_fd >= 0)
+        tvg_scanout_present_fd(surface->current->tvg_fd);
     if (surface->damaged || frame_callbacks_committed)
         trierarch_wayland_request_render(surface->server);
 }

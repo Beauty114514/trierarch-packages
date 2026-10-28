@@ -114,6 +114,7 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     }
     buffer->acquire_fence_fd = -1;
     buffer->dmabuf_fd = tvg_token ? -1 : params->fd;
+    buffer->tvg_fd = tvg_token ? params->fd : -1;
     buffer->dmabuf_mapping = mapping;
     buffer->dmabuf_mapping_size = mapping ? end : 0;
     buffer->data = mapping ? (char *)mapping + params->offset : NULL;
@@ -124,11 +125,12 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     buffer->format = format;
     buffer->dmabuf_modifier = params->modifier;
     buffer->dmabuf_offset = params->offset;
-    if (!tvg_token) params->fd = -1;
+    params->fd = -1;
     buffer->resource = wl_resource_create(client, &wl_buffer_interface, 1, id);
     if (!buffer->resource) {
         if (mapping) munmap(mapping, end);
         if (buffer->dmabuf_fd >= 0) close(buffer->dmabuf_fd);
+        if (buffer->tvg_fd >= 0) close(buffer->tvg_fd);
         if (buffer->android_hardware_buffer)
             AHardwareBuffer_release(buffer->android_hardware_buffer);
         free(buffer);
@@ -140,8 +142,6 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
             width, height, format, params->stride,
             (unsigned long long)params->modifier,
             tvg_token ? "tvg-token" : (mapping ? "cpu-mappable" : "opaque"));
-    if (tvg_token)
-        tvg_scanout_present_fd(params->fd);
     return buffer;
 }
 

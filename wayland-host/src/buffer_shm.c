@@ -74,6 +74,8 @@ void trierarch_buffer_destroy_storage(struct shm_buffer *buffer) {
         munmap(buffer->dmabuf_mapping, buffer->dmabuf_mapping_size);
     if (buffer->dmabuf && buffer->dmabuf_fd >= 0)
         close(buffer->dmabuf_fd);
+    if (buffer->tvg_token && buffer->tvg_fd >= 0)
+        close(buffer->tvg_fd);
     if (buffer->pool) wl_list_remove(&buffer->pool_link);
     if (buffer->pool) pool_unref(buffer->pool);
     if (buffer->single_pixel) free(buffer->data);

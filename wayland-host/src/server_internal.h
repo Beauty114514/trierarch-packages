@@ -63,6 +63,8 @@ struct shm_buffer {
     void *egl_resource;
     void *android_hardware_buffer;
     int dmabuf_fd;
+    /* Guest token fd for a tvg-token buffer; kept until the buffer is gone. */
+    int tvg_fd;
     int acquire_fence_fd;
     struct wl_resource *explicit_release;
     /* EGL buffers are cached per wl_resource so repeated attaches reuse one
