@@ -2,6 +2,8 @@
 #include "dmabuf_feedback_device.h"
 #include "tvg_scanout.h"
 
+#include <android/hardware_buffer.h>
+
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -69,7 +71,8 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     }
     /* A token fd is a memfd from the guest buffer shim: the host owns the
      * real AHardwareBuffer, so the fd has no pixels to map or import. */
-    const bool tvg_token = tvg_scanout_lookup_fd(params->fd) != NULL;
+    const struct tvg_scanout_token *token = tvg_scanout_lookup_fd(params->fd);
+    const bool tvg_token = token != NULL;
     /* The feedback advertises LINEAR only.  Accepting a tiled or unknown
      * modifier would create a buffer the renderer can neither import (host
      * EGL has no dma-buf import here) nor safely mmap, which presents as a
@@ -102,6 +105,13 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->dmabuf = true;
     buffer->tvg_token = tvg_token;
+    if (tvg_token) {
+        /* The token service owns the AHB; the buffer holds an extra reference
+         * so it can keep displaying the last frame after the token is gone. */
+        AHardwareBuffer_acquire((AHardwareBuffer *)token->ahb);
+        buffer->android_buffer = true;
+        buffer->android_hardware_buffer = token->ahb;
+    }
     buffer->acquire_fence_fd = -1;
     buffer->dmabuf_fd = tvg_token ? -1 : params->fd;
     buffer->dmabuf_mapping = mapping;
@@ -119,6 +129,8 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     if (!buffer->resource) {
         if (mapping) munmap(mapping, end);
         if (buffer->dmabuf_fd >= 0) close(buffer->dmabuf_fd);
+        if (buffer->android_hardware_buffer)
+            AHardwareBuffer_release(buffer->android_hardware_buffer);
         free(buffer);
         return NULL;
     }
@@ -128,6 +140,8 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
             width, height, format, params->stride,
             (unsigned long long)params->modifier,
             tvg_token ? "tvg-token" : (mapping ? "cpu-mappable" : "opaque"));
+    if (tvg_token)
+        tvg_scanout_present_fd(params->fd);
     return buffer;
 }
 

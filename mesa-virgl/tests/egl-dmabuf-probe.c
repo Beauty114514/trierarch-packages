@@ -170,5 +170,8 @@ int main(int argc, char **argv) {
 
     printf("eglCreateImageKHR=OK glEGLImageTargetTexture2DOES=0x%x\n", error);
     printf("%s\n", error == GL_NO_ERROR ? "PASS" : "FAIL");
+    /* Keep the vtest connection (and its resources) alive long enough for the
+     * host token service's present request to be processed. */
+    sleep(2);
     return error == GL_NO_ERROR ? 0 : 6;
 }

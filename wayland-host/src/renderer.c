@@ -429,12 +429,6 @@ static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
     struct shm_buffer *buffer = surface->current;
     if (!buffer) return;
-    if (buffer->tvg_token) {
-        static unsigned int token_trace;
-        if (token_trace++ < 3)
-            LOGI("tvg token buffer attached; scanout is not implemented yet");
-        return;
-    }
     if (buffer->dmabuf) {
         static unsigned int trace_count;
         if (trace_count++ < 3) {

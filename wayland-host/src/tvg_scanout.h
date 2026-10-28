@@ -33,4 +33,7 @@ void tvg_scanout_stop(void);
  * tvg_scanout_stop(). */
 const struct tvg_scanout_token *tvg_scanout_lookup_fd(int fd);
 
+/* Ask the vtest server to blit the registered resource into the token AHB. */
+void tvg_scanout_present_fd(int fd);
+
 #endif

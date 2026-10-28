@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -241,8 +242,16 @@ static void send_present(const struct tvg_scanout_token *token) {
                 send_handle = (send_handle_fn)dlsym(library,
                         "AHardwareBuffer_sendHandleToUnixSocket");
         }
-        if (send_handle)
-            send_handle((const AHardwareBuffer *)token->ahb, fd);
+        if (send_handle && send_handle((const AHardwareBuffer *)token->ahb, fd) == 0) {
+            struct timeval timeout = { .tv_sec = 1 };
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            int status = -1;
+            if (recv(fd, &status, sizeof(status), MSG_WAITALL) == sizeof(status)) {
+                __android_log_print(ANDROID_LOG_INFO, TAG,
+                        "present res_id=%u blit status=%d",
+                        (uint32_t)token->res_id, status);
+            }
+        }
     }
     close(fd);
 }
@@ -411,4 +420,10 @@ const struct tvg_scanout_token *tvg_scanout_lookup_fd(int fd) {
     }
     pthread_mutex_unlock(&token_lock);
     return found;
+}
+
+void tvg_scanout_present_fd(int fd) {
+    const struct tvg_scanout_token *token = tvg_scanout_lookup_fd(fd);
+    if (token)
+        send_present(token);
 }

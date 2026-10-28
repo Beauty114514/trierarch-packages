@@ -9,3 +9,4 @@ virglrenderer        0007-virglrenderer-android-egl-and-ashmem.patch
 virglrenderer        0008-virglrenderer-disable-dual-source-blend.patch
 virglrenderer        0009-virglrenderer-run-venus-through-linker.patch
 virglrenderer        0010-vtest-present-service.patch
+virglrenderer        0011-vtest-present-blit.patch
