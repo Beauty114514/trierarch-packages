@@ -493,7 +493,7 @@ impl DroidspacesSpec {
             return String::new();
         }
         let wrapper = format!(
-            "#!/bin/sh\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD={library} /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD={library} /usr/bin/kwin_wayland \"$@\"\n",
+            "#!/bin/sh\npreload={library}\nif [ -n \"$LD_PRELOAD\" ]; then\n  preload=\"$preload:$LD_PRELOAD\"\nfi\nif [ -x /usr/sbin/kwin_wayland_wrapper ]; then\n  exec /usr/bin/env LD_PRELOAD=\"$preload\" /usr/sbin/kwin_wayland_wrapper \"$@\"\nfi\nexec /usr/bin/env LD_PRELOAD=\"$preload\" /usr/bin/kwin_wayland \"$@\"\n",
             library = GUEST_COMPATIBILITY_LIBRARY,
         );
         format!(

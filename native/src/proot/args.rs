@@ -349,7 +349,7 @@ fn prepare_wayland_dmabuf_device_report(spec: &ProotSpec) -> Result<bool> {
 
 fn kwin_wayland_wrapper_script(library: &str) -> String {
     format!(
-        "#!/bin/sh\nexec /usr/bin/env LD_PRELOAD={library} {real} \"$@\"\n",
+        "#!/bin/sh\npreload={library}\nif [ -n \"$LD_PRELOAD\" ]; then\n  preload=\"$preload:$LD_PRELOAD\"\nfi\nexec /usr/bin/env LD_PRELOAD=\"$preload\" {real} \"$@\"\n",
         real = GUEST_KWIN_WAYLAND_WRAPPER_REAL,
     )
 }
