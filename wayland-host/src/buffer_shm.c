@@ -1,6 +1,7 @@
 #include "server_internal.h"
 
 #include <android/log.h>
+#include <pthread.h>
 #include <errno.h>
 #include <android/hardware_buffer.h>
 #include <stdint.h>
@@ -19,6 +20,37 @@ struct shm_pool {
 };
 
 static void pool_unref(struct shm_pool *pool);
+
+/* Buffers replaced by a new commit are kept here until the renderer has
+ * completed the frame that could still have sampled them.  Sending
+ * wl_buffer.release at commit time lets the client reuse the buffer while the
+ * host GPU is still reading it. */
+static pthread_mutex_t deferred_release_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct shm_buffer *deferred_releases;
+
+void trierarch_defer_buffer_release(struct shm_buffer *buffer) {
+    if (!buffer)
+        return;
+    pthread_mutex_lock(&deferred_release_lock);
+    buffer->deferred_next = deferred_releases;
+    deferred_releases = buffer;
+    pthread_mutex_unlock(&deferred_release_lock);
+}
+
+void trierarch_flush_deferred_releases(void) {
+    pthread_mutex_lock(&deferred_release_lock);
+    struct shm_buffer *buffer = deferred_releases;
+    deferred_releases = NULL;
+    pthread_mutex_unlock(&deferred_release_lock);
+
+    while (buffer) {
+        struct shm_buffer *next = buffer->deferred_next;
+        buffer->deferred_next = NULL;
+        trierarch_shm_buffer_release(buffer);
+        trierarch_buffer_unref(buffer);
+        buffer = next;
+    }
+}
 
 void trierarch_buffer_ref(struct shm_buffer *buffer) {
     if (buffer)

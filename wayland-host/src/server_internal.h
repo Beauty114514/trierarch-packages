@@ -76,6 +76,9 @@ struct shm_buffer {
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
     struct wayland_server *server;
+    /* Linked through the host's deferred-release list; the reference held by
+     * the surface is transferred to that list. */
+    struct shm_buffer *deferred_next;
     struct wl_listener egl_resource_destroy_listener;
     bool egl_resource_destroy_listener_attached;
     struct wl_list pool_link;
@@ -283,6 +286,8 @@ void trierarch_wayland_frame_presented(struct wayland_server *server, uint32_t t
 struct shm_buffer *trierarch_shm_buffer_from_resource(struct wl_resource *resource);
 void trierarch_buffer_ref(struct shm_buffer *buffer);
 void trierarch_buffer_unref(struct shm_buffer *buffer);
+void trierarch_defer_buffer_release(struct shm_buffer *buffer);
+void trierarch_flush_deferred_releases(void);
 void trierarch_buffer_destroy_storage(struct shm_buffer *buffer);
 void trierarch_shm_buffer_release(struct shm_buffer *buffer);
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource);

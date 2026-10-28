@@ -368,9 +368,7 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
             if (surface->current) {
                 struct shm_buffer *current = surface->current;
                 surface->current = NULL;
-                trierarch_renderer_wait_idle(surface->server ? surface->server->renderer : NULL);
-                trierarch_shm_buffer_release(current);
-                trierarch_buffer_unref(current);
+                trierarch_defer_buffer_release(current);
             }
             if (surface->pending) {
                 surface->pending->acquire_fence_fd = surface->acquire_fence_fd;

@@ -36,9 +36,16 @@ const struct tvg_scanout_token *tvg_scanout_lookup_fd(int fd);
 /* Ask the vtest server to blit the registered resource into the token AHB. */
 void tvg_scanout_present_fd(int fd);
 
-/* Tell the vtest server that the host has finished sampling every AHB that was
- * presented since the last call.  Called from the renderer after its frame is
- * submitted, so the server does not overwrite a buffer still in use. */
+/* Mark the end of a host frame.  Tokens committed since the previous call
+ * become "inflight"; their AHB is not released until the next begin_frame(),
+ * after the host has waited for this frame's fence. */
+void tvg_scanout_end_frame(void);
+
+/* Start a host frame: the previous frame's fence has been waited, so every
+ * inflight token can now be released to the vtest server. */
+void tvg_scanout_begin_frame(void);
+
+/* Backwards-compatible alias for begin_frame. */
 void tvg_scanout_release_presented(void);
 
 #endif

@@ -635,6 +635,11 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
      * wait, not glFinish: surface commits can release their previous buffer
      * only after this GPU completion point has been reached. */
     trierarch_renderer_wait_idle(renderer);
+    /* The previous frame's EGL fence has been waited above.  Now it is safe
+     * to release both the guest buffers replaced by commits and the vtest
+     * AHBs drawn in that frame. */
+    tvg_scanout_begin_frame();
+    trierarch_flush_deferred_releases();
     uint64_t render_started_ns = monotonic_ns();
     bool surface_updated = renderer->observed_surface_commits != server->perf_surface_commit_generation
             || renderer->observed_surface_damage != server->perf_surface_damage_generation;
@@ -698,19 +703,25 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
     }
+    bool frame_fence_created = false;
     if (renderer->create_sync && renderer->destroy_sync && renderer->client_wait_sync) {
         const EGLint attributes[] = { EGL_NONE };
         renderer->frame_fence = renderer->create_sync(renderer->display,
                 EGL_SYNC_FENCE_KHR, attributes);
-        if (renderer->frame_fence == EGL_NO_SYNC_KHR)
+        if (renderer->frame_fence == EGL_NO_SYNC_KHR) {
             LOGE("EGL frame fence creation failed");
-        else
+        } else {
             glFlush();
+            frame_fence_created = true;
+        }
     }
-    /* The token AHB is shared with the vtest process.  Complete this frame's
-     * sampling before telling the server that the buffer can be overwritten. */
-    glFinish();
-    tvg_scanout_release_presented();
+    if (!frame_fence_created) {
+        /* No fence to defer against; complete the GPU work now. */
+        glFinish();
+    }
+    /* Move this frame's tokens to inflight.  They are released at the start of
+     * the next frame, after its fence wait. */
+    tvg_scanout_end_frame();
     trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     server->perf_render_count++;

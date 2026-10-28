@@ -66,7 +66,10 @@ struct tvg_presented {
 };
 
 static pthread_mutex_t presented_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct tvg_presented *presented;
+/* pending: tokens committed since the last renderer frame.
+ * inflight: tokens drawn in the last frame, waiting for that frame's fence. */
+static struct tvg_presented *presented_pending;
+static struct tvg_presented *presented_inflight;
 static int listen_fd = -1;
 static pthread_t server_thread;
 static volatile bool running;
@@ -299,7 +302,7 @@ static void remember_presented(uint32_t res_id) {
     if (!res_id)
         return;
     pthread_mutex_lock(&presented_lock);
-    for (struct tvg_presented *entry = presented; entry; entry = entry->next) {
+    for (struct tvg_presented *entry = presented_pending; entry; entry = entry->next) {
         if (entry->res_id == res_id) {
             pthread_mutex_unlock(&presented_lock);
             return;
@@ -308,16 +311,16 @@ static void remember_presented(uint32_t res_id) {
     struct tvg_presented *entry = malloc(sizeof(*entry));
     if (entry) {
         entry->res_id = res_id;
-        entry->next = presented;
-        presented = entry;
+        entry->next = presented_pending;
+        presented_pending = entry;
     }
     pthread_mutex_unlock(&presented_lock);
 }
 
-void tvg_scanout_release_presented(void) {
+void tvg_scanout_begin_frame(void) {
     pthread_mutex_lock(&presented_lock);
-    struct tvg_presented *list = presented;
-    presented = NULL;
+    struct tvg_presented *list = presented_inflight;
+    presented_inflight = NULL;
     pthread_mutex_unlock(&presented_lock);
     while (list) {
         struct tvg_presented *next = list->next;
@@ -325,6 +328,23 @@ void tvg_scanout_release_presented(void) {
         free(list);
         list = next;
     }
+}
+
+void tvg_scanout_end_frame(void) {
+    pthread_mutex_lock(&presented_lock);
+    struct tvg_presented *list = presented_pending;
+    presented_pending = NULL;
+    while (list) {
+        struct tvg_presented *next = list->next;
+        list->next = presented_inflight;
+        presented_inflight = list;
+        list = next;
+    }
+    pthread_mutex_unlock(&presented_lock);
+}
+
+void tvg_scanout_release_presented(void) {
+    tvg_scanout_begin_frame();
 }
 
 static int register_token(uint64_t inode, uint32_t res_id) {
@@ -461,13 +481,20 @@ void tvg_scanout_stop(void) {
         unlink(socket_path);
 
     pthread_mutex_lock(&presented_lock);
-    struct tvg_presented *entry = presented;
-    presented = NULL;
+    struct tvg_presented *entry = presented_pending;
+    presented_pending = NULL;
+    struct tvg_presented *inflight = presented_inflight;
+    presented_inflight = NULL;
     pthread_mutex_unlock(&presented_lock);
     while (entry) {
         struct tvg_presented *next = entry->next;
         free(entry);
         entry = next;
+    }
+    while (inflight) {
+        struct tvg_presented *next = inflight->next;
+        free(inflight);
+        inflight = next;
     }
 
     pthread_mutex_lock(&token_lock);
