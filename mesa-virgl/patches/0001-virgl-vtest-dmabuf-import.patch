@@ -26,8 +26,21 @@ diff -ruN a/src/gallium/drivers/virgl/virgl_screen.c b/src/gallium/drivers/virgl
  }
 diff -ruN a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
 --- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c	2026-10-28 13:42:29.690905763 +0800
-+++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c	2026-10-28 13:42:29.739756607 +0800
-@@ -388,6 +388,78 @@
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c	2026-10-28 14:45:50.503213175 +0800
+@@ -21,6 +21,12 @@
+  * USE OR OTHER DEALINGS IN THE SOFTWARE.
+  */
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/un.h>
++#include <unistd.h>
+ #include "util/macros.h"
+ #include "util/u_surface.h"
+ #include "util/u_memory.h"
+@@ -388,6 +394,128 @@
     return res;
  }
  
@@ -55,6 +68,54 @@ diff -ruN a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c b/src/gallium/wi
 +   return vbind;
 +}
 +
++#define TRIERARCH_TVG_MAGIC 0x54564731u
++#define TRIERARCH_TVG_REQUEST_REGISTER 1u
++
++struct trierarch_tvg_register {
++   uint32_t magic;
++   uint32_t type;
++   uint32_t width;
++   uint32_t height;
++   uint32_t format;
++   uint32_t stride;
++   uint32_t usage;
++   uint64_t inode;
++   uint32_t res_id;
++};
++
++/* Tell the host token service which virgl resource backs this token inode.
++ * The control socket is shared with the guest GBM shim. */
++static void
++trierarch_tvg_register_token(int fd, uint32_t res_id)
++{
++   const char *path = getenv("TRIERARCH_TVG_SOCKET");
++   if (!path || !*path || fd < 0)
++      return;
++
++   struct stat st;
++   if (fstat(fd, &st) != 0)
++      return;
++
++   int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++   if (sock < 0)
++      return;
++
++   struct sockaddr_un addr;
++   memset(&addr, 0, sizeof(addr));
++   addr.sun_family = AF_UNIX;
++   snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
++   if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
++      struct trierarch_tvg_register request;
++      memset(&request, 0, sizeof(request));
++      request.magic = TRIERARCH_TVG_MAGIC;
++      request.type = TRIERARCH_TVG_REQUEST_REGISTER;
++      request.inode = (uint64_t)st.st_ino;
++      request.res_id = res_id;
++      (void)send(sock, &request, sizeof(request), MSG_NOSIGNAL);
++   }
++   close(sock);
++}
++
 +/* The compositor creates its swapchain image from a dma-buf fd.  With the
 + * virpipe winsys there is no host-side import path for that fd, so create a
 + * regular virgl texture with the requested geometry instead.  The fd is only
@@ -69,7 +130,6 @@ diff -ruN a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c b/src/gallium/wi
 +                                        uint64_t *modifier,
 +                                        uint32_t *blob_mem)
 +{
-+   (void)whandle;
 +   if (!templ)
 +      return NULL;
 +
@@ -86,6 +146,9 @@ diff -ruN a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c b/src/gallium/wi
 +                                         0, size);
 +   if (!res)
 +      return NULL;
++
++   trierarch_tvg_register_token(whandle ? (int)whandle->handle : -1,
++                                res->res_handle);
 +
 +   *plane = 0;
 +   *stride = lstride;
@@ -106,7 +169,7 @@ diff -ruN a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c b/src/gallium/wi
  static void *virgl_vtest_resource_map(struct virgl_winsys *vws,
                                        struct virgl_hw_res *res)
  {
-@@ -774,6 +846,8 @@
+@@ -774,6 +902,8 @@
     vtws->base.resource_map = virgl_vtest_resource_map;
     vtws->base.resource_wait = virgl_vtest_resource_wait;
     vtws->base.resource_is_busy = virgl_vtest_resource_is_busy;

@@ -69,15 +69,21 @@ run-as app.trierarch env \
   --socket-path .../virgl-run/vtest.sock
 ```
 
-探针实测输出：
+探针实测输出（配合 `gbm-shim` 和宿主 `tvgd`）：
 
 ```
 EGL 1.5
 EGL_EXT_image_dma_buf_import=1
 GL_RENDERER=virgl (ANGLE (Qualcomm, Vulkan 1.3.128 (Adreno (TM) 740 ...)))
-gbm_bo_create/get_fd failed; using a memfd token
 eglCreateImageKHR=OK glEGLImageTargetTexture2DOES=0x0
 PASS
+```
+
+宿主 `tvgd` 同时打印：
+
+```
+TrierarchTvg: token ino=845188 256x256 fmt=0x34324241 stride=1024
+TrierarchTvg: token ino=845188 registered res_id=1
 ```
 
 说明：
@@ -85,8 +91,11 @@ PASS
 - `EGL_EXT_image_dma_buf_import=1` → caps 补丁生效；
 - `GL_RENDERER` 含 `virgl` → virpipe → vtest → 宿主 ANGLE/Adreno 渲染；
 - `eglCreateImageKHR=OK` → vtest winsys 的 NULL 钩子已补齐；
-- 这次 GBM 分配在最小构建里失败，探针回退到 **memfd token**；这正好验证了
-  token 方案（fd 只是身份，Mesa 按 `templ` 建纹理，不读 fd 内容）。
+- `registered res_id` → Mesa 把 token inode 与 virgl 资源对上了，下一步才能
+  做 `res_id → AHB` 的 blit。
+
+注意：`gbm-shim` 只拦截 **Mesa 之外** 的 `gbm_bo_create*`；Mesa EGL 自己的
+GBM 分配仍走真实 libgbm，否则 EGL 初始化会拿到 token 而不是真实 GBM bo 并崩溃。
 
 
 ## 应用与构建
@@ -159,10 +168,15 @@ PASS
 
 ## 下一步
 
-本补丁只让 KWin “不崩且能创建图像”。要真正显示，还需要：
+已经完成：
 
-1. guest `libgbm` shim：把 `gbm_bo_create` 换成宿主分配的 memfd token；
-2. vtest winsys：把 `token inode ↔ res_id` 注册给宿主；
-3. 宿主：AHB 分配 + `TVG_PRESENT` blit + 现有 AHB 显示路径。
+1. ✅ guest `libgbm` shim：`gbm_bo_create` 向宿主要 memfd token（Mesa 自己的
+   GBM 调用仍走真实 libgbm）；
+2. ✅ vtest winsys：把 `token inode ↔ res_id` 注册给宿主。
+
+还差：
+
+3. 宿主把 token attach 接到 `linux_dmabuf` 的 token 路径（代码已有，需真实客户端验证）；
+4. `TVG_PRESENT`：把 virgl 资源 blit 到 AHB，走现有 AHB 显示路径，然后跑未修改的 KWin。
 
 见 `considerations/last-cell-feasibility-2026-10-28.md`。

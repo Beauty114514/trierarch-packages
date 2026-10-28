@@ -27,14 +27,19 @@
 
 #define TAG "TrierarchTvg"
 #define TVG_MAGIC 0x54564731u
+#define TVG_REQUEST_ALLOC 0u
+#define TVG_REQUEST_REGISTER 1u
 
-struct tvg_alloc_request {
+struct tvg_request {
     uint32_t magic;
+    uint32_t type;
     uint32_t width;
     uint32_t height;
     uint32_t format;
     uint32_t stride;
     uint32_t usage;
+    uint64_t inode;
+    uint32_t res_id;
 };
 
 struct tvg_alloc_reply {
@@ -74,7 +79,7 @@ static uint32_t ahb_format_for_gbm(uint32_t gbm_format) {
     }
 }
 
-static struct tvg_token *alloc_token(const struct tvg_alloc_request *request,
+static struct tvg_token *alloc_token(const struct tvg_request *request,
         int *out_fd, int32_t *status) {
     struct tvg_token *token = calloc(1, sizeof(*token));
     if (!token) {
@@ -176,8 +181,25 @@ static bool send_reply(int client_fd, int token_fd,
     return written == (ssize_t)sizeof(*reply);
 }
 
+static int register_token(uint64_t inode, uint32_t res_id) {
+    int result = -1;
+    pthread_mutex_lock(&token_lock);
+    for (struct tvg_token *token = tokens; token; token = token->next) {
+        if (token->info.inode == (ino_t)inode) {
+            token->info.res_id = (int)res_id;
+            __android_log_print(ANDROID_LOG_INFO, TAG,
+                    "token ino=%llu registered res_id=%u",
+                    (unsigned long long)inode, res_id);
+            result = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&token_lock);
+    return result;
+}
+
 static void handle_client(int client_fd) {
-    struct tvg_alloc_request request;
+    struct tvg_request request;
     ssize_t received;
     do {
         received = recv(client_fd, &request, sizeof(request), 0);
@@ -185,6 +207,17 @@ static void handle_client(int client_fd) {
     if (received != (ssize_t)sizeof(request) || request.magic != TVG_MAGIC) {
         return;
     }
+
+    if (request.type == TVG_REQUEST_REGISTER) {
+        struct tvg_alloc_reply reply;
+        memset(&reply, 0, sizeof(reply));
+        reply.magic = TVG_MAGIC;
+        reply.status = register_token(request.inode, request.res_id);
+        send_reply(client_fd, -1, &reply);
+        return;
+    }
+    if (request.type != TVG_REQUEST_ALLOC)
+        return;
 
     int token_fd = -1;
     int32_t status = 0;
