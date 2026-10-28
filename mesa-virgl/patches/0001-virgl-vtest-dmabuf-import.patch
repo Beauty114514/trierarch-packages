@@ -1,0 +1,117 @@
+diff -ruN a/src/gallium/drivers/virgl/virgl_screen.c b/src/gallium/drivers/virgl/virgl_screen.c
+--- a/src/gallium/drivers/virgl/virgl_screen.c	2026-10-28 13:42:29.693905763 +0800
++++ b/src/gallium/drivers/virgl/virgl_screen.c	2026-10-28 14:18:24.450954390 +0800
+@@ -40,6 +40,10 @@
+ #include "virgl_context.h"
+ #include "virgl_encode.h"
+ 
++#ifndef DRM_PRIME_CAP_IMPORT
++#define DRM_PRIME_CAP_IMPORT 0x1
++#endif
++
+ int virgl_debug = 0;
+ const struct debug_named_value virgl_debug_options[] = {
+    { "verbose",         VIRGL_DEBUG_VERBOSE,                 NULL },
+@@ -1074,5 +1078,11 @@
+    slab_create_parent(&screen->transfer_pool, sizeof(struct virgl_transfer), 16);
+ 
+    virgl_disk_cache_create(screen);
++   /* The vtest winsys imports dma-bufs as regular virgl textures, so
++    * advertise import support for EGL_EXT_image_dma_buf_import. */
++   {
++      struct pipe_caps *pcaps = (struct pipe_caps *)&screen->base.caps;
++      pcaps->dmabuf |= DRM_PRIME_CAP_IMPORT;
++   }
+    return &screen->base;
+ }
+diff -ruN a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c	2026-10-28 13:42:29.690905763 +0800
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c	2026-10-28 13:42:29.739756607 +0800
+@@ -388,6 +388,78 @@
+    return res;
+ }
+ 
++static uint32_t
++virgl_vtest_bind_from_pipe(uint32_t pbind)
++{
++   uint32_t vbind = 0;
++
++   if (pbind & PIPE_BIND_DEPTH_STENCIL)
++      vbind |= VIRGL_BIND_DEPTH_STENCIL;
++   if (pbind & PIPE_BIND_RENDER_TARGET)
++      vbind |= VIRGL_BIND_RENDER_TARGET;
++   if (pbind & PIPE_BIND_SAMPLER_VIEW)
++      vbind |= VIRGL_BIND_SAMPLER_VIEW;
++   if (pbind & PIPE_BIND_DISPLAY_TARGET)
++      vbind |= VIRGL_BIND_DISPLAY_TARGET;
++   if (pbind & PIPE_BIND_SCANOUT)
++      vbind |= VIRGL_BIND_SCANOUT;
++   if (pbind & PIPE_BIND_SHARED)
++      vbind |= VIRGL_BIND_SHARED;
++   if (pbind & PIPE_BIND_CURSOR)
++      vbind |= VIRGL_BIND_CURSOR;
++   if (pbind & PIPE_BIND_CUSTOM)
++      vbind |= VIRGL_BIND_CUSTOM;
++   return vbind;
++}
++
++/* The compositor creates its swapchain image from a dma-buf fd.  With the
++ * virpipe winsys there is no host-side import path for that fd, so create a
++ * regular virgl texture with the requested geometry instead.  The fd is only
++ * an identity token for the host and is not consumed here. */
++static struct virgl_hw_res *
++virgl_vtest_resource_create_from_handle(struct virgl_winsys *vws,
++                                        struct winsys_handle *whandle,
++                                        struct pipe_resource *templ,
++                                        uint32_t *plane,
++                                        uint32_t *stride,
++                                        uint32_t *plane_offset,
++                                        uint64_t *modifier,
++                                        uint32_t *blob_mem)
++{
++   (void)whandle;
++   if (!templ)
++      return NULL;
++
++   uint32_t lstride = util_format_get_stride(templ->format, templ->width0);
++   uint32_t size = lstride * util_format_get_nblocksy(templ->format,
++                                                      templ->height0);
++   struct virgl_hw_res *res =
++      virgl_vtest_winsys_resource_create(vws, templ->target, NULL,
++                                         templ->format,
++                                         virgl_vtest_bind_from_pipe(templ->bind),
++                                         templ->width0, templ->height0,
++                                         templ->depth0, templ->array_size,
++                                         templ->last_level, templ->nr_samples,
++                                         0, size);
++   if (!res)
++      return NULL;
++
++   *plane = 0;
++   *stride = lstride;
++   *plane_offset = 0;
++   *modifier = 0;
++   *blob_mem = 0;
++   return res;
++}
++
++static uint32_t
++virgl_vtest_resource_get_storage_size(struct virgl_winsys *vws,
++                                      struct virgl_hw_res *res)
++{
++   (void)vws;
++   return res && res->size > 0 ? (uint32_t)res->size : 0;
++}
++
+ static void *virgl_vtest_resource_map(struct virgl_winsys *vws,
+                                       struct virgl_hw_res *res)
+ {
+@@ -774,6 +846,8 @@
+    vtws->base.resource_map = virgl_vtest_resource_map;
+    vtws->base.resource_wait = virgl_vtest_resource_wait;
+    vtws->base.resource_is_busy = virgl_vtest_resource_is_busy;
++   vtws->base.resource_create_from_handle = virgl_vtest_resource_create_from_handle;
++   vtws->base.resource_get_storage_size = virgl_vtest_resource_get_storage_size;
+    vtws->base.cmd_buf_create = virgl_vtest_cmd_buf_create;
+    vtws->base.cmd_buf_destroy = virgl_vtest_cmd_buf_destroy;
+    vtws->base.submit_cmd = virgl_vtest_winsys_submit_cmd;
