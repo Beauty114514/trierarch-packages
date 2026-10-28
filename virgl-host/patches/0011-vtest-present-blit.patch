@@ -1,6 +1,6 @@
 diff -ruN a/src/virglrenderer.c b/src/virglrenderer.c
 --- a/src/virglrenderer.c	2026-10-28 15:19:30.157195217 +0800
-+++ b/src/virglrenderer.c	2026-10-28 15:19:30.068463677 +0800
++++ b/src/virglrenderer.c	2026-10-28 15:36:18.456387085 +0800
 @@ -43,6 +43,7 @@
  #include "vkr_allocator.h"
  #include "drm_renderer.h"
@@ -38,7 +38,7 @@ diff -ruN a/src/virglrenderer.c b/src/virglrenderer.c
     TRACE_FUNC();
 diff -ruN a/src/virglrenderer.h b/src/virglrenderer.h
 --- a/src/virglrenderer.h	2026-10-28 15:19:30.156442264 +0800
-+++ b/src/virglrenderer.h	2026-10-28 15:19:30.074463677 +0800
++++ b/src/virglrenderer.h	2026-10-28 15:36:18.458387085 +0800
 @@ -389,6 +389,9 @@
  
  VIRGL_EXPORT int virgl_renderer_execute(void *execute_args, uint32_t execute_size);
@@ -51,7 +51,7 @@ diff -ruN a/src/virglrenderer.h b/src/virglrenderer.h
  VIRGL_EXPORT int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
 diff -ruN a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
 --- a/src/vrend/vrend_renderer.c	2026-10-28 15:19:30.161917013 +0800
-+++ b/src/vrend/vrend_renderer.c	2026-10-28 15:19:30.079463676 +0800
++++ b/src/vrend/vrend_renderer.c	2026-10-28 15:36:18.459387085 +0800
 @@ -52,6 +52,7 @@
  #include "vrend_blitter.h"
  #include "vrend_debug.h"
@@ -60,7 +60,7 @@ diff -ruN a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
  #include "vrend_blitter.h"
  
  #include "virgl_util.h"
-@@ -12990,6 +12991,20 @@
+@@ -12990,6 +12991,31 @@
     vrend_hw_switch_context(vrend_state.ctx0, true);
  }
  
@@ -68,13 +68,24 @@ diff -ruN a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
 +                               uint32_t width, uint32_t height)
 +{
 +   extern struct virgl_egl *egl;
++   static virgl_renderer_gl_context present_gl_context;
 +   struct vrend_resource *res = (struct vrend_resource *)pres;
-+   fprintf(stderr, "present vrend: res=%p gl_id=%u target=0x%x egl=%p\n",
-+           (void *)res, res ? res->gl_id : 0, res ? res->target : 0,
-+           (void *)egl);
 +   if (!res || !res->gl_id || !egl)
 +      return -1;
-+   vrend_renderer_force_ctx_0();
++
++   /* The present thread must not switch the vtest client's current context.
++    * Keep a private context in the same share group instead. */
++   if (!present_gl_context) {
++      struct virgl_gl_ctx_param params = { 0 };
++      params.shared = true;
++      params.major_ver = vrend_state.gl_major_ver;
++      params.minor_ver = vrend_state.gl_minor_ver;
++      present_gl_context = vrend_clicbs->create_gl_context(0, &params);
++   }
++   if (!present_gl_context)
++      return -1;
++   vrend_clicbs->make_current(present_gl_context);
++
 +   return virgl_egl_present_ahb(egl, res->gl_id, res->target, ahb, width, height);
 +}
 +
@@ -83,7 +94,7 @@ diff -ruN a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
                               uint32_t offset,
 diff -ruN a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
 --- a/src/vrend/vrend_renderer.h	2026-10-28 15:19:30.158010705 +0800
-+++ b/src/vrend/vrend_renderer.h	2026-10-28 15:19:30.084463676 +0800
++++ b/src/vrend/vrend_renderer.h	2026-10-28 15:36:18.461387085 +0800
 @@ -523,6 +523,9 @@
  
  void vrend_renderer_force_ctx_0(void);
@@ -96,7 +107,7 @@ diff -ruN a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
                               uint32_t offset,
 diff -ruN a/src/vrend/vrend_winsys_egl.c b/src/vrend/vrend_winsys_egl.c
 --- a/src/vrend/vrend_winsys_egl.c	2026-10-28 15:19:30.163803358 +0800
-+++ b/src/vrend/vrend_winsys_egl.c	2026-10-28 15:19:30.091463675 +0800
++++ b/src/vrend/vrend_winsys_egl.c	2026-10-28 15:36:18.462387085 +0800
 @@ -31,6 +31,7 @@
  #endif
  
@@ -178,7 +189,7 @@ diff -ruN a/src/vrend/vrend_winsys_egl.c b/src/vrend/vrend_winsys_egl.c
 +}
 diff -ruN a/src/vrend/vrend_winsys_egl.h b/src/vrend/vrend_winsys_egl.h
 --- a/src/vrend/vrend_winsys_egl.h	2026-10-28 15:19:30.162876479 +0800
-+++ b/src/vrend/vrend_winsys_egl.h	2026-10-28 15:19:30.097463675 +0800
++++ b/src/vrend/vrend_winsys_egl.h	2026-10-28 15:36:18.464387084 +0800
 @@ -94,6 +94,8 @@
  bool virgl_egl_export_fence(struct virgl_egl *egl, EGLSyncKHR fence, int *out_fd);
  bool virgl_egl_different_gpu(struct virgl_egl *egl);
@@ -190,7 +201,7 @@ diff -ruN a/src/vrend/vrend_winsys_egl.h b/src/vrend/vrend_winsys_egl.h
  bool virgl_egl_win32_create_d3d11_texture2d(struct virgl_egl *egl,
 diff -ruN a/vtest/vtest_present.c b/vtest/vtest_present.c
 --- a/vtest/vtest_present.c	2026-10-28 15:19:30.164268899 +0800
-+++ b/vtest/vtest_present.c	2026-10-28 15:19:30.103463674 +0800
++++ b/vtest/vtest_present.c	2026-10-28 15:36:18.465387084 +0800
 @@ -3,6 +3,7 @@
  #endif
  

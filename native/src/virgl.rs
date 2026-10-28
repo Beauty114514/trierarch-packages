@@ -81,6 +81,10 @@ pub fn start(
         .arg(&server)
         .arg("--use-egl-surfaceless")
         .arg("--use-gles")
+        /* The token/present service runs in this process.  Forking would put
+         * the vtest resource table in a child while present requests arrive
+         * in the parent, so keep a single process for the scanout POC. */
+        .arg("--no-fork")
         .arg("--socket-path")
         .arg(&socket)
         .current_dir(runtime_directory)
