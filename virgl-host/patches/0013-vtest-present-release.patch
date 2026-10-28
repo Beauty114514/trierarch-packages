@@ -1,0 +1,242 @@
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' c/vtest/vtest_present.c d/vtest/vtest_present.c
+--- c/vtest/vtest_present.c	2026-10-28 19:51:25.211183613 +0800
++++ d/vtest/vtest_present.c	2026-10-28 19:43:41.979085495 +0800
+@@ -22,6 +22,12 @@
+ #include <dlfcn.h>
+ 
+ #define VTEST_PRESENT_MAGIC 0x54564750u
++#define VTEST_RELEASE_MAGIC 0x54564752u
++
++struct vtest_release_header {
++   uint32_t magic;
++   uint32_t res_id;
++};
+ 
+ struct vtest_present_header {
+    uint32_t magic;
+@@ -117,6 +123,51 @@
+    return NULL;
+ }
+ 
++static void *release_thread(void *arg)
++{
++   char *path = arg;
++   int listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++   if (listen_fd < 0) {
++      fprintf(stderr, "vtest release: socket: %s\n", strerror(errno));
++      free(path);
++      return NULL;
++   }
++
++   struct sockaddr_un addr;
++   memset(&addr, 0, sizeof(addr));
++   addr.sun_family = AF_UNIX;
++   snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
++   unlink(path);
++   if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
++       listen(listen_fd, 4) != 0) {
++      fprintf(stderr, "vtest release: bind/listen: %s\n", strerror(errno));
++      close(listen_fd);
++      free(path);
++      return NULL;
++   }
++   chmod(path, 0666);
++   fprintf(stderr, "vtest release: listening on %s\n", path);
++   free(path);
++
++   for (;;) {
++      int client_fd = accept4(listen_fd, NULL, NULL, SOCK_CLOEXEC);
++      if (client_fd < 0)
++         continue;
++      struct vtest_release_header header;
++      ssize_t received;
++      do {
++         received = recv(client_fd, &header, sizeof(header), MSG_WAITALL);
++      } while (received < 0 && errno == EINTR);
++      if (received == (ssize_t)sizeof(header) &&
++          header.magic == VTEST_RELEASE_MAGIC) {
++         fprintf(stderr, "vtest release: res_id=%u\n", header.res_id);
++         vtest_server_release_ahb(header.res_id);
++      }
++      close(client_fd);
++   }
++   return NULL;
++}
++
+ void vtest_present_start(const char *vtest_socket_path)
+ {
+    if (!vtest_socket_path || !*vtest_socket_path)
+@@ -141,8 +192,70 @@
+       return;
+    }
+    pthread_detach(thread);
++
++   const char *release_name = "release.sock";
++   size_t release_length = directory_length + 1 + strlen(release_name) + 1;
++   char *release_path = malloc(release_length);
++   if (!release_path)
++      return;
++   if (slash)
++      snprintf(release_path, release_length, "%.*s/%s",
++               (int)directory_length, vtest_socket_path, release_name);
++   else
++      snprintf(release_path, release_length, "%s", release_name);
++
++   if (pthread_create(&thread, NULL, release_thread, release_path) != 0) {
++      free(release_path);
++      return;
++   }
++   pthread_detach(thread);
+ }
+ #else
++static void *release_thread(void *arg)
++{
++   char *path = arg;
++   int listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++   if (listen_fd < 0) {
++      fprintf(stderr, "vtest release: socket: %s\n", strerror(errno));
++      free(path);
++      return NULL;
++   }
++
++   struct sockaddr_un addr;
++   memset(&addr, 0, sizeof(addr));
++   addr.sun_family = AF_UNIX;
++   snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
++   unlink(path);
++   if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
++       listen(listen_fd, 4) != 0) {
++      fprintf(stderr, "vtest release: bind/listen: %s\n", strerror(errno));
++      close(listen_fd);
++      free(path);
++      return NULL;
++   }
++   chmod(path, 0666);
++   fprintf(stderr, "vtest release: listening on %s\n", path);
++   free(path);
++
++   for (;;) {
++      int client_fd = accept4(listen_fd, NULL, NULL, SOCK_CLOEXEC);
++      if (client_fd < 0)
++         continue;
++      struct vtest_release_header header;
++      ssize_t received;
++      do {
++         received = recv(client_fd, &header, sizeof(header), MSG_WAITALL);
++      } while (received < 0 && errno == EINTR);
++      if (received == (ssize_t)sizeof(header) &&
++          header.magic == VTEST_RELEASE_MAGIC) {
++         fprintf(stderr, "vtest release: res_id=%u\n", header.res_id);
++         vtest_server_release_ahb(header.res_id);
++      }
++      close(client_fd);
++   }
++   return NULL;
++}
++
+ void vtest_present_start(const char *vtest_socket_path)
+ {
+    (void)vtest_socket_path;
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' c/vtest/vtest_server.c d/vtest/vtest_server.c
+--- c/vtest/vtest_server.c	2026-10-28 19:51:25.212732546 +0800
++++ d/vtest/vtest_server.c	2026-10-28 19:43:34.183033734 +0800
+@@ -40,6 +40,8 @@
+ #include <string.h>
+ #include <pthread.h>
+ #include <stdint.h>
++#include <time.h>
++#include <errno.h>
+ 
+ #include "util.h"
+ #include "util/list.h"
+@@ -92,6 +94,70 @@
+    struct vtest_present_request *next;
+ };
+ 
++struct vtest_present_state
++{
++   uint32_t res_id;
++   bool in_use;
++   struct vtest_present_state *next;
++};
++
++static pthread_mutex_t present_state_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t present_state_cond = PTHREAD_COND_INITIALIZER;
++static struct vtest_present_state *present_states;
++
++static void vtest_server_present_acquire(uint32_t res_id)
++{
++   struct timespec deadline;
++   clock_gettime(CLOCK_REALTIME, &deadline);
++   deadline.tv_nsec += 500000000L;
++   if (deadline.tv_nsec >= 1000000000L) {
++      deadline.tv_sec++;
++      deadline.tv_nsec -= 1000000000L;
++   }
++
++   pthread_mutex_lock(&present_state_lock);
++   struct vtest_present_state *state;
++   for (state = present_states; state; state = state->next) {
++      if (state->res_id == res_id)
++         break;
++   }
++   if (!state) {
++      state = calloc(1, sizeof(*state));
++      if (state) {
++         state->res_id = res_id;
++         state->next = present_states;
++         present_states = state;
++      }
++   }
++   if (state) {
++      while (state->in_use) {
++         int rc = pthread_cond_timedwait(&present_state_cond,
++                                         &present_state_lock, &deadline);
++         if (rc == ETIMEDOUT) {
++            fprintf(stderr, "vtest present: release timeout res_id=%u\n", res_id);
++            state->in_use = false;
++            break;
++         }
++      }
++      state->in_use = true;
++   }
++   pthread_mutex_unlock(&present_state_lock);
++}
++
++void vtest_server_release_ahb(uint32_t res_id)
++{
++   pthread_mutex_lock(&present_state_lock);
++   for (struct vtest_present_state *state = present_states; state;
++        state = state->next) {
++      if (state->res_id == res_id) {
++         state->in_use = false;
++         pthread_cond_broadcast(&present_state_cond);
++         break;
++      }
++   }
++   pthread_mutex_unlock(&present_state_lock);
++}
++
+ struct vtest_server
+ {
+    const char *socket_name;
+@@ -590,6 +656,7 @@
+ int vtest_server_present_ahb(uint32_t res_id, void *ahb,
+                               uint32_t width, uint32_t height)
+ {
++   vtest_server_present_acquire(res_id);
+    struct vtest_present_request *request = calloc(1, sizeof(*request));
+    if (!request)
+       return -1;
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=.trierarch-*' '--exclude=*.orig' '--exclude=*.rej' c/vtest/vtest_server.h d/vtest/vtest_server.h
+--- c/vtest/vtest_server.h	2026-10-28 19:51:25.214712315 +0800
++++ d/vtest/vtest_server.h	2026-10-28 19:43:34.184001735 +0800
+@@ -34,5 +34,8 @@
+ int vtest_server_present_ahb(uint32_t res_id, void *ahb,
+                              uint32_t width, uint32_t height);
+ 
++/* Called by the present service when the host has finished sampling the AHB. */
++void vtest_server_release_ahb(uint32_t res_id);
++
+ #endif
+ 

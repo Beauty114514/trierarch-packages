@@ -59,6 +59,14 @@ struct tvg_token {
 
 static pthread_mutex_t token_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct tvg_token *tokens;
+
+struct tvg_presented {
+    uint32_t res_id;
+    struct tvg_presented *next;
+};
+
+static pthread_mutex_t presented_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct tvg_presented *presented;
 static int listen_fd = -1;
 static pthread_t server_thread;
 static volatile bool running;
@@ -256,6 +264,69 @@ static void send_present(const struct tvg_scanout_token *token) {
     close(fd);
 }
 
+#define TVG_RELEASE_MAGIC 0x54564752u
+
+struct tvg_release_header {
+    uint32_t magic;
+    uint32_t res_id;
+};
+
+static void send_release(uint32_t res_id) {
+    const char *path = getenv("TRIERARCH_TVG_RELEASE_SOCKET");
+    if (!path || !*path)
+        path = "/data/data/app.trierarch/files/virgl-run/release.sock";
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return;
+    }
+    struct tvg_release_header header = {
+        .magic = TVG_RELEASE_MAGIC,
+        .res_id = res_id,
+    };
+    (void)send(fd, &header, sizeof(header), MSG_NOSIGNAL);
+    close(fd);
+}
+
+static void remember_presented(uint32_t res_id) {
+    if (!res_id)
+        return;
+    pthread_mutex_lock(&presented_lock);
+    for (struct tvg_presented *entry = presented; entry; entry = entry->next) {
+        if (entry->res_id == res_id) {
+            pthread_mutex_unlock(&presented_lock);
+            return;
+        }
+    }
+    struct tvg_presented *entry = malloc(sizeof(*entry));
+    if (entry) {
+        entry->res_id = res_id;
+        entry->next = presented;
+        presented = entry;
+    }
+    pthread_mutex_unlock(&presented_lock);
+}
+
+void tvg_scanout_release_presented(void) {
+    pthread_mutex_lock(&presented_lock);
+    struct tvg_presented *list = presented;
+    presented = NULL;
+    pthread_mutex_unlock(&presented_lock);
+    while (list) {
+        struct tvg_presented *next = list->next;
+        send_release(list->res_id);
+        free(list);
+        list = next;
+    }
+}
+
 static int register_token(uint64_t inode, uint32_t res_id) {
     int result = -1;
     struct tvg_scanout_token *registered = NULL;
@@ -389,6 +460,16 @@ void tvg_scanout_stop(void) {
     if (socket_path[0])
         unlink(socket_path);
 
+    pthread_mutex_lock(&presented_lock);
+    struct tvg_presented *entry = presented;
+    presented = NULL;
+    pthread_mutex_unlock(&presented_lock);
+    while (entry) {
+        struct tvg_presented *next = entry->next;
+        free(entry);
+        entry = next;
+    }
+
     pthread_mutex_lock(&token_lock);
     struct tvg_token *token = tokens;
     tokens = NULL;
@@ -424,6 +505,8 @@ const struct tvg_scanout_token *tvg_scanout_lookup_fd(int fd) {
 
 void tvg_scanout_present_fd(int fd) {
     const struct tvg_scanout_token *token = tvg_scanout_lookup_fd(fd);
-    if (token)
-        send_present(token);
+    if (!token)
+        return;
+    send_present(token);
+    remember_presented((uint32_t)token->res_id);
 }

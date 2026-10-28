@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "server_internal.h"
+#include "tvg_scanout.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -706,6 +707,10 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         else
             glFlush();
     }
+    /* The token AHB is shared with the vtest process.  Complete this frame's
+     * sampling before telling the server that the buffer can be overwritten. */
+    glFinish();
+    tvg_scanout_release_presented();
     trierarch_wayland_frame_presented(server, (uint32_t)(render_finished_ns / 1000000ULL));
     eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     server->perf_render_count++;

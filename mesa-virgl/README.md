@@ -191,8 +191,11 @@ scripts/build-26.2.5.sh
 
 KWin 与普通应用必须使用不同的 Mesa：
 
-- **KWin**（GBM/EGL，virpipe）：由 KWin wrapper 设置
+- **KWin**（GBM/EGL，virpipe）：由 KWin wrapper 设置，但只能在
+  `TRIERARCH_RENDERER=virgl` 时生效；adreno 模式必须保留
+  `GALLIUM_DRIVER=freedreno` / `MESA_LOADER_DRIVER_OVERRIDE=kgsl`。
   ```sh
+  if [ "$TRIERARCH_RENDERER" = "virgl" ]; then
   unset MESA_LOADER_DRIVER_OVERRIDE
   export LD_LIBRARY_PATH=/opt/trierarch/mesa/lib:$LD_LIBRARY_PATH
   export GBM_BACKENDS_PATH=/opt/trierarch/mesa/lib/gbm

@@ -36,4 +36,9 @@ const struct tvg_scanout_token *tvg_scanout_lookup_fd(int fd);
 /* Ask the vtest server to blit the registered resource into the token AHB. */
 void tvg_scanout_present_fd(int fd);
 
+/* Tell the vtest server that the host has finished sampling every AHB that was
+ * presented since the last call.  Called from the renderer after its frame is
+ * submitted, so the server does not overwrite a buffer still in use. */
+void tvg_scanout_release_presented(void);
+
 #endif
