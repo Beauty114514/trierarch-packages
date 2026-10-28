@@ -1,5 +1,6 @@
 #include "server_internal.h"
 #include "dmabuf_feedback_device.h"
+#include "tvg_scanout.h"
 #include "xdg-shell-server-protocol.h"
 
 #include <errno.h>
@@ -121,6 +122,16 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
     if (socket_length > 0 && (size_t)socket_length < sizeof(socket_path)) {
         chmod(socket_path, 0666);
     }
+    /* Token service for the virgl buffer shim.  It is independent of the
+     * dmabuf feedback path and only allocates when the guest shim asks. */
+    char tvg_socket[PATH_MAX];
+    int tvg_length = snprintf(tvg_socket, sizeof(tvg_socket),
+            "%s/tvgd.sock", server->runtime_dir);
+    if (tvg_length > 0 && (size_t)tvg_length < sizeof(tvg_socket)) {
+        if (tvg_scanout_start(tvg_socket) != 0)
+            __android_log_print(ANDROID_LOG_WARN, TRIERARCH_TAG,
+                    "tvg token service failed to start at %s", tvg_socket);
+    }
     if (server->dmabuf_enabled) {
         server->dmabuf_feedback_device = trierarch_dmabuf_feedback_device_create(server,
                 server->runtime_dir);
@@ -184,6 +195,7 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
 
 void trierarch_wayland_destroy(wayland_server_t *server) {
     if (!server) return;
+    tvg_scanout_stop();
     trierarch_dmabuf_feedback_device_destroy(server->dmabuf_feedback_device);
     server->dmabuf_feedback_device = NULL;
     if (server->display) wl_display_destroy(server->display);

@@ -55,6 +55,9 @@ struct shm_buffer {
     unsigned int busy_users;
     bool single_pixel;
     bool dmabuf;
+    /* Guest fd is a memfd token from the virgl buffer shim; the host owns the
+     * real AHardwareBuffer and no CPU mapping/EGL import is possible. */
+    bool tvg_token;
     bool egl_buffer;
     bool android_buffer;
     void *egl_resource;

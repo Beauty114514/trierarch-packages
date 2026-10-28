@@ -1,5 +1,6 @@
 #include "server_internal.h"
 #include "dmabuf_feedback_device.h"
+#include "tvg_scanout.h"
 
 #include <android/log.h>
 #include <errno.h>
@@ -66,24 +67,29 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
             params->stride > INT32_MAX) {
         return NULL;
     }
+    /* A token fd is a memfd from the guest buffer shim: the host owns the
+     * real AHardwareBuffer, so the fd has no pixels to map or import. */
+    const bool tvg_token = tvg_scanout_lookup_fd(params->fd) != NULL;
     /* The feedback advertises LINEAR only.  Accepting a tiled or unknown
      * modifier would create a buffer the renderer can neither import (host
      * EGL has no dma-buf import here) nor safely mmap, which presents as a
      * silent black frame instead of a failed create the client can fall back
      * from.  Reject it here so the protocol error reaches the producer. */
-    if (params->modifier != 0) {
+    if (!tvg_token && params->modifier != 0) {
         LOGW("rejecting dmabuf with unsupported modifier 0x%llx fmt=0x%x stride=%u",
                 (unsigned long long)params->modifier, format, params->stride);
         return NULL;
     }
     size_t end = 0;
     void *mapping = NULL;
-    end = (size_t)params->offset + (size_t)params->stride * (size_t)height;
-    mapping = mmap(NULL, end, PROT_READ, MAP_SHARED, params->fd, 0);
-    if (mapping == MAP_FAILED) {
-        LOGW("dmabuf CPU fallback mmap failed: fd=%d size=%zu errno=%d",
-                params->fd, end, errno);
-        mapping = NULL;
+    if (!tvg_token) {
+        end = (size_t)params->offset + (size_t)params->stride * (size_t)height;
+        mapping = mmap(NULL, end, PROT_READ, MAP_SHARED, params->fd, 0);
+        if (mapping == MAP_FAILED) {
+            LOGW("dmabuf CPU fallback mmap failed: fd=%d size=%zu errno=%d",
+                    params->fd, end, errno);
+            mapping = NULL;
+        }
     }
     struct shm_buffer *buffer = calloc(1, sizeof(*buffer));
     if (!buffer) {
@@ -95,8 +101,9 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     buffer->references = 1;
     buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->dmabuf = true;
+    buffer->tvg_token = tvg_token;
     buffer->acquire_fence_fd = -1;
-    buffer->dmabuf_fd = params->fd;
+    buffer->dmabuf_fd = tvg_token ? -1 : params->fd;
     buffer->dmabuf_mapping = mapping;
     buffer->dmabuf_mapping_size = mapping ? end : 0;
     buffer->data = mapping ? (char *)mapping + params->offset : NULL;
@@ -107,11 +114,11 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     buffer->format = format;
     buffer->dmabuf_modifier = params->modifier;
     buffer->dmabuf_offset = params->offset;
-    params->fd = -1;
+    if (!tvg_token) params->fd = -1;
     buffer->resource = wl_resource_create(client, &wl_buffer_interface, 1, id);
     if (!buffer->resource) {
         if (mapping) munmap(mapping, end);
-        close(buffer->dmabuf_fd);
+        if (buffer->dmabuf_fd >= 0) close(buffer->dmabuf_fd);
         free(buffer);
         return NULL;
     }
@@ -120,7 +127,7 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx source=%s",
             width, height, format, params->stride,
             (unsigned long long)params->modifier,
-            mapping ? "cpu-mappable" : "opaque");
+            tvg_token ? "tvg-token" : (mapping ? "cpu-mappable" : "opaque"));
     return buffer;
 }
 
