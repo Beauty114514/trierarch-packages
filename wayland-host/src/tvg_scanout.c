@@ -3,6 +3,7 @@
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -181,12 +182,79 @@ static bool send_reply(int client_fd, int token_fd,
     return written == (ssize_t)sizeof(*reply);
 }
 
+#define TVG_PRESENT_MAGIC 0x54564750u
+
+struct tvg_present_header {
+    uint32_t magic;
+    uint32_t ino;
+    uint32_t res_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+    uint32_t stride;
+};
+
+typedef int (*send_handle_fn)(const AHardwareBuffer *buffer, int socket_fd);
+
+static void send_present(const struct tvg_scanout_token *token) {
+    if (!token || !token->ahb || token->res_id == 0)
+        return;
+
+    const char *path = getenv("TRIERARCH_TVG_PRESENT_SOCKET");
+    if (!path || !*path)
+        path = "/data/data/app.trierarch/files/virgl-run/present.sock";
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        static bool warned;
+        if (!warned) {
+            warned = true;
+            __android_log_print(ANDROID_LOG_WARN, TAG,
+                    "present socket %s unavailable: %s", path, strerror(errno));
+        }
+        close(fd);
+        return;
+    }
+
+    struct tvg_present_header header;
+    memset(&header, 0, sizeof(header));
+    header.magic = TVG_PRESENT_MAGIC;
+    header.ino = (uint32_t)token->inode;
+    header.res_id = (uint32_t)token->res_id;
+    header.width = token->width;
+    header.height = token->height;
+    header.format = token->format;
+    header.stride = token->stride;
+
+    if (send(fd, &header, sizeof(header), MSG_NOSIGNAL) == sizeof(header)) {
+        static send_handle_fn send_handle;
+        if (!send_handle) {
+            void *library = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+            if (library)
+                send_handle = (send_handle_fn)dlsym(library,
+                        "AHardwareBuffer_sendHandleToUnixSocket");
+        }
+        if (send_handle)
+            send_handle((const AHardwareBuffer *)token->ahb, fd);
+    }
+    close(fd);
+}
+
 static int register_token(uint64_t inode, uint32_t res_id) {
     int result = -1;
+    struct tvg_scanout_token *registered = NULL;
     pthread_mutex_lock(&token_lock);
     for (struct tvg_token *token = tokens; token; token = token->next) {
         if (token->info.inode == (ino_t)inode) {
             token->info.res_id = (int)res_id;
+            registered = &token->info;
             __android_log_print(ANDROID_LOG_INFO, TAG,
                     "token ino=%llu registered res_id=%u",
                     (unsigned long long)inode, res_id);
@@ -195,6 +263,8 @@ static int register_token(uint64_t inode, uint32_t res_id) {
         }
     }
     pthread_mutex_unlock(&token_lock);
+    if (registered)
+        send_present(registered);
     return result;
 }
 
