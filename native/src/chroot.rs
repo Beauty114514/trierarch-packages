@@ -683,7 +683,7 @@ fn validate_guest_path(path: &Path, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn process_start_time(pid: u32) -> io::Result<u64> {
+pub(crate) fn process_start_time(pid: u32) -> io::Result<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
     let (_, fields) = stat.rsplit_once(") ").ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "invalid process stat format")

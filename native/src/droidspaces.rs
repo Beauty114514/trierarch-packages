@@ -47,6 +47,9 @@ pub struct DroidspacesSpec {
     pub pipewire_runtime_directory: String,
     /// App-private guest-glibc library, bind-mounted only while starting.
     pub udev_compatibility_library: String,
+    /// Android-native supervisor used to stop a Trierarch-started container
+    /// when the app process disappears.
+    pub session_supervisor: PathBuf,
     /// Empty keeps DroidSpaces' interactive-shell default.
     pub launch_argv: Vec<String>,
     /// Rendering environment resolved from the profile by the Android app.
@@ -93,6 +96,12 @@ impl DroidspacesSpec {
         validate_argv(&self.launch_argv)?;
         validate_environment(&self.graphics_environment)?;
         validate_optional_file(&self.wayland_ime_bridge, "Wayland IME bridge")?;
+        if !self.session_supervisor.as_os_str().is_empty() {
+            validate_optional_file(
+                self.session_supervisor.to_str().unwrap_or_default(),
+                "DroidSpaces supervisor",
+            )?;
+        }
         let su = privileged::find_su().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -112,18 +121,48 @@ impl DroidspacesSpec {
         })
     }
 
+    /// Start the Android-native owner watcher before the container.  It
+    /// polls the app PID/start time from root, and runs `droidspaces stop`
+    /// when the app dies or is force-stopped.  The chroot runtime uses the
+    /// same supervisor with `--pgid`; DroidSpaces needs a stop command because
+    /// its init lives in a different PID namespace.
+    fn start_supervisor_command(&self) -> io::Result<String> {
+        if self.session_supervisor.as_os_str().is_empty() {
+            return Ok(String::new());
+        }
+        let owner_pid = std::process::id();
+        let owner_start_time = crate::chroot::process_start_time(owner_pid)?;
+        let installed = "/data/local/tmp/trierarch-droidspaces-supervisor";
+        let log = "/data/local/tmp/trierarch-droidspaces-supervisor.log";
+        Ok(format!(
+            "/system/bin/toybox cp {source} {installed} && /system/bin/toybox chmod 755 {installed} || exit $?;              /system/bin/setsid {installed} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --stop-container {container} >>{log} 2>&1 & ",
+            source = privileged::shell_quote(
+                self.session_supervisor.to_str().unwrap_or_default()
+            ),
+            installed = installed,
+            owner_pid = owner_pid,
+            owner_start_time = owner_start_time,
+            container = privileged::shell_quote(&self.container),
+            log = log,
+        ))
+    }
+
     fn session_command(&self) -> io::Result<String> {
         let x11_bind = self.x11_bind()?;
         let wayland_bind = self.wayland_bind()?;
         let virgl_bind = self.virgl_bind()?;
         let pipewire_bind = self.pipewire_bind()?;
         let compatibility_bind = self.compatibility_bind()?;
-        let start = self.start_command(
-            x11_bind.as_deref(),
-            wayland_bind.as_deref(),
-            virgl_bind.as_deref(),
-            pipewire_bind.as_deref(),
-            compatibility_bind.as_deref(),
+        let start = format!(
+            "{}{}",
+            self.start_supervisor_command()?,
+            self.start_command(
+                x11_bind.as_deref(),
+                wayland_bind.as_deref(),
+                virgl_bind.as_deref(),
+                pipewire_bind.as_deref(),
+                compatibility_bind.as_deref(),
+            ),
         );
         let run = if !self.wayland_runtime_directory.is_empty() {
             self.wayland_command()
@@ -617,6 +656,7 @@ mod tests {
             virgl_runtime_directory: String::new(),
             pipewire_runtime_directory: String::new(),
             udev_compatibility_library: String::new(),
+            session_supervisor: PathBuf::new(),
             launch_argv: Vec::new(),
             graphics_environment: Vec::new(),
         };
@@ -640,6 +680,7 @@ mod tests {
             virgl_runtime_directory: String::new(),
             pipewire_runtime_directory: "/tmp/pipewire-runtime".into(),
             udev_compatibility_library: String::new(),
+            session_supervisor: PathBuf::new(),
             launch_argv: vec!["pw-play".into(), "sample.wav".into()],
             graphics_environment: Vec::new(),
         };

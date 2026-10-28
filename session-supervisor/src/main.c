@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 enum { DEFAULT_OBSERVE_MS = 10000, PLASMA_GRACE_MS = 4000, POLL_MS = 100, MAX_KNOWN_SOCKETS = 32, MAX_ENVIRONMENT_BYTES = 131072 };
+static const char *const DROIDSPACES_BINARY = "/data/local/Droidspaces/bin/droidspaces";
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t managed_child = 0;
@@ -252,8 +253,28 @@ static bool owner_is_alive(pid_t owner_pid, unsigned long long owner_start_time)
     return false;
 }
 
-static int watch_owner(pid_t owner_pid, unsigned long long owner_start_time, pid_t session_pgid) {
+static int stop_droidspaces(const char *container) {
+    pid_t child = fork();
+    if (child < 0) return 1;
+    if (child == 0) {
+        execl(DROIDSPACES_BINARY, "droidspaces", "--name", container, "stop", (char *)NULL);
+        dprintf(STDERR_FILENO, "unable to execute %s: %s\n", DROIDSPACES_BINARY, strerror(errno));
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    return status;
+}
+
+static int watch_owner(pid_t owner_pid, unsigned long long owner_start_time, pid_t session_pgid,
+                       const char *stop_container) {
     while (owner_is_alive(owner_pid, owner_start_time)) sleep_milliseconds(POLL_MS);
+
+    if (stop_container) {
+        dprintf(STDERR_FILENO, "owner %ld is gone; stopping DroidSpaces container %s\n",
+                (long)owner_pid, stop_container);
+        return stop_droidspaces(stop_container);
+    }
 
     /* The Android App process disappeared or its PID was reused. The
      * supervisor is independent from the shell, so it can terminate the whole
@@ -333,6 +354,7 @@ int main(int argc, char **argv) {
     pid_t owner_pid = 0;
     unsigned long long owner_start_time = 0;
     pid_t session_pgid = 0;
+    const char *stop_container = NULL;
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--runtime-dir") == 0 && index + 1 < argc) runtime_directory = argv[++index];
         else if (strcmp(argv[index], "--log") == 0 && index + 1 < argc) log_path = argv[++index];
@@ -340,17 +362,23 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[index], "--owner-pid") == 0 && index + 1 < argc) owner_pid = (pid_t)strtol(argv[++index], NULL, 10);
         else if (strcmp(argv[index], "--owner-start-time") == 0 && index + 1 < argc) owner_start_time = strtoull(argv[++index], NULL, 10);
         else if (strcmp(argv[index], "--pgid") == 0 && index + 1 < argc) session_pgid = (pid_t)strtol(argv[++index], NULL, 10);
+        else if (strcmp(argv[index], "--stop-container") == 0 && index + 1 < argc) stop_container = argv[++index];
         else {
-            fprintf(stderr, "usage: %s --runtime-dir DIRECTORY --log FILE [--observe-ms 0..60000] | --watch-fd FD --pgid PGID\n", argv[0]);
+            fprintf(stderr, "usage: %s --runtime-dir DIRECTORY --log FILE [--observe-ms 0..60000] | --owner-pid PID --owner-start-time TICKS (--pgid PGID | --stop-container NAME)\n", argv[0]);
             return 2;
         }
     }
-    if (owner_pid > 0 || owner_start_time > 0 || session_pgid > 0) {
-        if (owner_pid <= 1 || owner_start_time == 0 || session_pgid <= 1) {
-            fprintf(stderr, "--owner-pid, --owner-start-time, and --pgid are required together\n");
+    if (owner_pid > 0 || owner_start_time > 0 || session_pgid > 0 || stop_container) {
+        if (owner_pid <= 1 || owner_start_time == 0 ||
+                (session_pgid > 1) == (stop_container != NULL)) {
+            fprintf(stderr, "--owner-pid, --owner-start-time and exactly one of --pgid/--stop-container are required\n");
             return 2;
         }
-        return watch_owner(owner_pid, owner_start_time, session_pgid);
+        if (stop_container && (!*stop_container || strpbrk(stop_container, "/ \t\n"))) {
+            fprintf(stderr, "invalid DroidSpaces container name\n");
+            return 2;
+        }
+        return watch_owner(owner_pid, owner_start_time, session_pgid, stop_container);
     }
     if (!runtime_directory || !log_path || observe_milliseconds < 0) {
         fprintf(stderr, "runtime directory, log file, and valid observation duration are required\n");
