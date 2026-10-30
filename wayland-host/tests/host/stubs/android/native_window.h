@@ -1,0 +1,4 @@
+#ifndef TRIERARCH_TEST_ANATIVE_WINDOW_H
+#define TRIERARCH_TEST_ANATIVE_WINDOW_H
+typedef struct ANativeWindow ANativeWindow;
+#endif

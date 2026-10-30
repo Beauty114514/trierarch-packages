@@ -11,5 +11,6 @@ cc="${CC:-cc}"
     "$package_dir/tests/host/test_dmabuf_feedback_path.c" \
     "$package_dir/src/dmabuf_feedback_path.c" \
     -o "$build_dir/test_dmabuf_feedback_path"
-
 "$build_dir/test_dmabuf_feedback_path"
+
+"$package_dir/tests/host/build_server_test.sh"
