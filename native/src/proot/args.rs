@@ -107,14 +107,20 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             GUEST_WAYLAND_IME_DIRECTORY,
             "Wayland IME",
         )?;
-        bind_socket(
-            &mut argv,
-            &spec.rootfs,
-            &spec.wayland_runtime_directory.join("dmabuf-feedback.sock"),
-            GUEST_WAYLAND_IME_DIRECTORY,
-            "dmabuf-feedback.sock",
-            "dma-buf feedback",
-        )?;
+        // A shared-memory Wayland session deliberately has no dmabuf feedback
+        // socket. Only bind it when the host actually created it; requiring it
+        // here made buffer = "shm" fail before the guest could start.
+        let dmabuf_feedback = spec.wayland_runtime_directory.join("dmabuf-feedback.sock");
+        if dmabuf_feedback.exists() {
+            bind_socket(
+                &mut argv,
+                &spec.rootfs,
+                &dmabuf_feedback,
+                GUEST_WAYLAND_IME_DIRECTORY,
+                "dmabuf-feedback.sock",
+                "dma-buf feedback",
+            )?;
+        }
     }
     if virgl {
         bind_socket(
