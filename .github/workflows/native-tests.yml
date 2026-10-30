@@ -1,0 +1,22 @@
+name: native tests
+
+on:
+  push:
+    paths:
+      - "native/**"
+      - ".github/workflows/native-tests.yml"
+  pull_request:
+    paths:
+      - "native/**"
+      - ".github/workflows/native-tests.yml"
+
+jobs:
+  cargo-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run native tests
+        env:
+          RUST_BACKTRACE: "1"
+        run: cargo test --manifest-path native/Cargo.toml --locked

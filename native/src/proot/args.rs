@@ -107,20 +107,11 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
             GUEST_WAYLAND_IME_DIRECTORY,
             "Wayland IME",
         )?;
-        // A shared-memory Wayland session deliberately has no dmabuf feedback
-        // socket. Only bind it when the host actually created it; requiring it
-        // here made buffer = "shm" fail before the guest could start.
-        let dmabuf_feedback = spec.wayland_runtime_directory.join("dmabuf-feedback.sock");
-        if dmabuf_feedback.exists() {
-            bind_socket(
-                &mut argv,
-                &spec.rootfs,
-                &dmabuf_feedback,
-                GUEST_WAYLAND_IME_DIRECTORY,
-                "dmabuf-feedback.sock",
-                "dma-buf feedback",
-            )?;
-        }
+        bind_optional_dmabuf_feedback(
+            &mut argv,
+            &spec.rootfs,
+            &spec.wayland_runtime_directory,
+        )?;
     }
     if virgl {
         bind_socket(
@@ -513,6 +504,30 @@ fn pipewire_environment() -> [String; 3] {
     ]
 }
 
+/// Binds the dmabuf feedback socket only when the host created one.
+///
+/// A SHM Wayland session deliberately has no dmabuf feedback socket. Making
+/// this mandatory used to reject `graphics.buffer = "shm"` before the guest
+/// could start.
+fn bind_optional_dmabuf_feedback(
+    argv: &mut Vec<String>,
+    rootfs: &std::path::Path,
+    runtime_directory: &std::path::Path,
+) -> Result<()> {
+    let socket = runtime_directory.join("dmabuf-feedback.sock");
+    if !socket.exists() {
+        return Ok(());
+    }
+    bind_socket(
+        argv,
+        rootfs,
+        &socket,
+        GUEST_WAYLAND_IME_DIRECTORY,
+        "dmabuf-feedback.sock",
+        "dma-buf feedback",
+    )
+}
+
 fn bind_socket(
     argv: &mut Vec<String>,
     rootfs: &std::path::Path,
@@ -631,6 +646,49 @@ mod tests {
             ]
         );
         assert!(validate_pipewire_runtime_directory(&runtime).is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn missing_dmabuf_feedback_socket_is_not_bound() {
+        let base = std::env::temp_dir().join(format!(
+            "trierarch-proot-shm-feedback-test-{}",
+            std::process::id()
+        ));
+        let rootfs = base.join("rootfs");
+        let runtime = base.join("wayland-runtime");
+        std::fs::create_dir_all(rootfs.join("tmp")).unwrap();
+        std::fs::create_dir_all(runtime.join("ime")).unwrap();
+
+        let mut argv = Vec::new();
+        bind_optional_dmabuf_feedback(&mut argv, &rootfs, &runtime).unwrap();
+        assert!(argv.is_empty());
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn existing_dmabuf_feedback_socket_is_bound() {
+        use std::os::unix::net::UnixListener;
+
+        let base = std::env::temp_dir().join(format!(
+            "trierarch-proot-dmabuf-feedback-test-{}",
+            std::process::id()
+        ));
+        let rootfs = base.join("rootfs");
+        let runtime = base.join("wayland-runtime");
+        std::fs::create_dir_all(rootfs.join("tmp")).unwrap();
+        std::fs::create_dir_all(runtime.join("ime")).unwrap();
+        let socket = runtime.join("dmabuf-feedback.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+
+        let mut argv = Vec::new();
+        bind_optional_dmabuf_feedback(&mut argv, &rootfs, &runtime).unwrap();
+        assert_eq!(argv.len(), 1);
+        assert!(argv[0].starts_with(&format!("--bind={}", socket.display())));
+        assert!(argv[0].ends_with("/tmp/trierarch-wayland-host/ime/dmabuf-feedback.sock"));
+
+        drop(listener);
         std::fs::remove_dir_all(base).unwrap();
     }
 }
