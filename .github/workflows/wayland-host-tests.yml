@@ -1,0 +1,19 @@
+name: wayland host tests
+
+on:
+  push:
+    paths:
+      - "wayland-host/**"
+      - ".github/workflows/wayland-host-tests.yml"
+  pull_request:
+    paths:
+      - "wayland-host/**"
+      - ".github/workflows/wayland-host-tests.yml"
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run wayland-host host tests
+        run: bash wayland-host/tests/host/run.sh

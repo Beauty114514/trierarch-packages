@@ -1,5 +1,6 @@
 #include "server_internal.h"
 #include "dmabuf_feedback_device.h"
+#include "dmabuf_feedback_path.h"
 #include "tvg_scanout.h"
 #include "xdg-shell-server-protocol.h"
 
@@ -139,11 +140,7 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
         /* The profile runs the shm path; remove a socket left behind by an
          * earlier dmabuf session so the guest reporter fails fast instead of
          * talking to a stale listener path. */
-        char feedback_path[PATH_MAX];
-        int feedback_length = snprintf(feedback_path, sizeof(feedback_path),
-                "%s/dmabuf-feedback.sock", server->runtime_dir);
-        if (feedback_length > 0 && (size_t)feedback_length < sizeof(feedback_path))
-            unlink(feedback_path);
+        trierarch_dmabuf_feedback_prepare(server->runtime_dir, false);
     }
     __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG,
             "buffer plan: dmabuf=%s (linux-dmabuf %s)", dmabuf_enabled ? "enabled" : "disabled",
