@@ -24,6 +24,7 @@ struct client_state {
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
     int configured;
+    int buffer_released;
 };
 
 static struct wayland_server *server;
@@ -74,6 +75,16 @@ static void registry_global_remove(void *data, struct wl_registry *registry, uin
 static const struct wl_registry_listener registry_listener = {
     .global = registry_global,
     .global_remove = registry_global_remove,
+};
+
+static void buffer_release(void *data, struct wl_buffer *buffer) {
+    (void)buffer;
+    struct client_state *state = data;
+    state->buffer_released++;
+}
+
+static const struct wl_buffer_listener buffer_listener = {
+    .release = buffer_release,
 };
 
 static int create_shm_buffer(struct client_state *state, int width, int height,
@@ -127,15 +138,18 @@ int main(void) {
     void *mapping = NULL;
     size_t mapping_size = 0;
     create_shm_buffer(&state, 640, 480, &buffer, &mapping, &mapping_size);
+    wl_buffer_add_listener(buffer, &buffer_listener, &state);
     wl_surface_attach(state.surface, buffer, 0, 0);
     wl_surface_damage(state.surface, 0, 0, 640, 480);
     wl_surface_commit(state.surface);
     assert(wl_display_roundtrip(state.display) >= 0);
 
-    wl_buffer_destroy(buffer);
     xdg_toplevel_destroy(state.toplevel);
     xdg_surface_destroy(state.xdg_surface);
     wl_surface_destroy(state.surface);
+    assert(wl_display_roundtrip(state.display) >= 0);
+    assert(state.buffer_released == 1);
+    wl_buffer_destroy(buffer);
     wl_display_disconnect(state.display);
 
     stop_server = 1;
