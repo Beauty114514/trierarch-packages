@@ -21,5 +21,8 @@ command -v makepkg >/dev/null || {
 # Sphinx extensions. Keep the runtime packages while skipping that target.
 sed -i 's|html-docs=enabled|html-docs=disabled|' PKGBUILD
 sed -i 's|    _pick docs usr/share/doc|    # _pick docs usr/share/doc|' PKGBUILD
+# The docs target is not used for runtime testing. Remove it from pkgname so
+# makepkg does not call package_mesa-docs(), which expects a built docs tree.
+sed -i '/^[[:space:]]*mesa-docs$/d' PKGBUILD
 
 makepkg --nodeps --noconfirm "$@"
