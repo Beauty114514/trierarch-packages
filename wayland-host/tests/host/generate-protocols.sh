@@ -27,6 +27,7 @@ generate() {
 }
 
 generate "$protocols_dir/stable/xdg-shell/xdg-shell.xml" xdg-shell
+"$scanner" client-header "$protocols_dir/stable/xdg-shell/xdg-shell.xml" "$out_dir/xdg-shell-client-protocol.h"
 generate "$protocols_dir/staging/single-pixel-buffer/single-pixel-buffer-v1.xml" single-pixel-buffer-v1
 generate "$protocols_dir/stable/viewporter/viewporter.xml" viewporter
 generate "$protocols_dir/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" pointer-constraints
