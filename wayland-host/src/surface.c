@@ -318,15 +318,19 @@ static void compositor_create_surface(struct wl_client *client,
             surface_resource_destroy);
 }
 
+#if defined(WL_COMPOSITOR_RELEASE_SINCE_VERSION)
 static void compositor_release(struct wl_client *client, struct wl_resource *resource) {
     (void)client;
     wl_resource_destroy(resource);
 }
+#endif
 
 static const struct wl_compositor_interface compositor_impl = {
     .create_surface = compositor_create_surface,
     .create_region = compositor_create_region,
+#if defined(WL_COMPOSITOR_RELEASE_SINCE_VERSION)
     .release = compositor_release,
+#endif
 };
 
 void trierarch_surface_bind(struct wl_client *client, void *data,

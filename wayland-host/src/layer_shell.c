@@ -43,8 +43,10 @@ static void layer_surface_set_anchor(struct wl_client *client,
     (void)client;
     struct compositor_surface *surface = layer_surface_from_resource(resource);
     if (!surface) return;
-    if (!zwlr_layer_surface_v1_anchor_is_valid(anchor,
-            wl_resource_get_version(resource))) {
+    if ((anchor & ~(ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                    ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                    ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                    ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT)) != 0) {
         wl_resource_post_error(resource,
                 ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_ANCHOR,
                 "invalid layer surface anchor");
@@ -75,8 +77,7 @@ static void layer_surface_set_margin(struct wl_client *client,
 static void layer_surface_set_keyboard_interactivity(struct wl_client *client,
         struct wl_resource *resource, uint32_t interactivity) {
     (void)client;
-    if (!zwlr_layer_surface_v1_keyboard_interactivity_is_valid(interactivity,
-            wl_resource_get_version(resource))) {
+    if (interactivity > ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
         wl_resource_post_error(resource,
                 ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_KEYBOARD_INTERACTIVITY,
                 "invalid layer surface keyboard interactivity");
@@ -103,8 +104,7 @@ static void layer_surface_set_layer(struct wl_client *client,
     (void)client;
     struct compositor_surface *surface = layer_surface_from_resource(resource);
     if (!surface) return;
-    if (!zwlr_layer_shell_v1_layer_is_valid(layer,
-            wl_resource_get_version(resource))) {
+    if (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
         wl_resource_post_error(resource,
                 ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER,
                 "invalid layer");
@@ -146,7 +146,7 @@ static void layer_shell_get_layer_surface(struct wl_client *client,
                 "surface already has a role");
         return;
     }
-    if (!zwlr_layer_shell_v1_layer_is_valid(layer, wl_resource_get_version(resource))) {
+    if (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
         wl_resource_post_error(resource, ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER,
                 "invalid layer");
         return;
