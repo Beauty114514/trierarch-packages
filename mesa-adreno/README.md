@@ -4,14 +4,21 @@ This directory records the guest-side Mesa build used for the Adreno/Turnip
 Wayland test. It is not part of the Android APK and it does not replace the
 host Mesa installation.
 
-The recipe is taken from the ifdevs Android-container Mesa package:
+The recipe is derived from the ifdevs Android-container Mesa work:
 
-- repository: `https://github.com/lfdevs/archlinuxarm-PKGBUILDs.git`
-- branch: `freedreno`
-- Mesa source tag: `mesa-26.3.0-devel-20260824`
-- Gallium drivers: `freedreno,zink,virgl,llvmpipe`
-- Vulkan driver: `freedreno`
-- Freedreno KMD: `kgsl`
+- packaging: `https://github.com/lfdevs/archlinuxarm-PKGBUILDs.git`,
+  branch `freedreno`;
+- Mesa fork: `https://github.com/lfdevs/mesa-for-android-container`,
+  referenced by the packaging PKGBUILD;
+- Gallium drivers: `freedreno,zink,virgl,llvmpipe`;
+- Vulkan driver: `freedreno`;
+- Freedreno KMD: `kgsl`.
+
+This is a multi-layer downstream of Mesa, not a single “Mesa / MIT” component.
+The current fork tag, packaging commit, license expression and the build
+script's pinned default are recorded in [`UPSTREAM.md`](UPSTREAM.md). The build
+uses `MESA_PKGBUILD_COMMIT` to override the pinned packaging commit; pin the
+exact commit/tag before distributing binaries.
 
 The build script runs inside an ARM64 Arch guest as an ordinary user. It does
 not modify the host or the Android app. Required build dependencies must be

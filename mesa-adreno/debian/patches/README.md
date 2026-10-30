@@ -23,3 +23,8 @@ feedback. `0002-trierarch-kgsl-build-option.patch` also changes Debian's
 otherwise defaults to the `msm` KMD selection. It deliberately excludes
 generated build files, Debian packaging outputs, the package-written
 `VERSION` file, and a no-op whitespace change.
+
+Provenance and licensing: this patch queue is the Trierarch layer of the
+Mesa → lfdevs Mesa fork → lfdevs packaging → Trierarch chain described in
+`../../UPSTREAM.md`. The ifdevs-derived changes and the Trierarch KGSL/Wayland
+changes are not relicensed; Mesa's file-level notices remain authoritative.
