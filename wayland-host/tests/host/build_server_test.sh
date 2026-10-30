@@ -9,8 +9,10 @@ mkdir -p "$build_dir"
 "$package_dir/tests/host/generate-protocols.sh" "$protocol_dir"
 
 cc="${CC:-cc}"
-server_flags="$(pkg-config --cflags --libs wayland-server)"
-client_flags="$(pkg-config --cflags --libs wayland-client)"
+server_cflags="$(pkg-config --cflags wayland-server)"
+server_libs="$(pkg-config --libs wayland-server)"
+client_cflags="$(pkg-config --cflags wayland-client)"
+client_libs="$(pkg-config --libs wayland-client)"
 sources=(
     src/buffer_shm.c
     src/compositor.c
@@ -50,12 +52,12 @@ done
     -I"$protocol_dir" \
     -I"$package_dir/../dmabuf-device-report/include" \
     -I"$package_dir/tests/host/stubs" \
-    $server_flags \
+    $server_cflags \
     "${sources_paths[@]}" \
     "${protocol_sources[@]}" \
     "${stubs[@]}" \
     "$package_dir/tests/host/test_server_create.c" \
-    -ldl -o "$build_dir/test_server_create"
+    -ldl $server_libs -o "$build_dir/test_server_create"
 
 "$build_dir/test_server_create"
 
@@ -65,11 +67,11 @@ done
     -I"$protocol_dir" \
     -I"$package_dir/../dmabuf-device-report/include" \
     -I"$package_dir/tests/host/stubs" \
-    $client_flags $server_flags \
+    $client_cflags $server_cflags \
     "${sources_paths[@]}" \
     "${protocol_sources[@]}" \
     "${stubs[@]}" \
     "$package_dir/tests/host/test_client_shm.c" \
-    -ldl -o "$build_dir/test_client_shm"
+    -ldl $client_libs $server_libs -o "$build_dir/test_client_shm"
 
 "$build_dir/test_client_shm"
