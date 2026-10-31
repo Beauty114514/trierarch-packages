@@ -21,3 +21,5 @@ jobs:
           sudo apt-get install -y libwayland-dev wayland-protocols libwayland-bin
       - name: Run wayland-host host tests
         run: bash wayland-host/tests/host/run.sh
+      - name: Run wayland-host host tests with ASAN/UBSAN
+        run: bash wayland-host/tests/host/run_sanitizers.sh

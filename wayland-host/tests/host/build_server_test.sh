@@ -9,6 +9,10 @@ mkdir -p "$build_dir"
 "$package_dir/tests/host/generate-protocols.sh" "$protocol_dir"
 
 cc="${CC:-cc}"
+sanitize_flags=()
+if [[ -n "${SANITIZE:-}" ]]; then
+    sanitize_flags=("-fsanitize=${SANITIZE}" -fno-omit-frame-pointer -g)
+fi
 server_cflags="$(pkg-config --cflags wayland-server)"
 server_libs="$(pkg-config --libs wayland-server)"
 client_cflags="$(pkg-config --cflags wayland-client)"
@@ -52,6 +56,7 @@ build_and_run() {
     local source="$2"
     "$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
         -D_GNU_SOURCE -pthread \
+        "${sanitize_flags[@]}" \
         -I"$package_dir/src" \
         -I"$protocol_dir" \
         -I"$package_dir/../dmabuf-device-report/include" \
@@ -61,7 +66,7 @@ build_and_run() {
         "${protocol_sources[@]}" \
         "${stubs[@]}" \
         "$package_dir/tests/host/$source" \
-        -ldl $client_libs $server_libs -o "$build_dir/$name"
+        -ldl $client_libs $server_libs "${sanitize_flags[@]}" -o "$build_dir/$name"
     "$build_dir/$name"
 }
 
