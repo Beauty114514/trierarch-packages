@@ -213,18 +213,7 @@ fn guest_command(
             destination = shell_quote(&destination),
         )
     };
-    let chroot_supervisor = spec
-        .rootfs
-        .join(GUEST_CHROOT_SUPERVISOR.trim_start_matches('/'));
-    let chroot_supervisor_parent = chroot_supervisor
-        .parent()
-        .expect("chroot supervisor has a parent");
-    let install_chroot_supervisor = format!(
-        "test -f {source} || {{ printf '%s\\n' 'Trierarch chroot supervisor is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
-        source = shell_quote(&spec.chroot_supervisor),
-        parent = shell_quote(chroot_supervisor_parent),
-        destination = shell_quote(&chroot_supervisor),
-    );
+    let install_supervisor = install_chroot_supervisor(spec);
     if wayland && !spec.udev_compatibility_library.as_os_str().is_empty() {
         environment.push(format!("KDEWM={GUEST_KWIN_WAYLAND_WRAPPER}"));
     }
@@ -299,18 +288,17 @@ fn guest_command(
         let system_cleanup = cleanup_system_mounts(&spec.rootfs);
         return format!(
             "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_pipewire=0; trierarch_chroot_supervisor=; \\
-             cleanup() {{ if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; {cleanup_pipewire}{system_cleanup} }}; \\
+             cleanup() {{ {cleanup_supervisor} {cleanup_pipewire}{system_cleanup} }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
-             {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts}{install_pipewire} \\
-             /system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
+             {install_compatibility}{install_ime_bridge}{install_supervisor}{system_mounts}{install_pipewire} \\
+             {start_supervisor}\\
              /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             rootfs = shell_quote(&spec.rootfs),
-            chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
-            install_chroot_supervisor = install_chroot_supervisor,
+            install_supervisor = install_supervisor,
+            start_supervisor = start_chroot_supervisor(spec, owner_pid, owner_start_time),
+            cleanup_supervisor = cleanup_chroot_supervisor(),
             install_pipewire = install_pipewire,
             cleanup_pipewire = cleanup_pipewire,
-            owner_pid = owner_pid,
-            owner_start_time = owner_start_time,
         );
     }
 
@@ -411,7 +399,7 @@ fn guest_command(
              cleanup() {{ \\
                  if [ -n \"$trierarch_ime_bridge\" ]; then kill \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; wait \"$trierarch_ime_bridge\" >/dev/null 2>&1 || true; fi; \\
                  if [ -n \"$trierarch_session_supervisor\" ]; then kill \"$trierarch_session_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_session_supervisor\" >/dev/null 2>&1 || true; fi; \\
-                 if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; \\
+                 {cleanup_supervisor} \\
                  /system/bin/toybox rm -f {ime_socket} >/dev/null 2>&1 || true; \\
                  /system/bin/toybox rm -rf {compatibility_directory} >/dev/null 2>&1 || true; \\
                  if [ \"$trierarch_wayland_socket_link\" = 1 ]; then /system/bin/toybox rm -f {guest_socket} >/dev/null 2>&1 || true; fi; \\
@@ -422,14 +410,14 @@ fn guest_command(
              }}; \\
              trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
              {system_mounts}{install_pipewire} \\
-             {install_compatibility}{install_ime_bridge}{install_session_supervisor}{install_dmabuf_device_report}{install_kwin_wrapper}{install_chroot_supervisor} \\
+             {install_compatibility}{install_ime_bridge}{install_session_supervisor}{install_dmabuf_device_report}{install_kwin_wrapper}{install_supervisor} \\
               mkdir -p {runtime_target} || exit $?; \\
              if ! /system/bin/toybox mountpoint -q {runtime_target}; then /system/bin/toybox mount --bind {source} {runtime_target} || exit $?; trierarch_mount_wayland=1; fi; \\
              {install_virgl} \\
              /system/bin/toybox mkdir -p {guest_runtime} && /system/bin/toybox chmod 700 {guest_runtime} || exit $?; \\
              if [ -e {guest_socket} ] || [ -L {guest_socket} ]; then /system/bin/toybox rm -f {guest_socket} || exit $?; fi; \\
              /system/bin/toybox ln -s {host_socket} {guest_socket} || exit $?; trierarch_wayland_socket_link=1; \\
-             {report_dmabuf_device}{start_ime_bridge}{start_session_supervisor}/system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
+             {report_dmabuf_device}{start_ime_bridge}{start_session_supervisor}{start_supervisor}\\
              /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
             source = shell_quote(&spec.wayland_runtime_directory),
             runtime_target = shell_quote(&runtime_target),
@@ -447,10 +435,9 @@ fn guest_command(
             rootfs = shell_quote(&spec.rootfs),
             start_ime_bridge = start_ime_bridge,
             start_session_supervisor = start_session_supervisor,
-            chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
-            install_chroot_supervisor = install_chroot_supervisor,
-            owner_pid = owner_pid,
-            owner_start_time = owner_start_time,
+            install_supervisor = install_supervisor,
+            start_supervisor = start_chroot_supervisor(spec, owner_pid, owner_start_time),
+            cleanup_supervisor = cleanup_chroot_supervisor(),
             report_dmabuf_device = report_dmabuf_device,
             install_compatibility = install_compatibility,
             install_ime_bridge = install_ime_bridge,
@@ -484,7 +471,7 @@ fn guest_command(
     format!(
         "trierarch_mount_proc=0; trierarch_mount_sys=0; trierarch_mount_dev=0; trierarch_mount_devpts=0; trierarch_mount_x11=0; trierarch_mount_virgl=0; trierarch_mount_pipewire=0; trierarch_chroot_supervisor=; \\
          cleanup() {{ \\
-             if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; \\
+             {cleanup_supervisor} \\
              if [ \"$trierarch_mount_virgl\" = 1 ]; then /system/bin/toybox umount -l {virgl_target} >/dev/null 2>&1 || true; fi; \\
              if [ \"$trierarch_mount_x11\" = 1 ]; then /system/bin/toybox umount -l {target} >/dev/null 2>&1 || true; fi; \\
              {cleanup_pipewire} \\
@@ -492,11 +479,11 @@ fn guest_command(
          }}; \\
          trap cleanup 0; trap 'cleanup; exit 143' HUP INT TERM; \\
          test -S {socket} || {{ printf '%s\\n' 'Trierarch X11 socket is not ready.' >&2; exit 124; }}; \\
-         {install_compatibility}{install_ime_bridge}{install_chroot_supervisor}{system_mounts}{install_pipewire} \\
+         {install_compatibility}{install_ime_bridge}{install_supervisor}{system_mounts}{install_pipewire} \\
          mkdir -p {target} || exit $?; \\
          if ! /system/bin/toybox mountpoint -q {target}; then /system/bin/toybox mount --bind {source} {target} || exit $?; trierarch_mount_x11=1; fi; \\
          {install_virgl} \\
-         /system/bin/chroot {rootfs} {chroot_supervisor_guest} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; \\
+         {start_supervisor}\\
          /system/bin/chroot {rootfs} {guest}; status=$?; cleanup; trap - 0; exit $status",
         socket = shell_quote(&source),
         source = shell_quote(&spec.x11_socket_directory),
@@ -508,13 +495,39 @@ fn guest_command(
         rootfs = shell_quote(&spec.rootfs),
         install_compatibility = install_compatibility,
         install_ime_bridge = install_ime_bridge,
-        install_chroot_supervisor = install_chroot_supervisor,
-        chroot_supervisor_guest = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
-        owner_pid = owner_pid,
-        owner_start_time = owner_start_time,
+        install_supervisor = install_supervisor,
+        start_supervisor = start_chroot_supervisor(spec, owner_pid, owner_start_time),
+        cleanup_supervisor = cleanup_chroot_supervisor(),
         system_mounts = system_mounts,
         system_cleanup = system_cleanup,
     )
+}
+
+fn install_chroot_supervisor(spec: &ChrootSpec) -> String {
+    let destination = spec
+        .rootfs
+        .join(GUEST_CHROOT_SUPERVISOR.trim_start_matches('/'));
+    let parent = destination
+        .parent()
+        .expect("chroot supervisor has a parent");
+    format!(
+        "test -f {source} || {{ printf '%s\\n' 'Trierarch chroot supervisor is missing.' >&2; exit 126; }}; /system/bin/toybox mkdir -p {parent} && /system/bin/toybox cp {source} {destination} && /system/bin/toybox chmod 755 {destination} || exit $?; ",
+        source = shell_quote(&spec.chroot_supervisor),
+        parent = shell_quote(parent),
+        destination = shell_quote(&destination),
+    )
+}
+
+fn start_chroot_supervisor(spec: &ChrootSpec, owner_pid: u32, owner_start_time: u64) -> String {
+    format!(
+        "/system/bin/chroot {rootfs} {supervisor} --owner-pid {owner_pid} --owner-start-time {owner_start_time} --pgid $$ >/tmp/trierarch-chroot-supervisor.log 2>&1 & trierarch_chroot_supervisor=$!; ",
+        rootfs = shell_quote(&spec.rootfs),
+        supervisor = shell_quote(Path::new(GUEST_CHROOT_SUPERVISOR)),
+    )
+}
+
+fn cleanup_chroot_supervisor() -> &'static str {
+    "if [ -n \"$trierarch_chroot_supervisor\" ]; then kill \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; wait \"$trierarch_chroot_supervisor\" >/dev/null 2>&1 || true; fi; "
 }
 
 fn kwin_wayland_wrapper_script(library: &str) -> String {
@@ -760,6 +773,21 @@ mod tests {
             ));
             assert!(command.contains("PIPEWIRE_RUNTIME_DIR=/tmp/trierarch-pipewire"));
             assert!(command.contains("PULSE_SERVER=unix:/tmp/trierarch-pipewire/pulse/native"));
+        }
+    }
+
+    #[test]
+    fn all_session_types_start_and_cleanup_the_chroot_supervisor() {
+        for (x11, wayland) in [(false, false), (false, true), (true, false)] {
+            let command = guest_command(&test_spec(false), x11, wayland, 123, 456);
+            assert!(command.contains(
+                "/opt/trierarch/chroot-supervisor/trierarch-session-supervisor"
+            ));
+            assert!(command.contains("--owner-pid 123"));
+            assert!(command.contains("--owner-start-time 456"));
+            assert!(command.contains("--pgid $$"));
+            assert!(command.contains("trierarch_chroot_supervisor=$!"));
+            assert!(command.contains("kill \"$trierarch_chroot_supervisor\""));
         }
     }
 
