@@ -2,7 +2,6 @@
 #include "dmabuf_device_report_protocol.h"
 
 #include <assert.h>
-#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,15 +13,31 @@
 #include <wayland-client.h>
 
 static struct wayland_server *server;
-static volatile int stop_server;
+static volatile int server_should_stop;
+static pthread_t server_thread_id;
 
 static void *server_thread(void *unused) {
     (void)unused;
-    while (!stop_server) trierarch_wayland_dispatch(server);
+    while (!server_should_stop) trierarch_wayland_dispatch(server);
     return NULL;
 }
 
-static int report_render_device(const char *runtime_dir) {
+static void start_server(const char *runtime_dir) {
+    server_should_stop = 0;
+    server = trierarch_wayland_create(runtime_dir, true);
+    assert(server != NULL);
+    assert(pthread_create(&server_thread_id, NULL, server_thread, NULL) == 0);
+}
+
+static void stop_server(void) {
+    server_should_stop = 1;
+    trierarch_wayland_wake(server);
+    pthread_join(server_thread_id, NULL);
+    trierarch_wayland_destroy(server);
+    server = NULL;
+}
+
+static int connect_report_socket(const char *runtime_dir) {
     char path[4096];
     int length = snprintf(path, sizeof(path), "%s/dmabuf-feedback.sock", runtime_dir);
     assert(length > 0 && (size_t)length < sizeof(path));
@@ -33,7 +48,11 @@ static int report_render_device(const char *runtime_dir) {
     assert(strlen(path) < sizeof(address.sun_path));
     strcpy(address.sun_path, path);
     assert(connect(fd, (const struct sockaddr *)&address, sizeof(address)) == 0);
+    return fd;
+}
 
+static uint32_t report_valid_device(const char *runtime_dir) {
+    int fd = connect_report_socket(runtime_dir);
     struct trierarch_dmabuf_device_report report = {
         .magic = TRIERARCH_DMABUF_DEVICE_REPORT_MAGIC,
         .version = TRIERARCH_DMABUF_DEVICE_REPORT_VERSION,
@@ -41,14 +60,24 @@ static int report_render_device(const char *runtime_dir) {
         .minor = 1,
     };
     assert(send(fd, &report, sizeof(report), MSG_NOSIGNAL) == (ssize_t)sizeof(report));
-
     struct trierarch_dmabuf_device_report_ack ack = {0};
     assert(recv(fd, &ack, sizeof(ack), 0) == (ssize_t)sizeof(ack));
+    close(fd);
     assert(ack.magic == TRIERARCH_DMABUF_DEVICE_REPORT_MAGIC);
     assert(ack.version == TRIERARCH_DMABUF_DEVICE_REPORT_VERSION);
-    assert(ack.status == TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_ACCEPTED);
+    return ack.status;
+}
+
+static uint32_t report_truncated_device(const char *runtime_dir) {
+    int fd = connect_report_socket(runtime_dir);
+    uint32_t magic = TRIERARCH_DMABUF_DEVICE_REPORT_MAGIC;
+    assert(send(fd, &magic, sizeof(magic), MSG_NOSIGNAL) == (ssize_t)sizeof(magic));
+    struct trierarch_dmabuf_device_report_ack ack = {0};
+    assert(recv(fd, &ack, sizeof(ack), 0) == (ssize_t)sizeof(ack));
     close(fd);
-    return 0;
+    assert(ack.magic == TRIERARCH_DMABUF_DEVICE_REPORT_MAGIC);
+    assert(ack.version == TRIERARCH_DMABUF_DEVICE_REPORT_VERSION);
+    return ack.status;
 }
 
 struct registry_state {
@@ -71,8 +100,7 @@ static const struct wl_registry_listener registry_listener = {
     .global_remove = registry_global_remove,
 };
 
-static int global_is_advertised(const char *runtime_dir) {
-    (void)runtime_dir;
+static int global_is_advertised(void) {
     struct wl_display *display = wl_display_connect("wayland-trierarch");
     assert(display != NULL);
     struct registry_state state = {0};
@@ -84,30 +112,35 @@ static int global_is_advertised(const char *runtime_dir) {
     return state.saw_linux_dmabuf;
 }
 
-int main(void) {
-    char template[] = "/tmp/trierarch-wayland-dmabuf-XXXXXX";
+static char *make_runtime_dir(char *template) {
     char *runtime_dir = mkdtemp(template);
     assert(runtime_dir != NULL);
+    return runtime_dir;
+}
 
-    server = trierarch_wayland_create(runtime_dir, true);
-    assert(server != NULL);
-    {
-        char socket_path[4096];
-        int length = snprintf(socket_path, sizeof(socket_path), "%s/dmabuf-feedback.sock", runtime_dir);
-        assert(length > 0 && (size_t)length < sizeof(socket_path));
-        assert(access(socket_path, F_OK) == 0);
-    }
+int main(void) {
+    char first_template[] = "/tmp/trierarch-wayland-dmabuf-XXXXXX";
+    char *first_runtime = make_runtime_dir(first_template);
+    start_server(first_runtime);
 
-    pthread_t thread;
-    assert(pthread_create(&thread, NULL, server_thread, NULL) == 0);
-    report_render_device(runtime_dir);
-    assert(global_is_advertised(runtime_dir));
+    /* No report yet: the feedback socket exists but the global must not. */
+    assert(!global_is_advertised());
+    assert(report_valid_device(first_runtime) ==
+            TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_ACCEPTED);
+    assert(global_is_advertised());
+    stop_server();
+    rmdir(first_runtime);
 
-    stop_server = 1;
-    trierarch_wayland_wake(server);
-    pthread_join(thread, NULL);
-    trierarch_wayland_destroy(server);
-    rmdir(runtime_dir);
+    /* A truncated report must be rejected and must not publish the global. */
+    char second_template[] = "/tmp/trierarch-wayland-dmabuf-invalid-XXXXXX";
+    char *second_runtime = make_runtime_dir(second_template);
+    start_server(second_runtime);
+    assert(report_truncated_device(second_runtime) ==
+            TRIERARCH_DMABUF_DEVICE_REPORT_STATUS_INVALID);
+    assert(!global_is_advertised());
+    stop_server();
+    rmdir(second_runtime);
+
     puts("wayland dmabuf feedback test passed");
     return 0;
 }
