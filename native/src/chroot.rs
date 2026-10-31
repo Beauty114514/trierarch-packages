@@ -5,11 +5,11 @@
 //! each session, then removes only the mounts it created.
 
 use crate::LaunchSpec;
+use crate::privileged::{find_su, shell_quote, su_arguments};
 use crate::wayland_ime_provider::{GUEST_PROVIDER_DESKTOP_PATH, PROVIDER_DESKTOP_ENTRY};
 use std::io;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const GUEST_WAYLAND_HOST_DIRECTORY: &str = "/tmp/trierarch-wayland-host";
 const GUEST_WAYLAND_RUNTIME_DIRECTORY: &str = "/tmp/trierarch-wayland-user";
@@ -628,58 +628,6 @@ fn is_socket(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
-fn find_su() -> Option<PathBuf> {
-    ["/system/bin/su", "/system/xbin/su", "/product/bin/su"]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-}
-
-/// Select only the flags that belong to the installed `su` implementation.
-///
-/// Magisk's `-i` is essential for an interactive `-c` session: it allocates a
-/// pseudo-terminal, preserving the terminal relationship that Bash needs for
-/// job control. KernelSU uses a different command-line contract. Unknown
-/// providers retain portable `su -c` behaviour instead of receiving flags they
-/// may reject.
-fn su_arguments(su: &Path, command: String) -> Vec<String> {
-    match identify_su(su) {
-        SuFlavor::Magisk if su_version_code(su) == Some(28_100) => {
-            vec!["-M".into(), "-c".into(), command]
-        }
-        SuFlavor::Magisk => vec!["-i".into(), "-M".into(), "-c".into(), command],
-        SuFlavor::KernelSu => vec!["-M".into(), "-p".into(), "-c".into(), command],
-        SuFlavor::Other => vec!["-c".into(), command],
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SuFlavor {
-    Magisk,
-    KernelSu,
-    Other,
-}
-
-fn identify_su(su: &Path) -> SuFlavor {
-    let output = Command::new(su).arg("--help").output();
-    let Ok(output) = output else {
-        return SuFlavor::Other;
-    };
-    let help = String::from_utf8_lossy(&output.stdout);
-    if help.contains("MagiskSU") {
-        SuFlavor::Magisk
-    } else if help.contains("KernelSU") {
-        SuFlavor::KernelSu
-    } else {
-        SuFlavor::Other
-    }
-}
-
-fn su_version_code(su: &Path) -> Option<u32> {
-    let output = Command::new(su).arg("-V").output().ok()?;
-    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
-}
-
 fn validate_guest_path(path: &Path, name: &str) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::new(
@@ -718,12 +666,6 @@ fn validate_optional_file(path: &Path, name: &str) -> io::Result<()> {
             format!("{name} is not accessible: {}", path.display())));
     }
     Ok(())
-}
-
-fn shell_quote(value: &Path) -> String {
-    let value = value.as_os_str().as_encoded_bytes();
-    let value = String::from_utf8_lossy(value);
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(test)]
