@@ -1,0 +1,27 @@
+{
+  "wayland": {
+    "host_directory": "/tmp/trierarch-wayland-host",
+    "runtime_directory": "/tmp/trierarch-wayland-user",
+    "ime_directory": "/tmp/trierarch-wayland-host/ime",
+    "socket": "wayland-trierarch",
+    "dmabuf_feedback": {
+      "socket_name": "dmabuf-feedback.sock",
+      "chroot_path": "/tmp/trierarch-wayland-host/dmabuf-feedback.sock",
+      "droidspaces_path": "/tmp/trierarch-wayland-host/dmabuf-feedback.sock",
+      "proot_path": "/tmp/trierarch-wayland-host/ime/dmabuf-feedback.sock"
+    }
+  },
+  "virgl": {
+    "runtime_directory": "/tmp/trierarch-virgl-host",
+    "socket": "vtest.sock"
+  },
+  "pipewire": {
+    "runtime_directory": "/tmp/trierarch-pipewire",
+    "socket": "pipewire-0",
+    "pulse_socket": "pulse/native"
+  },
+  "tvg": {
+    "socket": "/tmp/trierarch-wayland/tvgd.sock",
+    "gbm_shim": "/tmp/trierarch-wayland/libgbm-shim.so"
+  }
+}

@@ -4,10 +4,16 @@ on:
   push:
     paths:
       - "native/**"
+      - "wayland-host/src/**"
+      - "contracts/runtime-paths.json"
+      - "scripts/check-runtime-contract.py"
       - ".github/workflows/native-tests.yml"
   pull_request:
     paths:
       - "native/**"
+      - "wayland-host/src/**"
+      - "contracts/runtime-paths.json"
+      - "scripts/check-runtime-contract.py"
       - ".github/workflows/native-tests.yml"
 
 jobs:
@@ -16,6 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Check runtime path contract
+        run: python3 scripts/check-runtime-contract.py
       - name: Run native tests
         env:
           RUST_BACKTRACE: "1"
