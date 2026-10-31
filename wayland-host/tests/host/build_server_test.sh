@@ -46,242 +46,27 @@ sources_paths=()
 for source in "${sources[@]}"; do
     sources_paths+=("$package_dir/$source")
 done
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_server_create.c" \
-    -ldl $server_libs -o "$build_dir/test_server_create"
 
-"$build_dir/test_server_create"
+build_and_run() {
+    local name="$1"
+    local source="$2"
+    "$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+        -D_GNU_SOURCE -pthread \
+        -I"$package_dir/src" \
+        -I"$protocol_dir" \
+        -I"$package_dir/../dmabuf-device-report/include" \
+        -I"$package_dir/tests/host/stubs" \
+        $client_cflags $server_cflags \
+        "${sources_paths[@]}" \
+        "${protocol_sources[@]}" \
+        "${stubs[@]}" \
+        "$package_dir/tests/host/$source" \
+        -ldl $client_libs $server_libs -o "$build_dir/$name"
+    "$build_dir/$name"
+}
 
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_client_shm.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_client_shm"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_dmabuf_feedback.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_dmabuf_feedback"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_seat_input.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_dmabuf_feedback"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_seat_input.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_client_shm"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_dmabuf_feedback.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_dmabuf_feedback"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_seat_input.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_dmabuf_feedback"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_seat_input.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
-
-"$build_dir/test_seat_input"
-
-"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
-    -D_GNU_SOURCE -pthread \
-    -I"$package_dir/src" \
-    -I"$protocol_dir" \
-    -I"$package_dir/../dmabuf-device-report/include" \
-    -I"$package_dir/tests/host/stubs" \
-    $client_cflags $server_cflags \
-    "${sources_paths[@]}" \
-    "${protocol_sources[@]}" \
-    "${stubs[@]}" \
-    "$package_dir/tests/host/test_aux_protocols.c" \
-    -ldl $client_libs $server_libs -o "$build_dir/test_aux_protocols"
-
-"$build_dir/test_aux_protocols"
+build_and_run test_server_create test_server_create.c
+build_and_run test_client_shm test_client_shm.c
+build_and_run test_dmabuf_feedback test_dmabuf_feedback.c
+build_and_run test_seat_input test_seat_input.c
+build_and_run test_aux_protocols test_aux_protocols.c

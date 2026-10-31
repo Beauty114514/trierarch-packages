@@ -1,4 +1,5 @@
 #include "compositor.h"
+#include "server_internal.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -24,7 +25,10 @@ struct client_state {
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
     int configured;
-    int buffer_released;
+};
+
+struct buffer_release_state {
+    int count;
 };
 
 static struct wayland_server *server;
@@ -79,15 +83,14 @@ static const struct wl_registry_listener registry_listener = {
 
 static void buffer_release(void *data, struct wl_buffer *buffer) {
     (void)buffer;
-    struct client_state *state = data;
-    state->buffer_released++;
+    ((struct buffer_release_state *)data)->count++;
 }
 
 static const struct wl_buffer_listener buffer_listener = {
     .release = buffer_release,
 };
 
-static int create_shm_buffer(struct client_state *state, int width, int height,
+static void create_shm_buffer(struct client_state *state, int width, int height,
         struct wl_buffer **out_buffer, void **out_mapping, size_t *out_size) {
     int stride = width * 4;
     size_t size = (size_t)stride * height;
@@ -105,7 +108,6 @@ static int create_shm_buffer(struct client_state *state, int width, int height,
     *out_buffer = buffer;
     *out_mapping = mapping;
     *out_size = size;
-    return 0;
 }
 
 int main(void) {
@@ -131,32 +133,71 @@ int main(void) {
     xdg_surface_add_listener(state.xdg_surface, &xdg_surface_listener, &state);
     state.toplevel = xdg_surface_get_toplevel(state.xdg_surface);
     wl_surface_commit(state.surface);
-
     while (!state.configured) assert(wl_display_dispatch(state.display) >= 0);
 
-    struct wl_buffer *buffer = NULL;
-    void *mapping = NULL;
-    size_t mapping_size = 0;
-    create_shm_buffer(&state, 640, 480, &buffer, &mapping, &mapping_size);
-    wl_buffer_add_listener(buffer, &buffer_listener, &state);
-    wl_surface_attach(state.surface, buffer, 0, 0);
+    struct wl_buffer *buffer_a = NULL, *buffer_b = NULL, *buffer_c = NULL;
+    void *mapping_a = NULL, *mapping_b = NULL, *mapping_c = NULL;
+    size_t size_a = 0, size_b = 0, size_c = 0;
+    struct buffer_release_state release_a = {0}, release_b = {0}, release_c = {0};
+
+    create_shm_buffer(&state, 640, 480, &buffer_a, &mapping_a, &size_a);
+    wl_buffer_add_listener(buffer_a, &buffer_listener, &release_a);
+    wl_surface_attach(state.surface, buffer_a, 0, 0);
     wl_surface_damage(state.surface, 0, 0, 640, 480);
     wl_surface_commit(state.surface);
     assert(wl_display_roundtrip(state.display) >= 0);
+
+    create_shm_buffer(&state, 320, 240, &buffer_b, &mapping_b, &size_b);
+    wl_buffer_add_listener(buffer_b, &buffer_listener, &release_b);
+    wl_surface_attach(state.surface, buffer_b, 0, 0);
+    wl_surface_damage(state.surface, 0, 0, 320, 240);
+    wl_surface_commit(state.surface);
+    assert(wl_display_roundtrip(state.display) >= 0);
+
+    /* Replacing A with B defers A's release until the host finishes a frame. */
+    assert(release_a.count == 0);
+    trierarch_flush_deferred_releases();
+    assert(wl_display_roundtrip(state.display) >= 0);
+    assert(release_a.count == 1);
+    assert(release_b.count == 0);
 
     xdg_toplevel_destroy(state.toplevel);
     xdg_surface_destroy(state.xdg_surface);
     wl_surface_destroy(state.surface);
     assert(wl_display_roundtrip(state.display) >= 0);
-    assert(state.buffer_released == 1);
-    wl_buffer_destroy(buffer);
+    assert(release_b.count == 1);
+    wl_buffer_destroy(buffer_a);
+    wl_buffer_destroy(buffer_b);
+
+    /* Leave an attached buffer behind, then disconnect without cleanup. */
+    struct wl_surface *abandoned_surface = wl_compositor_create_surface(state.compositor);
+    create_shm_buffer(&state, 64, 64, &buffer_c, &mapping_c, &size_c);
+    wl_buffer_add_listener(buffer_c, &buffer_listener, &release_c);
+    wl_surface_attach(abandoned_surface, buffer_c, 0, 0);
+    wl_surface_damage(abandoned_surface, 0, 0, 64, 64);
+    wl_surface_commit(abandoned_surface);
+    assert(wl_display_roundtrip(state.display) >= 0);
     wl_display_disconnect(state.display);
+
+    /* The server must survive the abandoned client and serve a new one. */
+    struct client_state second = {0};
+    second.display = wl_display_connect("wayland-trierarch");
+    assert(second.display != NULL);
+    struct wl_registry *second_registry = wl_display_get_registry(second.display);
+    wl_registry_add_listener(second_registry, &registry_listener, &second);
+    assert(wl_display_roundtrip(second.display) >= 0);
+    assert(second.compositor != NULL);
+    wl_display_disconnect(second.display);
+
+    /* buffer_c belongs to the disconnected client and must not be touched. */
+    munmap(mapping_a, size_a);
+    munmap(mapping_b, size_b);
+    munmap(mapping_c, size_c);
 
     stop_server = 1;
     trierarch_wayland_wake(server);
     pthread_join(thread, NULL);
     trierarch_wayland_destroy(server);
-    munmap(mapping, mapping_size);
     rmdir(runtime_dir);
     puts("wayland client SHM test passed");
     return 0;
