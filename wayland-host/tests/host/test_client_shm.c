@@ -16,6 +16,13 @@
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 
+#if defined(__SANITIZE_ADDRESS__)
+#include <sanitizer/lsan_interface.h>
+#define TRIERARCH_IGNORE_LSAN(pointer) __lsan_ignore_object(pointer)
+#else
+#define TRIERARCH_IGNORE_LSAN(pointer) ((void)(pointer))
+#endif
+
 struct client_state {
     struct wl_display *display;
     struct wl_compositor *compositor;
@@ -127,6 +134,7 @@ int main(void) {
     wl_registry_add_listener(registry, &registry_listener, &state);
     assert(wl_display_roundtrip(state.display) >= 0);
     assert(state.compositor && state.shm && state.wm_base);
+    wl_registry_destroy(registry);
 
     state.surface = wl_compositor_create_surface(state.compositor);
     state.xdg_surface = xdg_wm_base_get_xdg_surface(state.wm_base, state.surface);
@@ -177,6 +185,13 @@ int main(void) {
     wl_surface_damage(abandoned_surface, 0, 0, 64, 64);
     wl_surface_commit(abandoned_surface);
     assert(wl_display_roundtrip(state.display) >= 0);
+    /* These two proxies are intentionally abandoned with the client; do not
+     * count them as server leaks.  The global proxies are still cleaned up. */
+    TRIERARCH_IGNORE_LSAN(abandoned_surface);
+    TRIERARCH_IGNORE_LSAN(buffer_c);
+    wl_compositor_destroy(state.compositor);
+    wl_shm_destroy(state.shm);
+    xdg_wm_base_destroy(state.wm_base);
     wl_display_disconnect(state.display);
 
     /* The server must survive the abandoned client and serve a new one. */
@@ -187,6 +202,10 @@ int main(void) {
     wl_registry_add_listener(second_registry, &registry_listener, &second);
     assert(wl_display_roundtrip(second.display) >= 0);
     assert(second.compositor != NULL);
+    wl_compositor_destroy(second.compositor);
+    wl_shm_destroy(second.shm);
+    xdg_wm_base_destroy(second.wm_base);
+    wl_registry_destroy(second_registry);
     wl_display_disconnect(second.display);
 
     /* buffer_c belongs to the disconnected client and must not be touched. */

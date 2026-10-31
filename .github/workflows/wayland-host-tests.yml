@@ -23,7 +23,5 @@ jobs:
         run: bash wayland-host/tests/host/run.sh
       - name: Run wayland-host host tests with ASAN/UBSAN
         run: bash wayland-host/tests/host/run_sanitizers.sh
-      - name: Run wayland-host leak check
-        env:
-          HOST_TEST: test_server_create
+      - name: Run wayland-host leak checks
         run: bash wayland-host/tests/host/run_leaks.sh
