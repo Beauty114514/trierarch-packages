@@ -74,4 +74,34 @@ done
     "$package_dir/tests/host/test_client_shm.c" \
     -ldl $client_libs $server_libs -o "$build_dir/test_client_shm"
 
+"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+    -D_GNU_SOURCE -pthread \
+    -I"$package_dir/src" \
+    -I"$protocol_dir" \
+    -I"$package_dir/../dmabuf-device-report/include" \
+    -I"$package_dir/tests/host/stubs" \
+    $client_cflags $server_cflags \
+    "${sources_paths[@]}" \
+    "${protocol_sources[@]}" \
+    "${stubs[@]}" \
+    "$package_dir/tests/host/test_dmabuf_feedback.c" \
+    -ldl $client_libs $server_libs -o "$build_dir/test_dmabuf_feedback"
+
+"$build_dir/test_dmabuf_feedback"
+
 "$build_dir/test_client_shm"
+
+"$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+    -D_GNU_SOURCE -pthread \
+    -I"$package_dir/src" \
+    -I"$protocol_dir" \
+    -I"$package_dir/../dmabuf-device-report/include" \
+    -I"$package_dir/tests/host/stubs" \
+    $client_cflags $server_cflags \
+    "${sources_paths[@]}" \
+    "${protocol_sources[@]}" \
+    "${stubs[@]}" \
+    "$package_dir/tests/host/test_dmabuf_feedback.c" \
+    -ldl $client_libs $server_libs -o "$build_dir/test_dmabuf_feedback"
+
+"$build_dir/test_dmabuf_feedback"
