@@ -54,6 +54,9 @@ done
 build_and_run() {
     local name="$1"
     local source="$2"
+    if [[ -n "${HOST_TEST:-}" && "$name" != "$HOST_TEST" ]]; then
+        return 0
+    fi
     "$cc" -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
         -D_GNU_SOURCE -pthread \
         "${sanitize_flags[@]}" \

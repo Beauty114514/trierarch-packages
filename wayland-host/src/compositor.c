@@ -195,6 +195,12 @@ void trierarch_wayland_destroy(wayland_server_t *server) {
     tvg_scanout_stop();
     trierarch_dmabuf_feedback_device_destroy(server->dmabuf_feedback_device);
     server->dmabuf_feedback_device = NULL;
+    /* wl_display_destroy() frees the event loop but not the event sources
+     * allocated for the server's own fds.  Remove them explicitly so a
+     * create/destroy cycle does not leak one source per fd. */
+    if (server->wake_source) wl_event_source_remove(server->wake_source);
+    if (server->telemetry_source) wl_event_source_remove(server->telemetry_source);
+    if (server->repaint_source) wl_event_source_remove(server->repaint_source);
     if (server->display) wl_display_destroy(server->display);
     if (server->wake_fd >= 0) close(server->wake_fd);
     if (server->telemetry_fd >= 0) close(server->telemetry_fd);
