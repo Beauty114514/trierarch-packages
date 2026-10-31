@@ -158,6 +158,7 @@ int main(void) {
     wp_viewporter_destroy(state.viewporter);
     zwlr_layer_shell_v1_destroy(state.layer_shell);
     xdg_wm_base_destroy(state.wm_base);
+    wl_compositor_destroy(state.compositor);
     wl_registry_destroy(state.registry);
     wl_display_disconnect(state.display);
 

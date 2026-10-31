@@ -259,6 +259,9 @@ int main(void) {
     xdg_surface_destroy(state.xdg_surface);
     wl_surface_destroy(state.surface);
     wl_buffer_destroy(buffer);
+    wl_compositor_destroy(state.compositor);
+    wl_shm_destroy(state.shm);
+    xdg_wm_base_destroy(state.wm_base);
     wl_registry_destroy(state.registry);
     wl_display_disconnect(state.display);
     munmap(mapping, mapping_size);
