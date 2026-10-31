@@ -791,6 +791,58 @@ mod tests {
         }
     }
 
+    fn assert_shell_parses(command: &str) {
+        let status = std::process::Command::new("sh")
+            .args(["-n", "-c", command])
+            .status()
+            .expect("run sh -n");
+        assert!(status.success(), "generated shell does not parse: {command}");
+    }
+
+    #[test]
+    fn terminal_session_script_is_structurally_valid() {
+        let command = guest_command(&test_spec(false), false, false, 123, 456);
+        assert!(command.contains("mount --bind /proc"));
+        assert!(command.contains("/opt/trierarch/chroot-supervisor/"));
+        assert!(!command.contains("WAYLAND_DISPLAY="));
+        assert!(!command.contains("DISPLAY=:0"));
+        assert_shell_parses(&command);
+    }
+
+    #[test]
+    fn wayland_session_script_links_the_host_socket_and_reports_dmabuf() {
+        let mut spec = test_spec(false);
+        spec.wayland_ime_bridge = PathBuf::from("/host/ime/trierarch-wayland-ime-bridge");
+        spec.graphics_environment = vec!["TRIERARCH_BUFFER=dmabuf".into()];
+        let command = guest_command(&spec, false, true, 123, 456);
+        assert!(command.contains("ln -s '/tmp/trierarch-wayland-host/wayland-trierarch'"));
+        assert!(command.contains("trierarch-wayland-user/wayland-trierarch"));
+        assert!(command.contains("--socket /tmp/trierarch-wayland-host/dmabuf-feedback.sock"));
+        assert!(command.contains("--runtime-dir /tmp/trierarch-wayland-user"));
+        assert_shell_parses(&command);
+    }
+
+    #[test]
+    fn wayland_shm_session_does_not_report_a_device() {
+        let mut spec = test_spec(false);
+        spec.wayland_ime_bridge = PathBuf::from("/host/ime/trierarch-wayland-ime-bridge");
+        spec.graphics_environment = vec!["TRIERARCH_BUFFER=shm".into()];
+        let command = guest_command(&spec, false, true, 123, 456);
+        assert!(!command.contains("dmabuf-feedback.sock"));
+        assert!(!command.contains("trierarch-dmabuf-device-report --socket"));
+        assert_shell_parses(&command);
+    }
+
+    #[test]
+    fn x11_session_script_binds_the_socket_directory_only() {
+        let command = guest_command(&test_spec(false), true, false, 123, 456);
+        assert!(command.contains("mount --bind '/host/x11' '/guest/rootfs/tmp/.X11-unix'"));
+        assert!(command.contains("DISPLAY=:0"));
+        assert!(!command.contains("trierarch-wayland-user"));
+        assert!(!command.contains("dmabuf-feedback.sock"));
+        assert_shell_parses(&command);
+    }
+
     #[test]
     fn pipewire_is_not_exposed_when_disabled() {
         let command = guest_command(&test_spec(false), false, false, 123, 456);
