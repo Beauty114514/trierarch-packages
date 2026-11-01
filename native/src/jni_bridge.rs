@@ -10,6 +10,7 @@ use crate::{
 use jni::objects::{GlobalRef, JByteArray, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jlong};
 use jni::{JNIEnv, JavaVM};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -60,194 +61,150 @@ impl SessionEvents for JvmEvents {
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openSession(
     mut env: JNIEnv,
     _: JObject,
-    command: JString,
-    arguments: JObjectArray,
-    working_directory: JString,
-    environment: JObjectArray,
+    config: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
 ) -> jlong {
     let result = (|| {
+        let mut config = java_config(&mut env, config)?;
         let spec = LaunchSpec {
-            command: PathBuf::from(java_string(&mut env, command)?),
-            arguments: java_string_array(&mut env, arguments)?,
-            working_directory: PathBuf::from(java_string(&mut env, working_directory)?),
-            environment: java_string_array(&mut env, environment)?,
+            command: PathBuf::from(config_value(&mut config, "command")?),
+            arguments: config_list(&mut config, "arguments")?,
+            working_directory: PathBuf::from(config_value(&mut config, "working_directory")?),
+            environment: config_list(&mut config, "environment")?,
         };
-        let events = Arc::new(JvmEvents {
-            vm: env.get_java_vm().map_err(|error| error.to_string())?,
-            callback: env
-                .new_global_ref(callback)
-                .map_err(|error| error.to_string())?,
-        });
+        let events = jvm_events(&mut env, callback)?;
         sessions()
             .open(spec, rows, columns, events)
             .map_err(|error| error.to_string())
     })();
-    match result {
-        Ok(id) => id,
-        Err(message) => {
-            throw_illegal_argument(&mut env, &message);
-            0
-        }
-    }
+    finish_open(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openProotSession(
     mut env: JNIEnv,
     _: JObject,
-    rootfs: JString,
-    shell: JString,
-    native_library_directory: JString,
-    cache_directory: JString,
-    x11_socket_directory: JString,
-    wayland_runtime_directory: JString,
-    wayland_ime_bridge: JString,
-    virgl_runtime_directory: JString,
-    pipewire_runtime_directory: JString,
-    udev_compatibility_library: JString,
-    launch_argv: JObjectArray,
-    graphics_environment: JObjectArray,
+    config: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
 ) -> jlong {
     let result = (|| {
+        let mut config = java_config(&mut env, config)?;
         let spec = ProotSpec {
-            rootfs: PathBuf::from(java_string(&mut env, rootfs)?),
-            shell: PathBuf::from(java_string(&mut env, shell)?),
-            native_library_dir: PathBuf::from(java_string(&mut env, native_library_directory)?),
-            cache_dir: PathBuf::from(java_string(&mut env, cache_directory)?),
-            x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
-            wayland_runtime_directory: PathBuf::from(java_string(
-                &mut env,
-                wayland_runtime_directory,
+            rootfs: PathBuf::from(config_value(&mut config, "rootfs")?),
+            shell: PathBuf::from(config_value(&mut config, "shell")?),
+            native_library_dir: PathBuf::from(config_value(
+                &mut config,
+                "native_library_directory",
             )?),
-            wayland_ime_bridge: PathBuf::from(java_string(&mut env, wayland_ime_bridge)?),
-            virgl_runtime_directory: PathBuf::from(java_string(&mut env, virgl_runtime_directory)?),
-            pipewire_runtime_directory: PathBuf::from(java_string(
-                &mut env,
-                pipewire_runtime_directory,
-            )?),
-            udev_compatibility_library: PathBuf::from(java_string(&mut env, udev_compatibility_library)?),
-            launch_argv: java_string_array(&mut env, launch_argv)?,
-            graphics_environment: java_string_array(&mut env, graphics_environment)?,
+            cache_dir: PathBuf::from(config_value(&mut config, "cache_directory")?),
+            x11_socket_directory: PathBuf::from(config_optional(
+                &mut config,
+                "x11_socket_directory",
+            )),
+            wayland_runtime_directory: PathBuf::from(config_optional(
+                &mut config,
+                "wayland_runtime_directory",
+            )),
+            wayland_ime_bridge: PathBuf::from(config_optional(&mut config, "wayland_ime_bridge")),
+            virgl_runtime_directory: PathBuf::from(config_optional(
+                &mut config,
+                "virgl_runtime_directory",
+            )),
+            pipewire_runtime_directory: PathBuf::from(config_optional(
+                &mut config,
+                "pipewire_runtime_directory",
+            )),
+            udev_compatibility_library: PathBuf::from(config_optional(
+                &mut config,
+                "udev_compatibility_library",
+            )),
+            launch_argv: config_list(&mut config, "launch_argv")?,
+            graphics_environment: config_list(&mut config, "graphics_environment")?,
         };
-        let events = Arc::new(JvmEvents {
-            vm: env.get_java_vm().map_err(|error| error.to_string())?,
-            callback: env
-                .new_global_ref(callback)
-                .map_err(|error| error.to_string())?,
-        });
+        let events = jvm_events(&mut env, callback)?;
         sessions()
             .open_proot(spec, rows, columns, events)
             .map_err(|error| error.to_string())
     })();
-    match result {
-        Ok(id) => id,
-        Err(message) => {
-            throw_illegal_argument(&mut env, &message);
-            0
-        }
-    }
+    finish_open(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openChrootSession(
     mut env: JNIEnv,
     _: JObject,
-    rootfs: JString,
-    shell: JString,
-    x11_socket_directory: JString,
-    wayland_runtime_directory: JString,
-    wayland_ime_bridge: JString,
-    chroot_supervisor: JString,
-    virgl_runtime_directory: JString,
-    pipewire_runtime_directory: JString,
-    launch_argv: JObjectArray,
-    graphics_environment: JObjectArray,
-    udev_compatibility_library: JString,
+    config: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
 ) -> jlong {
     let result = (|| {
+        let mut config = java_config(&mut env, config)?;
         let spec = ChrootSpec {
-            rootfs: PathBuf::from(java_string(&mut env, rootfs)?),
-            shell: PathBuf::from(java_string(&mut env, shell)?),
-            x11_socket_directory: PathBuf::from(java_string(&mut env, x11_socket_directory)?),
-            wayland_runtime_directory: PathBuf::from(java_string(&mut env, wayland_runtime_directory)?),
-            wayland_ime_bridge: PathBuf::from(java_string(&mut env, wayland_ime_bridge)?),
-            chroot_supervisor: PathBuf::from(java_string(&mut env, chroot_supervisor)?),
-            virgl_runtime_directory: PathBuf::from(java_string(&mut env, virgl_runtime_directory)?),
-            pipewire_runtime_directory: PathBuf::from(java_string(
-                &mut env,
-                pipewire_runtime_directory,
-            )?),
-            launch_argv: java_string_array(&mut env, launch_argv)?,
-            graphics_environment: java_string_array(&mut env, graphics_environment)?,
-            udev_compatibility_library: PathBuf::from(java_string(&mut env, udev_compatibility_library)?),
+            rootfs: PathBuf::from(config_value(&mut config, "rootfs")?),
+            shell: PathBuf::from(config_value(&mut config, "shell")?),
+            x11_socket_directory: PathBuf::from(config_optional(
+                &mut config,
+                "x11_socket_directory",
+            )),
+            wayland_runtime_directory: PathBuf::from(config_optional(
+                &mut config,
+                "wayland_runtime_directory",
+            )),
+            wayland_ime_bridge: PathBuf::from(config_optional(&mut config, "wayland_ime_bridge")),
+            chroot_supervisor: PathBuf::from(config_value(&mut config, "chroot_supervisor")?),
+            virgl_runtime_directory: PathBuf::from(config_optional(
+                &mut config,
+                "virgl_runtime_directory",
+            )),
+            pipewire_runtime_directory: PathBuf::from(config_optional(
+                &mut config,
+                "pipewire_runtime_directory",
+            )),
+            launch_argv: config_list(&mut config, "launch_argv")?,
+            graphics_environment: config_list(&mut config, "graphics_environment")?,
+            udev_compatibility_library: PathBuf::from(config_optional(
+                &mut config,
+                "udev_compatibility_library",
+            )),
         };
-        let events = Arc::new(JvmEvents {
-            vm: env.get_java_vm().map_err(|error| error.to_string())?,
-            callback: env
-                .new_global_ref(callback)
-                .map_err(|error| error.to_string())?,
-        });
+        let events = jvm_events(&mut env, callback)?;
         sessions()
             .open_chroot(spec, rows, columns, events)
             .map_err(|error| error.to_string())
     })();
-    match result {
-        Ok(id) => id,
-        Err(message) => {
-            throw_illegal_argument(&mut env, &message);
-            0
-        }
-    }
+    finish_open(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroidspacesSession(
     mut env: JNIEnv,
     _: JObject,
-    container: JString,
-    user: JString,
-    x11_socket_directory: JString,
-    wayland_runtime_directory: JString,
-    wayland_ime_bridge: JString,
-    session_supervisor: JString,
-    virgl_runtime_directory: JString,
-    pipewire_runtime_directory: JString,
-    udev_compatibility_library: JString,
-    launch_argv: JObjectArray,
-    graphics_environment: JObjectArray,
+    config: JObjectArray,
     rows: i32,
     columns: i32,
     callback: JObject,
 ) -> jlong {
     let result = (|| {
+        let mut config = java_config(&mut env, config)?;
         let spec = DroidspacesSpec {
-            container: java_string(&mut env, container)?,
-            user: java_string(&mut env, user)?,
-            x11_socket_directory: java_string(&mut env, x11_socket_directory)?,
-            wayland_runtime_directory: java_string(&mut env, wayland_runtime_directory)?,
-            wayland_ime_bridge: java_string(&mut env, wayland_ime_bridge)?,
-            session_supervisor: PathBuf::from(java_string(&mut env, session_supervisor)?),
-            virgl_runtime_directory: java_string(&mut env, virgl_runtime_directory)?,
-            pipewire_runtime_directory: java_string(&mut env, pipewire_runtime_directory)?,
-            udev_compatibility_library: java_string(&mut env, udev_compatibility_library)?,
-            launch_argv: java_string_array(&mut env, launch_argv)?,
-            graphics_environment: java_string_array(&mut env, graphics_environment)?,
+            container: config_value(&mut config, "container")?,
+            user: config_value(&mut config, "user")?,
+            x11_socket_directory: config_optional(&mut config, "x11_socket_directory"),
+            wayland_runtime_directory: config_optional(&mut config, "wayland_runtime_directory"),
+            wayland_ime_bridge: config_optional(&mut config, "wayland_ime_bridge"),
+            session_supervisor: PathBuf::from(config_value(&mut config, "droidspaces_supervisor")?),
+            virgl_runtime_directory: config_optional(&mut config, "virgl_runtime_directory"),
+            pipewire_runtime_directory: config_optional(&mut config, "pipewire_runtime_directory"),
+            udev_compatibility_library: config_optional(&mut config, "udev_compatibility_library"),
+            launch_argv: config_list(&mut config, "launch_argv")?,
+            graphics_environment: config_list(&mut config, "graphics_environment")?,
         };
-        let events = Arc::new(JvmEvents {
-            vm: env.get_java_vm().map_err(|error| error.to_string())?,
-            callback: env
-                .new_global_ref(callback)
-                .map_err(|error| error.to_string())?,
-        });
+        let events = jvm_events(&mut env, callback)?;
         sessions()
             .open(
                 spec.launch_spec().map_err(|error| error.to_string())?,
@@ -257,13 +214,7 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_openDroid
             )
             .map_err(|error| error.to_string())
     })();
-    match result {
-        Ok(id) => id,
-        Err(message) => {
-            throw_illegal_argument(&mut env, &message);
-            0
-        }
-    }
+    finish_open(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
@@ -430,18 +381,72 @@ fn java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-fn java_string_array(env: &mut JNIEnv, array: JObjectArray) -> Result<Vec<String>, String> {
+fn java_config(
+    env: &mut JNIEnv,
+    config: JObjectArray,
+) -> Result<HashMap<String, String>, String> {
     let length = env
-        .get_array_length(&array)
+        .get_array_length(&config)
         .map_err(|error| error.to_string())?;
-    (0..length)
-        .map(|index| {
-            let item = env
-                .get_object_array_element(&array, index)
-                .map_err(|error| error.to_string())?;
-            java_string(env, JString::from(item))
-        })
+    let mut fields = HashMap::with_capacity(length as usize);
+    for index in 0..length {
+        let item = env
+            .get_object_array_element(&config, index)
+            .map_err(|error| error.to_string())?;
+        let entry = java_string(env, JString::from(item))?;
+        let Some((key, value)) = entry.split_once('=') else {
+            return Err(format!("invalid session config entry: {entry}"));
+        };
+        if fields.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(format!("duplicate session config key: {key}"));
+        }
+    }
+    Ok(fields)
+}
+
+fn config_value(
+    config: &mut HashMap<String, String>,
+    key: &str,
+) -> Result<String, String> {
+    config
+        .remove(key)
+        .ok_or_else(|| format!("missing session config key: {key}"))
+}
+
+fn config_optional(config: &mut HashMap<String, String>, key: &str) -> String {
+    config.remove(key).unwrap_or_default()
+}
+
+fn config_list(
+    config: &mut HashMap<String, String>,
+    prefix: &str,
+) -> Result<Vec<String>, String> {
+    let count_key = format!("{prefix}.count");
+    let count: usize = config_value(config, &count_key)?
+        .parse()
+        .map_err(|_| format!("invalid session config count: {count_key}"))?;
+    (0..count)
+        .map(|index| config_value(config, &format!("{prefix}.{index}")))
         .collect()
+}
+
+fn jvm_events(env: &mut JNIEnv, callback: JObject) -> Result<Arc<JvmEvents>, String> {
+    Ok(Arc::new(JvmEvents {
+        vm: env.get_java_vm().map_err(|error| error.to_string())?,
+        callback: env
+            .new_global_ref(callback)
+            .map_err(|error| error.to_string())?,
+    }))
+}
+
+fn finish_open(env: &mut JNIEnv, result: Result<jlong, String>) -> jlong {
+    match result {
+        Ok(id) => id,
+        Err(message) => {
+            throw_illegal_argument(env, &message);
+            0
+        }
+    }
 }
 
 fn throw_illegal_argument(env: &mut JNIEnv, message: &str) {
