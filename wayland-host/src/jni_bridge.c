@@ -38,6 +38,7 @@ enum host_command_type {
     HOST_COMMAND_POINTER_RESET,
     HOST_COMMAND_CURSOR_VISIBLE,
     HOST_COMMAND_KEYBOARD_KEY,
+    HOST_COMMAND_KEYBOARD_EVDEV,
 };
 
 struct host_command {
@@ -142,6 +143,10 @@ static void process_commands(wayland_server_t *active_server) {
                     command->data.cursor_visible.visible);
             break;
         case HOST_COMMAND_KEYBOARD_KEY:
+            trierarch_keyboard_set_key(active_server, command->data.keyboard_key.key,
+                    command->data.keyboard_key.pressed, command->data.keyboard_key.time_ms);
+            break;
+        case HOST_COMMAND_KEYBOARD_EVDEV:
             trierarch_keyboard_set_key(active_server, command->data.keyboard_key.key,
                     command->data.keyboard_key.pressed, command->data.keyboard_key.time_ms);
             break;
@@ -354,6 +359,24 @@ Java_app_trierarch_wayland_WaylandBridge_nativeSetKeyboardKey(JNIEnv *env, jobje
     uint32_t key = trierarch_android_keycode_to_evdev(key_code);
     if (!key) return JNI_FALSE;
     struct host_command *command = new_command(HOST_COMMAND_KEYBOARD_KEY);
+    if (!command) return JNI_FALSE;
+    command->data.keyboard_key.key = key;
+    command->data.keyboard_key.pressed = pressed == JNI_TRUE;
+    command->data.keyboard_key.time_ms = (uint32_t)time_ms;
+    pthread_mutex_lock(&server_mutex);
+    bool queued = enqueue_command_locked(command);
+    pthread_mutex_unlock(&server_mutex);
+    if (!queued) free(command);
+    return queued ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeSetKeyboardEvdevKey(JNIEnv *env, jobject object,
+        jint evdev_key, jboolean pressed, jint time_ms) {
+    (void)env; (void)object;
+    uint32_t key = (uint32_t)evdev_key;
+    if (!key) return JNI_FALSE;
+    struct host_command *command = new_command(HOST_COMMAND_KEYBOARD_EVDEV);
     if (!command) return JNI_FALSE;
     command->data.keyboard_key.key = key;
     command->data.keyboard_key.pressed = pressed == JNI_TRUE;
