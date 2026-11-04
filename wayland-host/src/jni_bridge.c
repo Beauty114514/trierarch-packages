@@ -1,6 +1,7 @@
 #include "compositor.h"
 #include "keycode_map.h"
 #include "renderer.h"
+#include "vulkan_presenter.h"
 
 #include <jni.h>
 #include <android/log.h>
@@ -388,6 +389,28 @@ Java_app_trierarch_wayland_WaylandBridge_nativeSetKeyboardEvdevKey(JNIEnv *env, 
     pthread_mutex_unlock(&server_mutex);
     if (!queued) free(command);
     return queued ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeVulkanSelfTest(JNIEnv *env, jobject object,
+        jobject surface, jstring adrenotools_library, jstring driver_dir,
+        jstring hook_dir, jstring tmp_dir) {
+    (void)object;
+    if (!surface || !adrenotools_library || !driver_dir || !hook_dir || !tmp_dir)
+        return JNI_FALSE;
+    ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
+    if (!window) return JNI_FALSE;
+    const char *adrenotools = (*env)->GetStringUTFChars(env, adrenotools_library, NULL);
+    const char *driver = (*env)->GetStringUTFChars(env, driver_dir, NULL);
+    const char *hook = (*env)->GetStringUTFChars(env, hook_dir, NULL);
+    const char *tmp = (*env)->GetStringUTFChars(env, tmp_dir, NULL);
+    int result = trierarch_vulkan_presenter_self_test(window, adrenotools, driver, hook, tmp);
+    (*env)->ReleaseStringUTFChars(env, adrenotools_library, adrenotools);
+    (*env)->ReleaseStringUTFChars(env, driver_dir, driver);
+    (*env)->ReleaseStringUTFChars(env, hook_dir, hook);
+    (*env)->ReleaseStringUTFChars(env, tmp_dir, tmp);
+    ANativeWindow_release(window);
+    return result == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
