@@ -60,6 +60,7 @@ struct shm_buffer {
     bool tvg_token;
     bool egl_buffer;
     bool android_buffer;
+    bool diag_counted;
     void *egl_resource;
     void *android_hardware_buffer;
     int dmabuf_fd;
@@ -246,6 +247,26 @@ struct wayland_server {
     uint64_t perf_repaint_requests;
     uint64_t perf_repaint_coalesced;
     uint64_t perf_repaint_started;
+    /* Presentation diagnostics.  These are counts, not behavioral state. */
+    uint64_t diag_swap_ok;
+    uint64_t diag_swap_fail;
+    uint64_t diag_fence_created;
+    uint64_t diag_fence_missing;
+    uint64_t diag_egl_import_ok;
+    uint64_t diag_egl_import_fail;
+    uint64_t diag_cpu_upload;
+    uint64_t diag_cpu_sync_ok;
+    uint64_t diag_cpu_sync_fail;
+    uint64_t diag_no_image;
+    uint64_t diag_dmabuf_accept;
+    uint64_t diag_dmabuf_reject;
+    uint64_t diag_tvg_buffers;
+    uint64_t diag_deferred_enqueued;
+    uint64_t diag_deferred_duplicates;
+    uint64_t diag_deferred_flushed;
+    uint64_t diag_viewport_changes;
+    uint64_t diag_acquire_fence_waits;
+    uint64_t diag_acquire_fence_failures;
 };
 
 void trierarch_surface_bind(struct wl_client *, void *, uint32_t, uint32_t);

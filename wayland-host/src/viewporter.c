@@ -1,4 +1,8 @@
 #include "server_internal.h"
+#include <android/log.h>
+
+#define TAG "TrierarchWayland"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
 static void viewport_destroy(struct wl_client *client, struct wl_resource *resource) {
     (void)client;
@@ -13,6 +17,10 @@ static void viewport_set_source(struct wl_client *client, struct wl_resource *re
     if (x == wl_fixed_from_int(-1) && y == wl_fixed_from_int(-1) &&
             width == wl_fixed_from_int(-1) && height == wl_fixed_from_int(-1)) {
         surface->viewport_source_set = false;
+        if (surface->server) surface->server->diag_viewport_changes++;
+        if (surface->server && surface->server->diag_viewport_changes <= 16)
+            LOGI("viewport source unset surface=%p current=%p pending=%p",
+                    (void *)surface, (void *)surface->current, (void *)surface->pending);
         return;
     }
     surface->viewport_source_set = true;
@@ -20,6 +28,11 @@ static void viewport_set_source(struct wl_client *client, struct wl_resource *re
     surface->viewport_source_y = y;
     surface->viewport_source_width = width;
     surface->viewport_source_height = height;
+    if (surface->server) surface->server->diag_viewport_changes++;
+    if (surface->server && surface->server->diag_viewport_changes <= 16)
+        LOGI("viewport source set surface=%p current=%p pending=%p src=%d,%d %dx%d",
+                (void *)surface, (void *)surface->current, (void *)surface->pending,
+                x, y, width, height);
 }
 
 static void viewport_set_destination(struct wl_client *client, struct wl_resource *resource,
@@ -29,11 +42,20 @@ static void viewport_set_destination(struct wl_client *client, struct wl_resourc
     if (!surface) return;
     if (width == -1 && height == -1) {
         surface->viewport_destination_set = false;
+        if (surface->server) surface->server->diag_viewport_changes++;
+        if (surface->server && surface->server->diag_viewport_changes <= 16)
+            LOGI("viewport destination unset surface=%p current=%p pending=%p",
+                    (void *)surface, (void *)surface->current, (void *)surface->pending);
         return;
     }
     surface->viewport_destination_set = true;
     surface->viewport_destination_width = width;
     surface->viewport_destination_height = height;
+    if (surface->server) surface->server->diag_viewport_changes++;
+    if (surface->server && surface->server->diag_viewport_changes <= 16)
+        LOGI("viewport destination set surface=%p current=%p pending=%p dst=%dx%d",
+                (void *)surface, (void *)surface->current, (void *)surface->pending,
+                width, height);
 }
 
 static const struct wp_viewport_interface viewport_impl = {

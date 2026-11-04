@@ -92,6 +92,8 @@ static struct host_command *new_command(enum host_command_type type) {
 }
 
 static void replace_renderer(wayland_server_t *active_server, ANativeWindow *window) {
+    LOGI("replace renderer old-window=%p new-window=%p old-renderer=%p",
+            (void *)native_window, (void *)window, (void *)renderer);
     trierarch_renderer_destroy(renderer);
     renderer = NULL;
     if (native_window) ANativeWindow_release(native_window);
@@ -393,6 +395,8 @@ Java_app_trierarch_wayland_WaylandBridge_nativeAttachSurface(JNIEnv *env, jobjec
         jobject surface) {
     (void)object;
     ANativeWindow *window = surface ? ANativeWindow_fromSurface(env, surface) : NULL;
+    LOGI("attachSurface surface=%p window=%p server=%p",
+            (void *)surface, (void *)window, (void *)server);
     pthread_mutex_lock(&server_mutex);
     if (!server || !dispatch_running) {
         if (native_window) ANativeWindow_release(native_window);

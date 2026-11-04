@@ -28,6 +28,7 @@
 #endif
 
 struct dmabuf_params {
+    struct wayland_server *server;
     int fd;
     uint32_t offset;
     uint32_t stride;
@@ -79,8 +80,10 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
      * silent black frame instead of a failed create the client can fall back
      * from.  Reject it here so the protocol error reaches the producer. */
     if (!tvg_token && params->modifier != 0) {
-        LOGW("rejecting dmabuf with unsupported modifier 0x%llx fmt=0x%x stride=%u",
-                (unsigned long long)params->modifier, format, params->stride);
+        static unsigned int rejected_logs;
+        if (rejected_logs++ < 12)
+            LOGW("rejecting dmabuf with unsupported modifier 0x%llx fmt=0x%x stride=%u",
+                    (unsigned long long)params->modifier, format, params->stride);
         return NULL;
     }
     size_t end = 0;
@@ -138,10 +141,13 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
     }
     wl_resource_set_implementation(buffer->resource, &dmabuf_buffer_impl,
             buffer, dmabuf_buffer_destroy);
-    LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx source=%s",
-            width, height, format, params->stride,
-            (unsigned long long)params->modifier,
-            tvg_token ? "tvg-token" : (mapping ? "cpu-mappable" : "opaque"));
+    static unsigned int accepted_logs;
+    if (accepted_logs++ < 12) {
+        LOGI("dmabuf accepted: %dx%d fmt=0x%x stride=%u mod=0x%llx source=%s",
+                width, height, format, params->stride,
+                (unsigned long long)params->modifier,
+                tvg_token ? "tvg-token" : (mapping ? "cpu-mappable" : "opaque"));
+    }
     return buffer;
 }
 
@@ -176,6 +182,7 @@ static void params_create(struct wl_client *client, struct wl_resource *resource
     struct shm_buffer *buffer = make_dmabuf_buffer(client, 0, width, height, format, params);
     params->used = true;
     if (!buffer) {
+        if (params->server) params->server->diag_dmabuf_reject++;
         zwp_linux_buffer_params_v1_send_failed(resource);
         return;
     }
@@ -191,6 +198,7 @@ static void params_create_immed(struct wl_client *client, struct wl_resource *re
             width, height, format, params);
     params->used = true;
     if (!buffer) {
+        if (params->server) params->server->diag_dmabuf_reject++;
         /* `create_immed` can only fail through a protocol error.  Distinguish
          * a missing plane from an unsupported format/modifier so the client's
          * disconnect message is actionable. */
@@ -224,6 +232,7 @@ static void dmabuf_create_params(struct wl_client *client, struct wl_resource *r
         return;
     }
     params->fd = -1;
+    params->server = wl_resource_get_user_data(resource);
     struct wl_resource *params_resource = wl_resource_create(client,
             &zwp_linux_buffer_params_v1_interface, wl_resource_get_version(resource), id);
     if (!params_resource) {

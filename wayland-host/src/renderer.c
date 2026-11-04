@@ -90,8 +90,11 @@ static bool dmabuf_begin_cpu_read(const struct shm_buffer *buffer) {
     struct dma_buf_sync sync = {
         .flags = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_START,
     };
-    if (ioctl(buffer->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync) == 0)
+    if (ioctl(buffer->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync) == 0) {
+        if (buffer->server) buffer->server->diag_cpu_sync_ok++;
         return true;
+    }
+    if (buffer->server) buffer->server->diag_cpu_sync_fail++;
     static bool reported;
     if (!reported) {
         reported = true;
@@ -107,11 +110,14 @@ static void dmabuf_end_cpu_read(const struct shm_buffer *buffer) {
         .flags = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_END,
     };
     if (ioctl(buffer->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync) != 0) {
+        if (buffer->server) buffer->server->diag_cpu_sync_fail++;
         static bool reported;
         if (!reported) {
             reported = true;
             LOGE("dma-buf CPU read synchronization end failed: errno=%d", errno);
         }
+    } else if (buffer->server) {
+        buffer->server->diag_cpu_sync_ok++;
     }
 }
 
@@ -147,9 +153,17 @@ struct renderer_context {
     client_wait_sync_fn client_wait_sync;
     dup_native_fence_fd_fn dup_native_fence_fd;
     EGLSyncKHR frame_fence;
+    bool frame_fence_created;
     bool dmabuf_import_supported;
     uint64_t observed_surface_commits;
     uint64_t observed_surface_damage;
+    uint64_t frame_sequence;
+    const void *last_buffer;
+    int last_width;
+    int last_height;
+    uint32_t last_format;
+    uint64_t last_modifier;
+    const char *last_import_path;
 };
 
 static uint64_t monotonic_ns(void) {
@@ -235,6 +249,57 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
             (unsigned long long)server->perf_frame_callbacks_captured,
             (unsigned long long)server->perf_frame_callbacks_completed);
     report_surface_activity(server);
+    struct renderer_context *diagnostic_renderer = server->renderer;
+    LOGI("present swap=%llu/%llu fence=%llu/%llu import=ok:%llu fail:%llu cpu:%llu none:%llu "
+            "dmabuf=accept:%llu reject:%llu tvg:%llu deferred=enq:%llu dup:%llu flush:%llu "
+            "cpu-sync=ok:%llu fail:%llu viewport=%llu acquire=wait:%llu fail:%llu "
+            "last-frame=%llu buffer=%p %dx%d fmt=0x%x mod=0x%llx path=%s",
+            (unsigned long long)server->diag_swap_ok,
+            (unsigned long long)server->diag_swap_fail,
+            (unsigned long long)server->diag_fence_created,
+            (unsigned long long)server->diag_fence_missing,
+            (unsigned long long)server->diag_egl_import_ok,
+            (unsigned long long)server->diag_egl_import_fail,
+            (unsigned long long)server->diag_cpu_upload,
+            (unsigned long long)server->diag_no_image,
+            (unsigned long long)server->diag_dmabuf_accept,
+            (unsigned long long)server->diag_dmabuf_reject,
+            (unsigned long long)server->diag_tvg_buffers,
+            (unsigned long long)server->diag_deferred_enqueued,
+            (unsigned long long)server->diag_deferred_duplicates,
+            (unsigned long long)server->diag_deferred_flushed,
+            (unsigned long long)server->diag_cpu_sync_ok,
+            (unsigned long long)server->diag_cpu_sync_fail,
+            (unsigned long long)server->diag_viewport_changes,
+            (unsigned long long)server->diag_acquire_fence_waits,
+            (unsigned long long)server->diag_acquire_fence_failures,
+            (unsigned long long)(diagnostic_renderer ? diagnostic_renderer->frame_sequence : 0),
+            diagnostic_renderer ? diagnostic_renderer->last_buffer : NULL,
+            diagnostic_renderer ? diagnostic_renderer->last_width : 0,
+            diagnostic_renderer ? diagnostic_renderer->last_height : 0,
+            diagnostic_renderer ? diagnostic_renderer->last_format : 0,
+            diagnostic_renderer ? (unsigned long long)diagnostic_renderer->last_modifier : 0ULL,
+            (diagnostic_renderer && diagnostic_renderer->last_import_path)
+                    ? diagnostic_renderer->last_import_path : "none");
+    server->diag_swap_ok = 0;
+    server->diag_swap_fail = 0;
+    server->diag_fence_created = 0;
+    server->diag_fence_missing = 0;
+    server->diag_egl_import_ok = 0;
+    server->diag_egl_import_fail = 0;
+    server->diag_cpu_upload = 0;
+    server->diag_no_image = 0;
+    server->diag_dmabuf_accept = 0;
+    server->diag_dmabuf_reject = 0;
+    server->diag_tvg_buffers = 0;
+    server->diag_deferred_enqueued = 0;
+    server->diag_deferred_duplicates = 0;
+    server->diag_deferred_flushed = 0;
+    server->diag_cpu_sync_ok = 0;
+    server->diag_cpu_sync_fail = 0;
+    server->diag_viewport_changes = 0;
+    server->diag_acquire_fence_waits = 0;
+    server->diag_acquire_fence_failures = 0;
     server->perf_last_report_ns = now_ns;
     server->perf_dispatch_count = 0;
     server->perf_dispatch_wait_ns = 0;
@@ -350,9 +415,18 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
     renderer->dup_native_fence_fd = (dup_native_fence_fd_fn)eglGetProcAddress(
             "eglDupNativeFenceFDANDROID");
     const char *extensions = eglQueryString(renderer->display, EGL_EXTENSIONS);
-    renderer->dmabuf_import_supported = extensions &&
-            strstr(extensions, "EGL_EXT_image_dma_buf_import") &&
+    const bool has_dmabuf_import = extensions &&
+            strstr(extensions, "EGL_EXT_image_dma_buf_import") != NULL;
+    const bool has_dmabuf_modifiers = extensions &&
+            strstr(extensions, "EGL_EXT_image_dma_buf_import_modifiers") != NULL;
+    const bool has_egl_wayland = extensions &&
+            strstr(extensions, "EGL_WL_bind_wayland_display") != NULL;
+    renderer->dmabuf_import_supported = has_dmabuf_import &&
             renderer->create_image && renderer->destroy_image && renderer->image_target;
+    LOGI("EGL extensions: %s", extensions ? extensions : "(null)");
+    LOGI("EGL capability dmabuf=%d modifiers=%d egl-wayland=%d create_image=%d",
+            has_dmabuf_import ? 1 : 0, has_dmabuf_modifiers ? 1 : 0,
+            has_egl_wayland ? 1 : 0, renderer->create_image ? 1 : 0);
     bind_wayland_display_fn bind =
             (bind_wayland_display_fn)eglGetProcAddress("eglBindWaylandDisplayWL");
     query_wayland_buffer_fn query =
@@ -378,6 +452,8 @@ struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
     if (!renderer->valid) goto fail;
     renderer->server = server;
     server->renderer = renderer;
+    LOGI("renderer created window=%p size=%dx%d server=%p", (void *)window,
+            renderer->width, renderer->height, (void *)server);
     return renderer;
 
 fail:
@@ -387,6 +463,8 @@ fail:
 
 void trierarch_renderer_destroy(struct renderer_context *renderer) {
     if (!renderer) return;
+    LOGI("renderer destroy window=%p size=%dx%d server=%p", (void *)renderer->window,
+            renderer->width, renderer->height, (void *)renderer->server);
     if (renderer->server && renderer->server->renderer == renderer)
         renderer->server->renderer = NULL;
     if (renderer->frame_fence != EGL_NO_SYNC_KHR && renderer->destroy_sync) {
@@ -420,6 +498,7 @@ void trierarch_renderer_wait_idle(struct renderer_context *renderer) {
         LOGE("EGL frame fence wait failed: result=0x%x", result);
     renderer->destroy_sync(renderer->display, renderer->frame_fence);
     renderer->frame_fence = EGL_NO_SYNC_KHR;
+    renderer->frame_fence_created = false;
 }
 
 bool trierarch_renderer_valid(const struct renderer_context *renderer) {
@@ -430,6 +509,7 @@ static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
     struct shm_buffer *buffer = surface->current;
     if (!buffer) return;
+    const char *last_path = "none";
     if (buffer->dmabuf) {
         static unsigned int trace_count;
         if (trace_count++ < 3) {
@@ -462,9 +542,16 @@ static void draw_surface(struct renderer_context *renderer,
         if (image != EGL_NO_IMAGE_KHR) {
             renderer->image_target(GL_TEXTURE_2D, image);
             if (glGetError() == GL_NO_ERROR) {
+                if (renderer->server) renderer->server->diag_egl_import_ok++;
+                if (renderer->server && renderer->server->diag_egl_import_ok <= 8)
+                    LOGI("dma-buf import path=ahb %dx%d fmt=0x%x modifier=0x%llx",
+                            buffer->width, buffer->height, buffer->format,
+                            (unsigned long long)buffer->dmabuf_modifier);
                 swizzle = 0.0f;
                 opaque = 0.0f;
+                last_path = "ahb";
             } else {
+                if (renderer->server) renderer->server->diag_egl_import_fail++;
                 renderer->destroy_image(renderer->display, image);
                 image = EGL_NO_IMAGE_KHR;
             }
@@ -476,8 +563,13 @@ static void draw_surface(struct renderer_context *renderer,
                 EGL_WAYLAND_BUFFER_WL, (EGLClientBuffer)buffer->egl_resource, NULL);
         if (image != EGL_NO_IMAGE_KHR) {
             renderer->image_target(GL_TEXTURE_2D, image);
+            if (renderer->server) renderer->server->diag_egl_import_ok++;
+            if (renderer->server && renderer->server->diag_egl_import_ok <= 8)
+                LOGI("dma-buf import path=egl-wayland %dx%d fmt=0x%x",
+                        buffer->width, buffer->height, buffer->format);
             swizzle = 0.0f;
             opaque = 0.0f;
+            last_path = "egl-wayland";
         }
     }
     if (image == EGL_NO_IMAGE_KHR && buffer->dmabuf && buffer->dmabuf_fd >= 0 &&
@@ -529,17 +621,23 @@ static void draw_surface(struct renderer_context *renderer,
             if (glGetError() == GL_NO_ERROR) {
                 swizzle = 0.0f;
                 opaque = format_is_opaque(buffer->format) ? 1.0f : 0.0f;
-                LOGI("dma-buf EGL import: %dx%d fmt=0x%x modifier=0x%llx",
-                        buffer->width, buffer->height, buffer->format,
-                        (unsigned long long)buffer->dmabuf_modifier);
+                last_path = "dma-buf";
+                if (renderer->server) renderer->server->diag_egl_import_ok++;
+                if (renderer->server && renderer->server->diag_egl_import_ok <= 8)
+                    LOGI("dma-buf import path=dma-buf %dx%d fmt=0x%x modifier=0x%llx stride=%d",
+                            buffer->width, buffer->height, buffer->format,
+                            (unsigned long long)buffer->dmabuf_modifier, buffer->stride);
             } else {
+                if (renderer->server) renderer->server->diag_egl_import_fail++;
                 renderer->destroy_image(renderer->display, image);
                 image = EGL_NO_IMAGE_KHR;
             }
         } else {
-            LOGI("dma-buf EGL import failed: %dx%d fmt=0x%x modifier=0x%llx; using CPU fallback",
-                    buffer->width, buffer->height, buffer->format,
-                    (unsigned long long)buffer->dmabuf_modifier);
+            if (renderer->server) renderer->server->diag_egl_import_fail++;
+            if (renderer->server && renderer->server->diag_egl_import_fail <= 8)
+                LOGE("dma-buf import failed path=dma-buf %dx%d fmt=0x%x modifier=0x%llx stride=%d; CPU fallback",
+                        buffer->width, buffer->height, buffer->format,
+                        (unsigned long long)buffer->dmabuf_modifier, buffer->stride);
         }
     }
     /* mmap() exposes the real pixels only for a linear dma-buf.  A tiled or
@@ -569,6 +667,12 @@ static void draw_surface(struct renderer_context *renderer,
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, buffer->width, buffer->height, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         free(packed);
+        last_path = "cpu";
+        if (renderer->server) renderer->server->diag_cpu_upload++;
+        if (renderer->server && renderer->server->diag_cpu_upload <= 8)
+            LOGI("dma-buf import path=cpu %dx%d fmt=0x%x stride=%d modifier=0x%llx",
+                    buffer->width, buffer->height, buffer->format, buffer->stride,
+                    (unsigned long long)buffer->dmabuf_modifier);
         if (cpu_read_active)
             dmabuf_end_cpu_read(buffer);
         /* XRGB has no alpha channel. ARGB must retain its alpha: cursor images
@@ -578,6 +682,7 @@ static void draw_surface(struct renderer_context *renderer,
     }
     if (image == EGL_NO_IMAGE_KHR && !buffer->data) {
         static unsigned int unavailable_buffer_count;
+        if (renderer->server) renderer->server->diag_no_image++;
         if (unavailable_buffer_count++ < 3) {
             LOGE("skipping dma-buf without an EGL import or CPU mapping: %dx%d fmt=0x%x",
                     buffer->width, buffer->height, buffer->format);
@@ -600,6 +705,14 @@ static void draw_surface(struct renderer_context *renderer,
     glEnableVertexAttribArray(0); glEnableVertexAttribArray(1);
     glDrawArrays(GL_TRIANGLE_STRIP,0,4);
     glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
+    if (!surface->parent && surface != renderer->server->cursor_surface) {
+        renderer->last_buffer = buffer;
+        renderer->last_width = buffer->width;
+        renderer->last_height = buffer->height;
+        renderer->last_format = buffer->format;
+        renderer->last_modifier = buffer->dmabuf_modifier;
+        renderer->last_import_path = last_path;
+    }
     if (image != EGL_NO_IMAGE_KHR && renderer->destroy_image) renderer->destroy_image(renderer->display,image);
     /* `surface->current` remains the source for later redraws until a new
      * wl_surface.commit replaces it.  Releasing here would let the client
@@ -631,6 +744,9 @@ static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) 
 bool trierarch_renderer_render(struct renderer_context *renderer,
         struct wayland_server *server) {
     if (!trierarch_renderer_valid(renderer) || !server) return false;
+    renderer->frame_sequence++;
+    if (renderer->frame_sequence > 1 && !renderer->frame_fence_created)
+        server->diag_fence_missing++;
     /* Keep at most one host frame in flight.  This is deliberately a fence
      * wait, not glFinish: surface commits can release their previous buffer
      * only after this GPU completion point has been reached. */
@@ -699,10 +815,20 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     EGLBoolean swapped = eglSwapBuffers(renderer->display, renderer->surface);
     uint64_t render_finished_ns = monotonic_ns();
     if (!swapped) {
+        server->diag_swap_fail++;
+        if (server->diag_swap_fail <= 8)
+            LOGE("swap failed frame=%llu commits=%llu buffer=%p %dx%d fmt=0x%x mod=0x%llx path=%s",
+                    (unsigned long long)renderer->frame_sequence,
+                    (unsigned long long)server->perf_surface_commit_generation,
+                    renderer->last_buffer, renderer->last_width, renderer->last_height,
+                    renderer->last_format, (unsigned long long)renderer->last_modifier,
+                    renderer->last_import_path ? renderer->last_import_path : "none");
+        renderer->frame_fence_created = false;
         trierarch_surface_requeue_frame_callbacks(server);
         eglMakeCurrent(renderer->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         return false;
     }
+    server->diag_swap_ok++;
     bool frame_fence_created = false;
     if (renderer->create_sync && renderer->destroy_sync && renderer->client_wait_sync) {
         const EGLint attributes[] = { EGL_NONE };
@@ -713,12 +839,14 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         } else {
             glFlush();
             frame_fence_created = true;
+            server->diag_fence_created++;
         }
     }
     if (!frame_fence_created) {
         /* No fence to defer against; complete the GPU work now. */
         glFinish();
     }
+    renderer->frame_fence_created = true;
     /* Move this frame's tokens to inflight.  They are released at the start of
      * the next frame, after its fence wait. */
     tvg_scanout_end_frame();

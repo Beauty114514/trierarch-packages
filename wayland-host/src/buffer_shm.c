@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 #define TRIERARCH_TAG "TrierarchWayland"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TRIERARCH_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TRIERARCH_TAG, __VA_ARGS__)
 
 struct shm_pool {
     void *data;
@@ -28,10 +30,32 @@ static void pool_unref(struct shm_pool *pool);
 static pthread_mutex_t deferred_release_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct shm_buffer *deferred_releases;
 
+static bool deferred_contains(struct shm_buffer *buffer) {
+    unsigned int scanned = 0;
+    for (struct shm_buffer *entry = deferred_releases; entry && scanned < 1024;
+            entry = entry->deferred_next, scanned++) {
+        if (entry == buffer) return true;
+    }
+    return false;
+}
+
 void trierarch_defer_buffer_release(struct shm_buffer *buffer) {
     if (!buffer)
         return;
     pthread_mutex_lock(&deferred_release_lock);
+    const bool duplicate = deferred_contains(buffer);
+    if (buffer->server) {
+        buffer->server->diag_deferred_enqueued++;
+        if (duplicate) buffer->server->diag_deferred_duplicates++;
+    }
+    if (duplicate && buffer->server && buffer->server->diag_deferred_duplicates <= 8) {
+        LOGW("deferred release already queued buffer=%p refs=%u busy=%u depth-scan-hit",
+                (void *)buffer, buffer->references, buffer->busy_users);
+    } else if (!duplicate && buffer->server && buffer->server->diag_deferred_enqueued <= 8) {
+        LOGI("deferred release enqueue buffer=%p %dx%d refs=%u busy=%u",
+                (void *)buffer, buffer->width, buffer->height,
+                buffer->references, buffer->busy_users);
+    }
     buffer->deferred_next = deferred_releases;
     deferred_releases = buffer;
     pthread_mutex_unlock(&deferred_release_lock);
@@ -46,6 +70,7 @@ void trierarch_flush_deferred_releases(void) {
     while (buffer) {
         struct shm_buffer *next = buffer->deferred_next;
         buffer->deferred_next = NULL;
+        if (buffer->server) buffer->server->diag_deferred_flushed++;
         trierarch_shm_buffer_release(buffer);
         trierarch_buffer_unref(buffer);
         buffer = next;

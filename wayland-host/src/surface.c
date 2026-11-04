@@ -63,6 +63,14 @@ static void surface_set_pending_buffer(struct compositor_surface *surface,
         struct shm_buffer *buffer) {
     if (!surface || surface->pending == buffer)
         return;
+    if (buffer && !buffer->server) buffer->server = surface->server;
+    if (buffer && !buffer->diag_counted) {
+        buffer->diag_counted = true;
+        if (surface->server) {
+            if (buffer->dmabuf) surface->server->diag_dmabuf_accept++;
+            if (buffer->tvg_token) surface->server->diag_tvg_buffers++;
+        }
+    }
     trierarch_buffer_ref(buffer);
     struct shm_buffer *old_pending = surface->pending;
     surface->pending = buffer;

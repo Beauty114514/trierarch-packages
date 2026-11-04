@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #define TAG "TrierarchExplicitSync"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
 /* A buffer release object is created while the commit is still pending and
@@ -69,6 +70,8 @@ static void sync_set_acquire_fence(struct wl_client *client,
         return;
     }
     surface->acquire_fence_fd = fd;
+    if (surface->server && fd >= 0 && surface->server->diag_acquire_fence_waits < 8)
+        LOGI("acquire fence registered surface=%p fd=%d", (void *)surface, fd);
 }
 
 static void sync_get_release(struct wl_client *client,
@@ -138,6 +141,7 @@ static const struct zwp_linux_explicit_synchronization_v1_interface manager_impl
 
 void trierarch_explicit_sync_bind(struct wl_client *client, void *data,
         uint32_t version, uint32_t id) {
+    LOGI("explicit-sync global bound version=%u", version);
     struct wl_resource *resource = wl_resource_create(client,
             &zwp_linux_explicit_synchronization_v1_interface,
             version < 2 ? version : 2, id);
@@ -151,6 +155,7 @@ void trierarch_explicit_sync_bind(struct wl_client *client, void *data,
 void trierarch_explicit_sync_wait(struct shm_buffer *buffer) {
     if (!buffer || buffer->acquire_fence_fd < 0)
         return;
+    if (buffer->server) buffer->server->diag_acquire_fence_waits++;
     struct pollfd poll_fd = { .fd = buffer->acquire_fence_fd, .events = POLLIN };
     int result;
     do {
@@ -158,8 +163,12 @@ void trierarch_explicit_sync_wait(struct shm_buffer *buffer) {
     } while (result < 0 && errno == EINTR);
     close(buffer->acquire_fence_fd);
     buffer->acquire_fence_fd = -1;
-    if (result <= 0)
-        LOGW("acquire fence did not signal: result=%d", result);
+    if (result <= 0) {
+        if (buffer->server) buffer->server->diag_acquire_fence_failures++;
+        LOGW("acquire fence did not signal: result=%d buffer=%p", result, (void *)buffer);
+    } else if (buffer->server && buffer->server->diag_acquire_fence_waits <= 8) {
+        LOGI("acquire fence signalled buffer=%p", (void *)buffer);
+    }
 }
 
 void trierarch_explicit_sync_buffer_release(struct shm_buffer *buffer) {
