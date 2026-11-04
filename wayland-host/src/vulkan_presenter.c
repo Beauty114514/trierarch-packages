@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 
@@ -47,6 +48,7 @@ struct vk_api {
     PFN_vkEndCommandBuffer EndCommandBuffer;
     PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
     PFN_vkCmdClearColorImage CmdClearColorImage;
+    PFN_vkCmdBlitImage CmdBlitImage;
     PFN_vkCreateSemaphore CreateSemaphore;
     PFN_vkDestroySemaphore DestroySemaphore;
     PFN_vkQueueSubmit QueueSubmit;
@@ -104,6 +106,7 @@ static void load_device(struct vk_api *api, VkInstance instance) {
     DEVICE(EndCommandBuffer)
     DEVICE(CmdPipelineBarrier)
     DEVICE(CmdClearColorImage)
+    DEVICE(CmdBlitImage)
     DEVICE(CreateSemaphore)
     DEVICE(DestroySemaphore)
     DEVICE(QueueSubmit)
@@ -400,6 +403,12 @@ bool trierarch_vulkan_dmabuf_probe_configured(void) {
     return probe_adrenotools && probe_driver && probe_hook && probe_tmp;
 }
 
+static int64_t presenter_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
 static VkFormat probe_format(unsigned int format) {
     switch (format) {
     case 0x34325258u: return VK_FORMAT_B8G8R8A8_UNORM; /* XRGB8888 */
@@ -627,4 +636,427 @@ cleanup_handle:
     dlclose(handle);
     dlclose(adrenotools);
     return result;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Persistent production presenter                                             */
+
+struct trierarch_vulkan_presenter {
+    struct vk_api api;
+    void *adrenotools;
+    VkInstance instance;
+    VkPhysicalDevice physical;
+    VkDevice device;
+    ANativeWindow *window;
+    VkQueue queue;
+    uint32_t family;
+    VkSurfaceKHR surface;
+    VkSwapchainKHR swapchain;
+    VkExtent2D extent;
+    VkFormat format;
+    VkCommandPool pool;
+    VkCommandBuffer command;
+    VkSemaphore acquired;
+    unsigned long long frames_presented;
+    int64_t last_present_log_ns;
+};
+
+bool trierarch_vulkan_presenter_configured(void) {
+    return trierarch_vulkan_dmabuf_probe_configured();
+}
+
+static void destroy_presenter_objects(trierarch_vulkan_presenter *presenter) {
+    if (!presenter) return;
+    if (presenter->device) {
+        if (presenter->command) presenter->api.DestroyCommandPool(presenter->device, presenter->pool, NULL);
+        if (presenter->acquired) presenter->api.DestroySemaphore(presenter->device, presenter->acquired, NULL);
+        if (presenter->swapchain) presenter->api.DestroySwapchainKHR(presenter->device, presenter->swapchain, NULL);
+        presenter->api.DestroyDevice(presenter->device, NULL);
+    }
+    if (presenter->instance) {
+        if (presenter->surface) presenter->api.DestroySurfaceKHR(presenter->instance, presenter->surface, NULL);
+        presenter->api.DestroyInstance(presenter->instance, NULL);
+    }
+    if (presenter->adrenotools) dlclose(presenter->adrenotools);
+}
+
+static bool import_dmabuf_image(trierarch_vulkan_presenter *presenter, int fd,
+        int width, int height, VkImage *out_image, VkDeviceMemory *out_memory) {
+    VkFormat format = probe_format(0); /* overwritten below */
+    (void)format;
+    return false;
+}
+
+static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
+    if (!presenter || !presenter->device || !presenter->surface || !presenter->window) return false;
+    presenter->api.QueueWaitIdle(presenter->queue);
+    VkSurfaceCapabilitiesKHR caps;
+    presenter->api.GetPhysicalDeviceSurfaceCapabilitiesKHR(presenter->physical,
+            presenter->surface, &caps);
+    uint32_t format_count = 0;
+    presenter->api.GetPhysicalDeviceSurfaceFormatsKHR(presenter->physical,
+            presenter->surface, &format_count, NULL);
+    if (!format_count) return false;
+    VkSurfaceFormatKHR *formats = calloc(format_count, sizeof(*formats));
+    presenter->api.GetPhysicalDeviceSurfaceFormatsKHR(presenter->physical,
+            presenter->surface, &format_count, formats);
+    VkSurfaceFormatKHR chosen = {VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    for (uint32_t i = 0; i < format_count; i++) {
+        if (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ||
+                formats[i].format == VK_FORMAT_R8G8B8A8_UNORM) {
+            chosen = formats[i];
+            break;
+        }
+    }
+    free(formats);
+    VkExtent2D extent = caps.currentExtent;
+    if (extent.width == UINT32_MAX) {
+        extent.width = (uint32_t)ANativeWindow_getWidth(presenter->window);
+        extent.height = (uint32_t)ANativeWindow_getHeight(presenter->window);
+        if (extent.width > caps.maxImageExtent.width) extent.width = caps.maxImageExtent.width;
+        if (extent.height > caps.maxImageExtent.height) extent.height = caps.maxImageExtent.height;
+    }
+    VkCompositeAlphaFlagBitsKHR composite = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if (!(caps.supportedCompositeAlpha & composite)) composite = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    uint32_t image_count = caps.minImageCount + 1;
+    if (caps.maxImageCount > 0 && image_count > caps.maxImageCount) image_count = caps.maxImageCount;
+    VkSwapchainCreateInfoKHR swap_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = presenter->surface,
+        .minImageCount = image_count,
+        .imageFormat = chosen.format,
+        .imageColorSpace = chosen.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = caps.currentTransform,
+        .compositeAlpha = composite,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .clipped = VK_TRUE,
+        .oldSwapchain = presenter->swapchain,
+    };
+    VkSwapchainKHR replacement = VK_NULL_HANDLE;
+    if (presenter->api.CreateSwapchainKHR(presenter->device, &swap_info, NULL,
+            &replacement) != VK_SUCCESS) {
+        return false;
+    }
+    if (presenter->swapchain)
+        presenter->api.DestroySwapchainKHR(presenter->device, presenter->swapchain, NULL);
+    presenter->swapchain = replacement;
+    presenter->extent = extent;
+    presenter->format = chosen.format;
+    LOGI("Vulkan presenter swapchain %ux%u format=%d", extent.width, extent.height,
+            chosen.format);
+    return true;
+}
+
+trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *window) {
+    if (!window || !trierarch_vulkan_presenter_configured()) return NULL;
+    trierarch_vulkan_presenter *presenter = calloc(1, sizeof(*presenter));
+    if (!presenter) return NULL;
+    presenter->adrenotools = dlopen(probe_adrenotools, RTLD_NOW | RTLD_LOCAL);
+    if (!presenter->adrenotools) { free(presenter); return NULL; }
+    typedef void *(*open_libvulkan_fn)(int, int, const char *, const char *, const char *,
+            const char *, const char *, void **);
+    open_libvulkan_fn open_libvulkan = (open_libvulkan_fn)dlsym(presenter->adrenotools,
+            "adrenotools_open_libvulkan");
+    if (!open_libvulkan) {
+        dlclose(presenter->adrenotools);
+        free(presenter);
+        return NULL;
+    }
+    void *vulkan_handle = open_libvulkan(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */,
+            probe_tmp, probe_hook, probe_driver, "vulkan.ad07xx.so", NULL, NULL);
+    if (!vulkan_handle) {
+        dlclose(presenter->adrenotools);
+        free(presenter);
+        return NULL;
+    }
+    if (!load_instance(&presenter->api, vulkan_handle)) goto fail;
+
+    VkApplicationInfo app = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "TrierarchVulkanPresenter",
+        .apiVersion = VK_API_VERSION_1_1,
+    };
+    const char *instance_extensions[] = {
+        VK_KHR_SURFACE_EXTENSION_NAME,
+        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
+    };
+    VkInstanceCreateInfo instance_info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app,
+        .enabledExtensionCount = 2,
+        .ppEnabledExtensionNames = instance_extensions,
+    };
+    if (presenter->api.CreateInstance(&instance_info, NULL, &presenter->instance) != VK_SUCCESS) goto fail;
+    if (!load_instance_functions(&presenter->api, presenter->instance)) goto fail;
+
+    VkAndroidSurfaceCreateInfoKHR surface_info = {
+        .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+        .window = window,
+    };
+    if (presenter->api.CreateAndroidSurfaceKHR(presenter->instance, &surface_info, NULL,
+            &presenter->surface) != VK_SUCCESS) goto fail;
+
+    uint32_t device_count = 0;
+    presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, NULL);
+    if (!device_count) goto fail;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, &physical);
+
+    uint32_t family_count = 0;
+    presenter->api.GetPhysicalDeviceQueueFamilyProperties(physical, &family_count, NULL);
+    VkQueueFamilyProperties *families = calloc(family_count, sizeof(*families));
+    presenter->api.GetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families);
+    presenter->family = UINT32_MAX;
+    for (uint32_t i = 0; i < family_count; i++) {
+        VkBool32 supported = VK_FALSE;
+        presenter->api.GetPhysicalDeviceSurfaceSupportKHR(physical, i, presenter->surface, &supported);
+        if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && supported) {
+            presenter->family = i;
+            break;
+        }
+    }
+    free(families);
+    if (presenter->family == UINT32_MAX) goto fail;
+
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = presenter->family, .queueCount = 1, .pQueuePriorities = &priority,
+    };
+    const char *device_extensions[] = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+    };
+    VkDeviceCreateInfo device_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue_info,
+        .enabledExtensionCount = 3, .ppEnabledExtensionNames = device_extensions,
+    };
+    presenter->physical = physical;
+    presenter->window = window;
+    if (presenter->api.CreateDevice(physical, &device_info, NULL, &presenter->device) != VK_SUCCESS)
+        goto fail;
+    load_device(&presenter->api, presenter->instance);
+    presenter->api.GetDeviceQueue(presenter->device, presenter->family, 0, &presenter->queue);
+
+    if (!presenter_create_swapchain(presenter)) goto fail;
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = presenter->family,
+    };
+    if (presenter->api.CreateCommandPool(presenter->device, &pool_info, NULL,
+            &presenter->pool) != VK_SUCCESS) goto fail;
+    VkCommandBufferAllocateInfo command_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = presenter->pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if (presenter->api.AllocateCommandBuffers(presenter->device, &command_info,
+            &presenter->command) != VK_SUCCESS) goto fail;
+    VkSemaphoreCreateInfo semaphore_info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    if (presenter->api.CreateSemaphore(presenter->device, &semaphore_info, NULL,
+            &presenter->acquired) != VK_SUCCESS) goto fail;
+    LOGI("Vulkan presenter created %ux%u format=%d", presenter->extent.width,
+            presenter->extent.height, presenter->format);
+    return presenter;
+
+fail:
+    LOGI("Vulkan presenter creation failed; caller will fall back to EGL");
+    destroy_presenter_objects(presenter);
+    free(presenter);
+    return NULL;
+}
+
+int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
+        int fd, int width, int height, int stride, unsigned int format,
+        unsigned long long modifier) {
+    (void)stride; (void)modifier;
+    if (!presenter || fd < 0 || width <= 0 || height <= 0) return -1;
+    VkFormat vk_format = probe_format(format);
+    if (vk_format == VK_FORMAT_UNDEFINED) return -1;
+    VkExternalMemoryImageCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = vk_format,
+        .extent = {(uint32_t)width, (uint32_t)height, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_LINEAR,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImage source = VK_NULL_HANDLE;
+    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &source) != VK_SUCCESS)
+        return -1;
+    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
+    if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_props) != VK_SUCCESS) {
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+    VkMemoryRequirements requirements;
+    presenter->api.GetImageMemoryRequirements(presenter->device, source, &requirements);
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = source,
+    };
+    int imported_fd = dup(fd);
+    VkImportMemoryFdInfoKHR import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = imported_fd,
+        .pNext = &dedicated,
+    };
+    VkMemoryAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &import,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = 0,
+    };
+    /* The first compatible type is found through the device's memory props. */
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    uint32_t device_count = 0;
+    presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, NULL);
+    if (device_count) presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, &physical);
+    presenter->api.GetPhysicalDeviceMemoryProperties(physical, &memory_properties);
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+                (fd_props.memoryTypeBits & (1u << i)) &&
+                (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            allocate.memoryTypeIndex = i;
+            break;
+        }
+    }
+    VkDeviceMemory source_memory = VK_NULL_HANDLE;
+    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &source_memory) != VK_SUCCESS) {
+        close(imported_fd);
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+    if (presenter->api.BindImageMemory(presenter->device, source, source_memory, 0) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+
+    uint32_t image_index = 0;
+    VkResult vk = presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
+            UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index);
+    if (vk == VK_ERROR_OUT_OF_DATE_KHR) {
+        LOGI("Vulkan presenter swapchain out of date; recreating");
+        if (!presenter_create_swapchain(presenter) ||
+                presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
+                        UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index) != VK_SUCCESS) {
+            presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+            presenter->api.DestroyImage(presenter->device, source, NULL);
+            return -1;
+        }
+    } else if (vk != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+    uint32_t swap_count = 0;
+    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &swap_count, NULL);
+    VkImage *swap_images = calloc(swap_count, sizeof(*swap_images));
+    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &swap_count, swap_images);
+    VkImage target = swap_images[image_index];
+
+    VkCommandBufferBeginInfo begin = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    presenter->api.BeginCommandBuffer(presenter->command, &begin);
+    VkImageMemoryBarrier source_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = source,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    VkImageMemoryBarrier target_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = target,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &source_barrier);
+    presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &target_barrier);
+    VkImageBlit region = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, 0, 0}, {(int32_t)width, (int32_t)height, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {(int32_t)presenter->extent.width,
+                (int32_t)presenter->extent.height, 1}},
+    };
+    presenter->api.CmdBlitImage(presenter->command, source,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
+    target_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    target_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    target_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &target_barrier);
+    presenter->api.EndCommandBuffer(presenter->command);
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &presenter->acquired,
+        .pWaitDstStageMask = &wait_stage,
+        .commandBufferCount = 1, .pCommandBuffers = &presenter->command,
+    };
+    vk = presenter->api.QueueSubmit(presenter->queue, 1, &submit, VK_NULL_HANDLE);
+    if (vk == VK_SUCCESS) vk = presenter->api.QueueWaitIdle(presenter->queue);
+    VkPresentInfoKHR present = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .swapchainCount = 1, .pSwapchains = &presenter->swapchain,
+        .pImageIndices = &image_index,
+    };
+    if (vk == VK_SUCCESS) vk = presenter->api.QueuePresentKHR(presenter->queue, &present);
+    if (vk == VK_SUCCESS) presenter->api.QueueWaitIdle(presenter->queue);
+    if (vk == VK_ERROR_OUT_OF_DATE_KHR) {
+        LOGI("Vulkan presenter present out of date; recreating");
+        presenter_create_swapchain(presenter);
+    } else if (vk != VK_SUCCESS) {
+        LOGI("Vulkan presenter frame failed result=%d image=%u", vk, image_index);
+    } else {
+        presenter->frames_presented++;
+        int64_t now = presenter_now_ns();
+        if (presenter->frames_presented == 1 ||
+                now - presenter->last_present_log_ns >= 1000000000LL) {
+            presenter->last_present_log_ns = now;
+            LOGI("Vulkan frame presented #%llu image=%u size=%ux%u",
+                    presenter->frames_presented, image_index,
+                    presenter->extent.width, presenter->extent.height);
+        }
+    }
+    free(swap_images);
+    presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+    presenter->api.DestroyImage(presenter->device, source, NULL);
+    return vk == VK_SUCCESS ? 0 : -1;
+}
+
+void trierarch_vulkan_presenter_wait_idle(trierarch_vulkan_presenter *presenter) {
+    if (presenter && presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
+}
+
+void trierarch_vulkan_presenter_destroy(trierarch_vulkan_presenter *presenter) {
+    if (!presenter) return;
+    destroy_presenter_objects(presenter);
+    free(presenter);
 }

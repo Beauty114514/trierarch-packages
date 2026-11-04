@@ -148,6 +148,7 @@ struct renderer_context {
     EGLSurface surface;
     EGLContext context;
     ANativeWindow *window;
+    void *vulkan;
     GLuint background_program;
     GLuint texture_program;
     GLuint texture;
@@ -386,6 +387,22 @@ static GLuint make_program(const char *fragment) {
 struct renderer_context *trierarch_renderer_create(ANativeWindow *window,
         struct wayland_server *server) {
     if (!window) return NULL;
+    if (trierarch_vulkan_presenter_configured()) {
+        struct renderer_context *vulkan_renderer = calloc(1, sizeof(*vulkan_renderer));
+        if (vulkan_renderer) {
+            vulkan_renderer->window = window;
+            vulkan_renderer->server = server;
+            vulkan_renderer->vulkan = trierarch_vulkan_presenter_create(window);
+            if (vulkan_renderer->vulkan) {
+                vulkan_renderer->valid = true;
+                server->renderer = vulkan_renderer;
+                LOGI("Vulkan renderer active; EGL renderer not created");
+                return vulkan_renderer;
+            }
+            free(vulkan_renderer);
+        }
+        LOGI("Vulkan renderer unavailable; falling back to EGL");
+    }
     struct renderer_context *renderer = calloc(1, sizeof(*renderer));
     if (!renderer) return NULL;
     renderer->display = EGL_NO_DISPLAY;
@@ -473,10 +490,16 @@ fail:
 
 void trierarch_renderer_destroy(struct renderer_context *renderer) {
     if (!renderer) return;
-    LOGI("renderer destroy window=%p size=%dx%d server=%p", (void *)renderer->window,
-            renderer->width, renderer->height, (void *)renderer->server);
+    LOGI("renderer destroy window=%p size=%dx%d server=%p vulkan=%d", (void *)renderer->window,
+            renderer->width, renderer->height, (void *)renderer->server,
+            renderer->vulkan ? 1 : 0);
     if (renderer->server && renderer->server->renderer == renderer)
         renderer->server->renderer = NULL;
+    if (renderer->vulkan) {
+        trierarch_vulkan_presenter_destroy((trierarch_vulkan_presenter *)renderer->vulkan);
+        free(renderer);
+        return;
+    }
     if (renderer->frame_fence != EGL_NO_SYNC_KHR && renderer->destroy_sync) {
         renderer->destroy_sync(renderer->display, renderer->frame_fence);
         renderer->frame_fence = EGL_NO_SYNC_KHR;
@@ -512,7 +535,7 @@ void trierarch_renderer_wait_idle(struct renderer_context *renderer) {
 }
 
 bool trierarch_renderer_valid(const struct renderer_context *renderer) {
-    return renderer && renderer->valid;
+    return renderer && (renderer->valid || renderer->vulkan);
 }
 
 static void draw_surface(struct renderer_context *renderer,
@@ -755,6 +778,65 @@ static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) 
 bool trierarch_renderer_render(struct renderer_context *renderer,
         struct wayland_server *server) {
     if (!trierarch_renderer_valid(renderer) || !server) return false;
+    if (renderer->vulkan) {
+        struct compositor_surface *surface;
+        struct compositor_surface *best_xdg = NULL;
+        struct compositor_surface *best_any = NULL;
+        long long best_xdg_area = 0, best_any_area = 0;
+        int roots = 0, dmabufs = 0;
+        wl_list_for_each(surface, &server->surfaces, link) {
+            if (surface->parent || !surface->mapped || !surface->current ||
+                    surface == server->cursor_surface || surface->is_cursor)
+                continue;
+            roots++;
+            struct shm_buffer *buffer = surface->current;
+            if (!buffer->dmabuf || buffer->dmabuf_fd < 0) continue;
+            dmabufs++;
+            long long area = (long long)buffer->width * buffer->height;
+            if (surface->xdg_toplevel && area > best_xdg_area) {
+                best_xdg = surface;
+                best_xdg_area = area;
+            }
+            if (area > best_any_area) {
+                best_any = surface;
+                best_any_area = area;
+            }
+        }
+        struct compositor_surface *chosen = best_xdg ? best_xdg : best_any;
+        static struct compositor_surface *last_chosen;
+        static int64_t last_candidate_log;
+        int64_t now = monotonic_ns();
+        if (!chosen) {
+            if (now - last_candidate_log >= 1000000000LL) {
+                last_candidate_log = now;
+                LOGI("Vulkan scene has no dmabuf: roots=%d dmabufs=%d", roots, dmabufs);
+            }
+            return false;
+        }
+        if (chosen != last_chosen || now - last_candidate_log >= 1000000000LL) {
+            last_chosen = chosen;
+            last_candidate_log = now;
+            struct shm_buffer *buffer = chosen->current;
+            LOGI("Vulkan scene surface=%p xdg=%d layer=%d size=%dx%d roots=%d dmabufs=%d",
+                    (void *)chosen, chosen->xdg_toplevel ? 1 : 0,
+                    chosen->layer_surface ? 1 : 0, buffer->width, buffer->height,
+                    roots, dmabufs);
+        }
+        struct shm_buffer *buffer = chosen->current;
+        trierarch_surface_latch_frame_callbacks(server);
+        int result = trierarch_vulkan_presenter_present(
+                (trierarch_vulkan_presenter *)renderer->vulkan,
+                buffer->dmabuf_fd, buffer->width, buffer->height, buffer->stride,
+                buffer->format, buffer->dmabuf_modifier);
+        if (result == 0) {
+            trierarch_wayland_frame_presented(server,
+                    (uint32_t)(monotonic_ns() / 1000000ULL));
+            server->perf_render_count++;
+            return true;
+        }
+        trierarch_surface_requeue_frame_callbacks(server);
+        return false;
+    }
     renderer->frame_sequence++;
     if (renderer->frame_sequence > 1 && !renderer->frame_fence_created)
         server->diag_fence_missing++;
