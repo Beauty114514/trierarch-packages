@@ -12,6 +12,8 @@
 #include <vulkan/vulkan_android.h>
 
 #include "vulkan_presenter.h"
+#include "vulkan_shaders/cursor_vert.inc"
+#include "vulkan_shaders/cursor_frag.inc"
 
 #define TAG "TrierarchVulkan"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -59,6 +61,34 @@ struct vk_api {
     PFN_vkFreeMemory FreeMemory;
     PFN_vkBindImageMemory BindImageMemory;
     PFN_vkGetMemoryFdPropertiesKHR GetMemoryFdPropertiesKHR;
+    PFN_vkCreateImageView CreateImageView;
+    PFN_vkDestroyImageView DestroyImageView;
+    PFN_vkCreateRenderPass CreateRenderPass;
+    PFN_vkDestroyRenderPass DestroyRenderPass;
+    PFN_vkCreateFramebuffer CreateFramebuffer;
+    PFN_vkDestroyFramebuffer DestroyFramebuffer;
+    PFN_vkCreateShaderModule CreateShaderModule;
+    PFN_vkDestroyShaderModule DestroyShaderModule;
+    PFN_vkCreatePipelineLayout CreatePipelineLayout;
+    PFN_vkDestroyPipelineLayout DestroyPipelineLayout;
+    PFN_vkCreateGraphicsPipelines CreateGraphicsPipelines;
+    PFN_vkDestroyPipeline DestroyPipeline;
+    PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout;
+    PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout;
+    PFN_vkCreateDescriptorPool CreateDescriptorPool;
+    PFN_vkDestroyDescriptorPool DestroyDescriptorPool;
+    PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
+    PFN_vkUpdateDescriptorSets UpdateDescriptorSets;
+    PFN_vkCreateSampler CreateSampler;
+    PFN_vkDestroySampler DestroySampler;
+    PFN_vkCmdBeginRenderPass CmdBeginRenderPass;
+    PFN_vkCmdEndRenderPass CmdEndRenderPass;
+    PFN_vkCmdBindPipeline CmdBindPipeline;
+    PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets;
+    PFN_vkCmdPushConstants CmdPushConstants;
+    PFN_vkCmdDraw CmdDraw;
+    PFN_vkCmdSetViewport CmdSetViewport;
+    PFN_vkCmdSetScissor CmdSetScissor;
 };
 
 static bool load_instance(struct vk_api *api, void *handle) {
@@ -117,6 +147,34 @@ static void load_device(struct vk_api *api, VkInstance instance) {
     DEVICE(FreeMemory)
     DEVICE(BindImageMemory)
     DEVICE(GetMemoryFdPropertiesKHR)
+    DEVICE(CreateImageView)
+    DEVICE(DestroyImageView)
+    DEVICE(CreateRenderPass)
+    DEVICE(DestroyRenderPass)
+    DEVICE(CreateFramebuffer)
+    DEVICE(DestroyFramebuffer)
+    DEVICE(CreateShaderModule)
+    DEVICE(DestroyShaderModule)
+    DEVICE(CreatePipelineLayout)
+    DEVICE(DestroyPipelineLayout)
+    DEVICE(CreateGraphicsPipelines)
+    DEVICE(DestroyPipeline)
+    DEVICE(CreateDescriptorSetLayout)
+    DEVICE(DestroyDescriptorSetLayout)
+    DEVICE(CreateDescriptorPool)
+    DEVICE(DestroyDescriptorPool)
+    DEVICE(AllocateDescriptorSets)
+    DEVICE(UpdateDescriptorSets)
+    DEVICE(CreateSampler)
+    DEVICE(DestroySampler)
+    DEVICE(CmdBeginRenderPass)
+    DEVICE(CmdEndRenderPass)
+    DEVICE(CmdBindPipeline)
+    DEVICE(CmdBindDescriptorSets)
+    DEVICE(CmdPushConstants)
+    DEVICE(CmdDraw)
+    DEVICE(CmdSetViewport)
+    DEVICE(CmdSetScissor)
 #undef DEVICE
 }
 
@@ -658,16 +716,38 @@ struct trierarch_vulkan_presenter {
     VkCommandBuffer command;
     VkSemaphore acquired;
     unsigned long long frames_presented;
+    unsigned long long suboptimal_frames;
     int64_t last_present_log_ns;
+    VkRenderPass cursor_pass;
+    VkPipelineLayout cursor_layout;
+    VkPipeline cursor_pipeline;
+    VkDescriptorSetLayout cursor_descriptor_layout;
+    VkDescriptorPool cursor_descriptor_pool;
+    VkDescriptorSet cursor_descriptor;
+    VkSampler cursor_sampler;
+    VkImageView *swap_views;
+    VkFramebuffer *swap_framebuffers;
+    uint32_t swap_image_count;
+    struct trierarch_vulkan_draw cursor_draw;
+    bool cursor_set;
 };
 
 bool trierarch_vulkan_presenter_configured(void) {
     return trierarch_vulkan_dmabuf_probe_configured();
 }
 
+static void presenter_destroy_swapchain_resources(trierarch_vulkan_presenter *presenter);
+
 static void destroy_presenter_objects(trierarch_vulkan_presenter *presenter) {
     if (!presenter) return;
+    presenter_destroy_swapchain_resources(presenter);
     if (presenter->device) {
+        if (presenter->cursor_sampler) presenter->api.DestroySampler(presenter->device, presenter->cursor_sampler, NULL);
+        if (presenter->cursor_descriptor_pool) presenter->api.DestroyDescriptorPool(presenter->device, presenter->cursor_descriptor_pool, NULL);
+        if (presenter->cursor_pipeline) presenter->api.DestroyPipeline(presenter->device, presenter->cursor_pipeline, NULL);
+        if (presenter->cursor_layout) presenter->api.DestroyPipelineLayout(presenter->device, presenter->cursor_layout, NULL);
+        if (presenter->cursor_descriptor_layout) presenter->api.DestroyDescriptorSetLayout(presenter->device, presenter->cursor_descriptor_layout, NULL);
+        if (presenter->cursor_pass) presenter->api.DestroyRenderPass(presenter->device, presenter->cursor_pass, NULL);
         if (presenter->command) presenter->api.DestroyCommandPool(presenter->device, presenter->pool, NULL);
         if (presenter->acquired) presenter->api.DestroySemaphore(presenter->device, presenter->acquired, NULL);
         if (presenter->swapchain) presenter->api.DestroySwapchainKHR(presenter->device, presenter->swapchain, NULL);
@@ -685,6 +765,217 @@ static bool import_dmabuf_image(trierarch_vulkan_presenter *presenter, int fd,
     VkFormat format = probe_format(0); /* overwritten below */
     (void)format;
     return false;
+}
+
+
+static void presenter_destroy_swapchain_resources(trierarch_vulkan_presenter *presenter) {
+    if (!presenter || !presenter->device) return;
+    for (uint32_t i = 0; i < presenter->swap_image_count; i++) {
+        if (presenter->swap_framebuffers) {
+            if (presenter->swap_framebuffers[i])
+                presenter->api.DestroyFramebuffer(presenter->device,
+                        presenter->swap_framebuffers[i], NULL);
+        }
+        if (presenter->swap_views && presenter->swap_views[i])
+            presenter->api.DestroyImageView(presenter->device, presenter->swap_views[i], NULL);
+    }
+    free(presenter->swap_framebuffers);
+    free(presenter->swap_views);
+    presenter->swap_framebuffers = NULL;
+    presenter->swap_views = NULL;
+    presenter->swap_image_count = 0;
+}
+
+static bool presenter_create_cursor_pipeline(trierarch_vulkan_presenter *presenter) {
+    if (presenter->cursor_pipeline) return true;
+    VkAttachmentDescription attachment = {
+        .format = presenter->format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+    VkAttachmentReference ref = {
+        .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkSubpassDescription subpass = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1, .pColorAttachments = &ref,
+    };
+    VkRenderPassCreateInfo pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &attachment,
+        .subpassCount = 1, .pSubpasses = &subpass,
+    };
+    if (presenter->api.CreateRenderPass(presenter->device, &pass_info, NULL,
+            &presenter->cursor_pass) != VK_SUCCESS) return false;
+
+    VkDescriptorSetLayoutBinding binding = {
+        .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutCreateInfo layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1, .pBindings = &binding,
+    };
+    if (presenter->api.CreateDescriptorSetLayout(presenter->device, &layout_info, NULL,
+            &presenter->cursor_descriptor_layout) != VK_SUCCESS) return false;
+    VkPushConstantRange push = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0, .size = sizeof(float) * 8,
+    };
+    VkPipelineLayoutCreateInfo pipeline_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1, .pSetLayouts = &presenter->cursor_descriptor_layout,
+        .pushConstantRangeCount = 1, .pPushConstantRanges = &push,
+    };
+    if (presenter->api.CreatePipelineLayout(presenter->device, &pipeline_layout_info, NULL,
+            &presenter->cursor_layout) != VK_SUCCESS) return false;
+
+    VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo vert_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(cursor_vert_code), .pCode = cursor_vert_code,
+    };
+    VkShaderModuleCreateInfo frag_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(cursor_frag_code), .pCode = cursor_frag_code,
+    };
+    if (presenter->api.CreateShaderModule(presenter->device, &vert_info, NULL, &vert) != VK_SUCCESS ||
+            presenter->api.CreateShaderModule(presenter->device, &frag_info, NULL, &frag) != VK_SUCCESS)
+        return false;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main"},
+    };
+    VkVertexInputBindingDescription no_bindings = {0};
+    VkPipelineVertexInputStateCreateInfo vertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 0, .pVertexBindingDescriptions = &no_bindings,
+    };
+    VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+    };
+    VkViewport viewport = {0, 0, (float)presenter->extent.width, (float)presenter->extent.height, 0, 1};
+    VkRect2D scissor = {{0, 0}, presenter->extent};
+    VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1, .pViewports = &viewport, .scissorCount = 1, .pScissors = &scissor,
+    };
+    VkPipelineRasterizationStateCreateInfo raster = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f,
+    };
+    VkPipelineMultisampleStateCreateInfo multisample = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+    VkPipelineColorBlendAttachmentState blend_attachment = {
+        .blendEnable = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    VkPipelineColorBlendStateCreateInfo blend = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &blend_attachment,
+    };
+    VkDynamicState dynamic[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2, .pDynamicStates = dynamic,
+    };
+    VkGraphicsPipelineCreateInfo pipeline_info = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2, .pStages = stages,
+        .pVertexInputState = &vertex_input,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &raster,
+        .pMultisampleState = &multisample,
+        .pColorBlendState = &blend,
+        .pDynamicState = &dynamic_state,
+        .layout = presenter->cursor_layout,
+        .renderPass = presenter->cursor_pass,
+    };
+    VkResult result = presenter->api.CreateGraphicsPipelines(presenter->device,
+            VK_NULL_HANDLE, 1, &pipeline_info, NULL, &presenter->cursor_pipeline);
+    presenter->api.DestroyShaderModule(presenter->device, vert, NULL);
+    presenter->api.DestroyShaderModule(presenter->device, frag, NULL);
+    if (result != VK_SUCCESS) return false;
+
+    VkDescriptorPoolSize pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1,
+    };
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &pool_size,
+    };
+    if (presenter->api.CreateDescriptorPool(presenter->device, &pool_info, NULL,
+            &presenter->cursor_descriptor_pool) != VK_SUCCESS) return false;
+    VkDescriptorSetAllocateInfo set_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = presenter->cursor_descriptor_pool,
+        .descriptorSetCount = 1, .pSetLayouts = &presenter->cursor_descriptor_layout,
+    };
+    if (presenter->api.AllocateDescriptorSets(presenter->device, &set_info,
+            &presenter->cursor_descriptor) != VK_SUCCESS) return false;
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+    };
+    if (presenter->api.CreateSampler(presenter->device, &sampler_info, NULL,
+            &presenter->cursor_sampler) != VK_SUCCESS) return false;
+    return true;
+}
+
+static bool presenter_create_swapchain_resources(trierarch_vulkan_presenter *presenter) {
+    presenter_destroy_swapchain_resources(presenter);
+    uint32_t count = 0;
+    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &count, NULL);
+    if (!count) return false;
+    VkImage *images = calloc(count, sizeof(*images));
+    presenter->swap_views = calloc(count, sizeof(*presenter->swap_views));
+    presenter->swap_framebuffers = calloc(count, sizeof(*presenter->swap_framebuffers));
+    presenter->swap_image_count = count;
+    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &count, images);
+    if (!presenter_create_cursor_pipeline(presenter)) { free(images); return false; }
+    for (uint32_t i = 0; i < count; i++) {
+        VkImageViewCreateInfo view_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = presenter->format,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        if (presenter->api.CreateImageView(presenter->device, &view_info, NULL,
+                &presenter->swap_views[i]) != VK_SUCCESS) { free(images); return false; }
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = presenter->cursor_pass,
+            .attachmentCount = 1, .pAttachments = &presenter->swap_views[i],
+            .width = presenter->extent.width, .height = presenter->extent.height,
+            .layers = 1,
+        };
+        if (presenter->api.CreateFramebuffer(presenter->device, &framebuffer_info, NULL,
+                &presenter->swap_framebuffers[i]) != VK_SUCCESS) { free(images); return false; }
+    }
+    free(images);
+    return true;
 }
 
 static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
@@ -746,6 +1037,7 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
     presenter->swapchain = replacement;
     presenter->extent = extent;
     presenter->format = chosen.format;
+    if (!presenter_create_swapchain_resources(presenter)) return false;
     LOGI("Vulkan presenter swapchain %ux%u format=%d", extent.width, extent.height,
             chosen.format);
     return true;
@@ -872,6 +1164,88 @@ fail:
     return NULL;
 }
 
+static bool presenter_import_cursor(trierarch_vulkan_presenter *presenter,
+        const struct trierarch_vulkan_draw *draw, VkImage *out_image,
+        VkDeviceMemory *out_memory, VkImageView *out_view) {
+    VkFormat vk_format = probe_format(draw->format);
+    if (vk_format == VK_FORMAT_UNDEFINED || draw->fd < 0) return false;
+    VkExternalMemoryImageCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = vk_format,
+        .extent = {(uint32_t)draw->width, (uint32_t)draw->height, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_LINEAR,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImage image = VK_NULL_HANDLE;
+    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &image) != VK_SUCCESS)
+        return false;
+    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
+    if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, draw->fd, &fd_props) != VK_SUCCESS) {
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    VkMemoryRequirements requirements;
+    presenter->api.GetImageMemoryRequirements(presenter->device, image, &requirements);
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .image = image,
+    };
+    int imported_fd = dup(draw->fd);
+    VkImportMemoryFdInfoKHR import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = imported_fd, .pNext = &dedicated,
+    };
+    VkMemoryAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &import, .allocationSize = requirements.size, .memoryTypeIndex = 0,
+    };
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    presenter->api.GetPhysicalDeviceMemoryProperties(presenter->physical, &memory_properties);
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+                (fd_props.memoryTypeBits & (1u << i))) {
+            allocate.memoryTypeIndex = i;
+            break;
+        }
+    }
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &memory) != VK_SUCCESS) {
+        close(imported_fd);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    if (presenter->api.BindImageMemory(presenter->device, image, memory, 0) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, memory, NULL);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = vk_format,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    VkImageView view = VK_NULL_HANDLE;
+    if (presenter->api.CreateImageView(presenter->device, &view_info, NULL, &view) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, memory, NULL);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    *out_image = image;
+    *out_memory = memory;
+    *out_view = view;
+    return true;
+}
+
 int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
         int fd, int width, int height, int stride, unsigned int format,
         unsigned long long modifier) {
@@ -972,6 +1346,27 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
     VkImage *swap_images = calloc(swap_count, sizeof(*swap_images));
     presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &swap_count, swap_images);
     VkImage target = swap_images[image_index];
+    VkImage cursor_image = VK_NULL_HANDLE;
+    VkDeviceMemory cursor_memory = VK_NULL_HANDLE;
+    VkImageView cursor_view = VK_NULL_HANDLE;
+    bool draw_cursor = presenter->cursor_set &&
+            presenter_import_cursor(presenter, &presenter->cursor_draw,
+                    &cursor_image, &cursor_memory, &cursor_view);
+    if (draw_cursor) {
+        VkDescriptorImageInfo image_info = {
+            .sampler = presenter->cursor_sampler,
+            .imageView = cursor_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = presenter->cursor_descriptor,
+            .dstBinding = 0, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &image_info,
+        };
+        presenter->api.UpdateDescriptorSets(presenter->device, 1, &write, 0, NULL);
+    }
 
     VkCommandBufferBeginInfo begin = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     presenter->api.BeginCommandBuffer(presenter->command, &begin);
@@ -997,6 +1392,20 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &source_barrier);
     presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &target_barrier);
+    if (draw_cursor) {
+        VkImageMemoryBarrier cursor_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = cursor_image,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+                &cursor_barrier);
+    }
     VkImageBlit region = {
         .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .srcOffsets = {{0, 0, 0}, {(int32_t)width, (int32_t)height, 1}},
@@ -1008,10 +1417,51 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
     target_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    target_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     target_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &target_barrier);
+    if (draw_cursor) {
+        target_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        target_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+        presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
+                &target_barrier);
+        VkRenderPassBeginInfo pass_begin = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = presenter->cursor_pass,
+            .framebuffer = presenter->swap_framebuffers[image_index],
+            .renderArea = {{0, 0}, presenter->extent},
+        };
+        presenter->api.CmdBeginRenderPass(presenter->command, &pass_begin,
+                VK_SUBPASS_CONTENTS_INLINE);
+        presenter->api.CmdBindPipeline(presenter->command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                presenter->cursor_pipeline);
+        presenter->api.CmdBindDescriptorSets(presenter->command,
+                VK_PIPELINE_BIND_POINT_GRAPHICS, presenter->cursor_layout, 0, 1,
+                &presenter->cursor_descriptor, 0, NULL);
+        VkViewport viewport = {0, 0, (float)presenter->extent.width,
+                (float)presenter->extent.height, 0, 1};
+        VkRect2D scissor = {{0, 0}, presenter->extent};
+        presenter->api.CmdSetViewport(presenter->command, 0, 1, &viewport);
+        presenter->api.CmdSetScissor(presenter->command, 0, 1, &scissor);
+        float w = (float)presenter->extent.width;
+        float h = (float)presenter->extent.height;
+        float push[8] = {
+            presenter->cursor_draw.dst_x / w * 2.0f - 1.0f,
+            presenter->cursor_draw.dst_y / h * 2.0f - 1.0f,
+            (presenter->cursor_draw.dst_x + presenter->cursor_draw.dst_width) / w * 2.0f - 1.0f,
+            (presenter->cursor_draw.dst_y + presenter->cursor_draw.dst_height) / h * 2.0f - 1.0f,
+            0.0f, 0.0f, 1.0f, 1.0f,
+        };
+        presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
+                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), push);
+        presenter->api.CmdDraw(presenter->command, 4, 1, 0, 0);
+        presenter->api.CmdEndRenderPass(presenter->command);
+    } else {
+        target_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1,
+                &target_barrier);
+    }
     presenter->api.EndCommandBuffer(presenter->command);
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit = {
@@ -1027,28 +1477,60 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
         .swapchainCount = 1, .pSwapchains = &presenter->swapchain,
         .pImageIndices = &image_index,
     };
-    if (vk == VK_SUCCESS) vk = presenter->api.QueuePresentKHR(presenter->queue, &present);
-    if (vk == VK_SUCCESS) presenter->api.QueueWaitIdle(presenter->queue);
-    if (vk == VK_ERROR_OUT_OF_DATE_KHR) {
-        LOGI("Vulkan presenter present out of date; recreating");
-        presenter_create_swapchain(presenter);
-    } else if (vk != VK_SUCCESS) {
-        LOGI("Vulkan presenter frame failed result=%d image=%u", vk, image_index);
-    } else {
+    bool presented = false;
+    if (vk == VK_SUCCESS) {
+        vk = presenter->api.QueuePresentKHR(presenter->queue, &present);
+        presented = vk == VK_SUCCESS || vk == VK_SUBOPTIMAL_KHR;
+    }
+    if (presented) {
+        presenter->api.QueueWaitIdle(presenter->queue);
         presenter->frames_presented++;
         int64_t now = presenter_now_ns();
         if (presenter->frames_presented == 1 ||
                 now - presenter->last_present_log_ns >= 1000000000LL) {
             presenter->last_present_log_ns = now;
-            LOGI("Vulkan frame presented #%llu image=%u size=%ux%u",
+            LOGI("Vulkan frame presented #%llu image=%u size=%ux%u suboptimal=%d",
                     presenter->frames_presented, image_index,
-                    presenter->extent.width, presenter->extent.height);
+                    presenter->extent.width, presenter->extent.height,
+                    vk == VK_SUBOPTIMAL_KHR ? 1 : 0);
         }
+        if (vk == VK_SUBOPTIMAL_KHR) presenter->suboptimal_frames++;
+    } else if (vk == VK_ERROR_OUT_OF_DATE_KHR) {
+        LOGI("Vulkan presenter present out of date; recreating");
+        presenter_create_swapchain(presenter);
+    } else {
+        LOGI("Vulkan presenter frame failed result=%d image=%u", vk, image_index);
     }
     free(swap_images);
+    if (draw_cursor) {
+        presenter->api.DestroyImageView(presenter->device, cursor_view, NULL);
+        presenter->api.FreeMemory(presenter->device, cursor_memory, NULL);
+        presenter->api.DestroyImage(presenter->device, cursor_image, NULL);
+    }
     presenter->api.FreeMemory(presenter->device, source_memory, NULL);
     presenter->api.DestroyImage(presenter->device, source, NULL);
+    presenter->cursor_set = false;
     return vk == VK_SUCCESS ? 0 : -1;
+}
+
+void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter,
+        const struct trierarch_vulkan_draw *cursor) {
+    if (!presenter) return;
+    if (cursor && cursor->fd >= 0 && cursor->width > 0 && cursor->height > 0) {
+        presenter->cursor_draw = *cursor;
+        presenter->cursor_set = true;
+    } else {
+        presenter->cursor_set = false;
+    }
+}
+
+int trierarch_vulkan_presenter_present_scene(trierarch_vulkan_presenter *presenter,
+        const struct trierarch_vulkan_draw *root,
+        const struct trierarch_vulkan_draw *cursor) {
+    if (!presenter || !root) return -1;
+    trierarch_vulkan_presenter_set_cursor(presenter, cursor);
+    return trierarch_vulkan_presenter_present(presenter, root->fd, root->width,
+            root->height, root->stride, root->format, root->modifier);
 }
 
 void trierarch_vulkan_presenter_wait_idle(trierarch_vulkan_presenter *presenter) {

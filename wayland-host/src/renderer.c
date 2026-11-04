@@ -823,7 +823,35 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
                     roots, dmabufs);
         }
         struct shm_buffer *buffer = chosen->current;
+        struct trierarch_vulkan_draw cursor_draw;
+        bool cursor_set = false;
+        if (server->cursor_visible && server->cursor_surface &&
+                server->cursor_surface->current &&
+                server->cursor_surface->current->dmabuf &&
+                server->cursor_surface->current->dmabuf_fd >= 0) {
+            struct shm_buffer *cursor = server->cursor_surface->current;
+            int scale = server->cursor_surface->buffer_scale > 0
+                    ? server->cursor_surface->buffer_scale : 1;
+            cursor_draw = (struct trierarch_vulkan_draw){
+                .fd = cursor->dmabuf_fd,
+                .width = cursor->width,
+                .height = cursor->height,
+                .stride = cursor->stride,
+                .format = cursor->format,
+                .modifier = cursor->dmabuf_modifier,
+                .dst_x = (int)(wl_fixed_to_double(server->pointer_x) -
+                        server->cursor_hotspot_x / scale),
+                .dst_y = (int)(wl_fixed_to_double(server->pointer_y) -
+                        server->cursor_hotspot_y / scale),
+                .dst_width = cursor->width / scale,
+                .dst_height = cursor->height / scale,
+            };
+            cursor_set = true;
+        }
         trierarch_surface_latch_frame_callbacks(server);
+        trierarch_vulkan_presenter_set_cursor(
+                (trierarch_vulkan_presenter *)renderer->vulkan,
+                cursor_set ? &cursor_draw : NULL);
         int result = trierarch_vulkan_presenter_present(
                 (trierarch_vulkan_presenter *)renderer->vulkan,
                 buffer->dmabuf_fd, buffer->width, buffer->height, buffer->stride,

@@ -26,9 +26,27 @@ int trierarch_vulkan_probe_dmabuf(int fd, int width, int height, int stride,
 typedef struct trierarch_vulkan_presenter trierarch_vulkan_presenter;
 bool trierarch_vulkan_presenter_configured(void);
 trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *window);
+struct trierarch_vulkan_draw {
+    int fd;
+    int width;
+    int height;
+    int stride;
+    unsigned int format;
+    unsigned long long modifier;
+    int dst_x;
+    int dst_y;
+    int dst_width;
+    int dst_height;
+};
+
 int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
         int fd, int width, int height, int stride, unsigned int format,
         unsigned long long modifier);
+int trierarch_vulkan_presenter_present_scene(trierarch_vulkan_presenter *presenter,
+        const struct trierarch_vulkan_draw *root,
+        const struct trierarch_vulkan_draw *cursor);
+void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter,
+        const struct trierarch_vulkan_draw *cursor);
 void trierarch_vulkan_presenter_wait_idle(trierarch_vulkan_presenter *presenter);
 void trierarch_vulkan_presenter_destroy(trierarch_vulkan_presenter *presenter);
 
