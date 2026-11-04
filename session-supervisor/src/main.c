@@ -16,7 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { DEFAULT_OBSERVE_MS = 10000, PLASMA_GRACE_MS = 4000, POLL_MS = 100, MAX_KNOWN_SOCKETS = 32, MAX_ENVIRONMENT_BYTES = 131072 };
+enum { DEFAULT_OBSERVE_MS = 10000, PLASMA_GRACE_MS = 8000, POLL_MS = 100, MAX_KNOWN_SOCKETS = 32, MAX_ENVIRONMENT_BYTES = 131072 };
 static const char *const DROIDSPACES_BINARY = "/data/local/Droidspaces/bin/droidspaces";
 
 static volatile sig_atomic_t running = 1;
@@ -94,6 +94,20 @@ static bool process_comm(pid_t pid, char *result, size_t result_size) {
     return true;
 }
 
+static bool process_is_zombie(pid_t pid) {
+    char path[64], line[256];
+    snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
+    FILE *file = fopen(path, "r");
+    if (!file) return true;
+    bool zombie = true;
+    if (fgets(line, sizeof(line), file)) {
+        char *end = strrchr(line, ')');
+        if (end && end[1] == ' ') zombie = end[2] == 'Z';
+    }
+    fclose(file);
+    return zombie;
+}
+
 static pid_t process_parent(pid_t pid) {
     char path[64], line[256];
     snprintf(path, sizeof(path), "/proc/%ld/status", (long)pid);
@@ -125,7 +139,8 @@ static pid_t find_process_named(const char *name) {
         if (!is_decimal(entry->d_name)) continue;
         pid_t pid = (pid_t)strtol(entry->d_name, NULL, 10);
         char comm[64];
-        if (process_is_owned_by_current_user(pid) && process_comm(pid, comm, sizeof(comm)) && strcmp(comm, name) == 0) {
+        if (process_is_owned_by_current_user(pid) && process_comm(pid, comm, sizeof(comm)) &&
+                strcmp(comm, name) == 0 && !process_is_zombie(pid)) {
             result = pid;
             break;
         }
@@ -395,6 +410,8 @@ int main(int argc, char **argv) {
     size_t known_count = 0;
     long socket_seen_at = -1;
     bool plasma_adapter_finished = false;
+    bool plasma_wait_logged = false;
+    bool plasma_seen_logged = false;
     log_line(log, "session supervisor started; runtime=%s observe_ms=%ld", runtime_directory, observe_milliseconds);
     for (long elapsed = 0; running && elapsed <= observe_milliseconds; elapsed += POLL_MS) {
         observe_sockets(log, runtime_directory, known, &known_count);
@@ -408,14 +425,23 @@ int main(int argc, char **argv) {
                     log_line(log, "plasma-wayland: detected plasma_session=%ld kwin_wayland=%ld socket=%s", (long)plasma_session, (long)kwin, socket);
                 }
                 if (find_process_named("plasmashell") > 0) {
-                    log_line(log, "plasma-wayland: plasmashell is already running; no fallback needed");
-                    plasma_adapter_finished = true;
+                    if (!plasma_seen_logged) {
+                        plasma_seen_logged = true;
+                        log_line(log, "plasma-wayland: plasmashell detected; leaving lifecycle to startplasma");
+                    }
                 } else if (elapsed - socket_seen_at >= PLASMA_GRACE_MS) {
-                    log_line(log, "plasma-wayland: plasmashell absent after %dms; starting fallback", PLASMA_GRACE_MS);
-                    pid_t child = launch_plasmashell(log, plasma_session, socket);
-                    plasma_adapter_finished = true;
-                    if (child > 0) supervise_child(log, child);
-                    break;
+                    if (find_process_named("plasma_session") > 0) {
+                        if (!plasma_wait_logged) {
+                            plasma_wait_logged = true;
+                            log_line(log, "plasma-wayland: plasmashell absent after %dms; waiting for startplasma", PLASMA_GRACE_MS);
+                        }
+                    } else {
+                        log_line(log, "plasma-wayland: plasma_session exited; starting fallback");
+                        pid_t child = launch_plasmashell(log, plasma_session, socket);
+                        plasma_adapter_finished = true;
+                        if (child > 0) supervise_child(log, child);
+                        break;
+                    }
                 }
             }
         }
