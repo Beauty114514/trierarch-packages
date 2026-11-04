@@ -61,6 +61,9 @@ struct vk_api {
     PFN_vkFreeMemory FreeMemory;
     PFN_vkBindImageMemory BindImageMemory;
     PFN_vkGetMemoryFdPropertiesKHR GetMemoryFdPropertiesKHR;
+    PFN_vkGetImageSubresourceLayout GetImageSubresourceLayout;
+    PFN_vkMapMemory MapMemory;
+    PFN_vkUnmapMemory UnmapMemory;
     PFN_vkCreateImageView CreateImageView;
     PFN_vkDestroyImageView DestroyImageView;
     PFN_vkCreateRenderPass CreateRenderPass;
@@ -79,6 +82,7 @@ struct vk_api {
     PFN_vkDestroyDescriptorPool DestroyDescriptorPool;
     PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
     PFN_vkUpdateDescriptorSets UpdateDescriptorSets;
+    PFN_vkResetDescriptorPool ResetDescriptorPool;
     PFN_vkCreateSampler CreateSampler;
     PFN_vkDestroySampler DestroySampler;
     PFN_vkCmdBeginRenderPass CmdBeginRenderPass;
@@ -147,6 +151,9 @@ static void load_device(struct vk_api *api, VkInstance instance) {
     DEVICE(FreeMemory)
     DEVICE(BindImageMemory)
     DEVICE(GetMemoryFdPropertiesKHR)
+    DEVICE(GetImageSubresourceLayout)
+    DEVICE(MapMemory)
+    DEVICE(UnmapMemory)
     DEVICE(CreateImageView)
     DEVICE(DestroyImageView)
     DEVICE(CreateRenderPass)
@@ -165,6 +172,7 @@ static void load_device(struct vk_api *api, VkInstance instance) {
     DEVICE(DestroyDescriptorPool)
     DEVICE(AllocateDescriptorSets)
     DEVICE(UpdateDescriptorSets)
+    DEVICE(ResetDescriptorPool)
     DEVICE(CreateSampler)
     DEVICE(DestroySampler)
     DEVICE(CmdBeginRenderPass)
@@ -825,7 +833,7 @@ static bool presenter_create_cursor_pipeline(trierarch_vulkan_presenter *present
             &presenter->cursor_descriptor_layout) != VK_SUCCESS) return false;
     VkPushConstantRange push = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-        .offset = 0, .size = sizeof(float) * 8,
+        .offset = 0, .size = sizeof(float) * 9,
     };
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -917,11 +925,11 @@ static bool presenter_create_cursor_pipeline(trierarch_vulkan_presenter *present
     if (result != VK_SUCCESS) return false;
 
     VkDescriptorPoolSize pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1,
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 64,
     };
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &pool_size,
+        .maxSets = 64, .poolSizeCount = 1, .pPoolSizes = &pool_size,
     };
     if (presenter->api.CreateDescriptorPool(presenter->device, &pool_info, NULL,
             &presenter->cursor_descriptor_pool) != VK_SUCCESS) return false;
@@ -1246,84 +1254,8 @@ static bool presenter_import_cursor(trierarch_vulkan_presenter *presenter,
     return true;
 }
 
-int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
-        int fd, int width, int height, int stride, unsigned int format,
-        unsigned long long modifier) {
-    (void)stride; (void)modifier;
-    if (!presenter || fd < 0 || width <= 0 || height <= 0) return -1;
-    VkFormat vk_format = probe_format(format);
-    if (vk_format == VK_FORMAT_UNDEFINED) return -1;
-    VkExternalMemoryImageCreateInfo external = {
-        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-    };
-    VkImageCreateInfo image_info = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = &external,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = vk_format,
-        .extent = {(uint32_t)width, (uint32_t)height, 1},
-        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_LINEAR,
-        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    VkImage source = VK_NULL_HANDLE;
-    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &source) != VK_SUCCESS)
-        return -1;
-    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
-    if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
-            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_props) != VK_SUCCESS) {
-        presenter->api.DestroyImage(presenter->device, source, NULL);
-        return -1;
-    }
-    VkMemoryRequirements requirements;
-    presenter->api.GetImageMemoryRequirements(presenter->device, source, &requirements);
-    VkMemoryDedicatedAllocateInfo dedicated = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-        .image = source,
-    };
-    int imported_fd = dup(fd);
-    VkImportMemoryFdInfoKHR import = {
-        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
-        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-        .fd = imported_fd,
-        .pNext = &dedicated,
-    };
-    VkMemoryAllocateInfo allocate = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &import,
-        .allocationSize = requirements.size,
-        .memoryTypeIndex = 0,
-    };
-    /* The first compatible type is found through the device's memory props. */
-    VkPhysicalDeviceMemoryProperties memory_properties;
-    VkPhysicalDevice physical = VK_NULL_HANDLE;
-    uint32_t device_count = 0;
-    presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, NULL);
-    if (device_count) presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, &physical);
-    presenter->api.GetPhysicalDeviceMemoryProperties(physical, &memory_properties);
-    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
-        if ((requirements.memoryTypeBits & (1u << i)) &&
-                (fd_props.memoryTypeBits & (1u << i)) &&
-                (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-            allocate.memoryTypeIndex = i;
-            break;
-        }
-    }
-    VkDeviceMemory source_memory = VK_NULL_HANDLE;
-    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &source_memory) != VK_SUCCESS) {
-        close(imported_fd);
-        presenter->api.DestroyImage(presenter->device, source, NULL);
-        return -1;
-    }
-    if (presenter->api.BindImageMemory(presenter->device, source, source_memory, 0) != VK_SUCCESS) {
-        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
-        presenter->api.DestroyImage(presenter->device, source, NULL);
-        return -1;
-    }
-
+static int presenter_present_source(trierarch_vulkan_presenter *presenter,
+        VkImage source, VkDeviceMemory source_memory, int width, int height) {
     uint32_t image_index = 0;
     VkResult vk = presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
             UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index);
@@ -1511,6 +1443,170 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
     presenter->api.DestroyImage(presenter->device, source, NULL);
     presenter->cursor_set = false;
     return vk == VK_SUCCESS ? 0 : -1;
+}
+
+int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
+        int fd, int width, int height, int stride, unsigned int format,
+        unsigned long long modifier) {
+    (void)stride; (void)modifier;
+    if (!presenter || fd < 0 || width <= 0 || height <= 0) return -1;
+    VkFormat vk_format = probe_format(format);
+    if (vk_format == VK_FORMAT_UNDEFINED) return -1;
+    VkExternalMemoryImageCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = vk_format,
+        .extent = {(uint32_t)width, (uint32_t)height, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_LINEAR,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImage source = VK_NULL_HANDLE;
+    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &source) != VK_SUCCESS)
+        return -1;
+    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
+    if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_props) != VK_SUCCESS) {
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+    VkMemoryRequirements requirements;
+    presenter->api.GetImageMemoryRequirements(presenter->device, source, &requirements);
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = source,
+    };
+    int imported_fd = dup(fd);
+    VkImportMemoryFdInfoKHR import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = imported_fd,
+        .pNext = &dedicated,
+    };
+    VkMemoryAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &import,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = 0,
+    };
+    /* The first compatible type is found through the device's memory props. */
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    uint32_t device_count = 0;
+    presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, NULL);
+    if (device_count) presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, &physical);
+    presenter->api.GetPhysicalDeviceMemoryProperties(physical, &memory_properties);
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+                (fd_props.memoryTypeBits & (1u << i)) &&
+                (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            allocate.memoryTypeIndex = i;
+            break;
+        }
+    }
+    VkDeviceMemory source_memory = VK_NULL_HANDLE;
+    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &source_memory) != VK_SUCCESS) {
+        close(imported_fd);
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+    if (presenter->api.BindImageMemory(presenter->device, source, source_memory, 0) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+
+    return presenter_present_source(presenter, source, source_memory, width, height);
+}
+
+static bool presenter_create_shm_image(trierarch_vulkan_presenter *presenter,
+        const void *data, int width, int height, int stride, unsigned int format,
+        VkImage *out_image, VkDeviceMemory *out_memory) {
+    VkFormat vk_format = probe_format(format);
+    if (vk_format == VK_FORMAT_UNDEFINED || !data || width <= 0 || height <= 0) return false;
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = vk_format,
+        .extent = {(uint32_t)width, (uint32_t)height, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_LINEAR,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED,
+    };
+    VkImage image = VK_NULL_HANDLE;
+    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &image) != VK_SUCCESS)
+        return false;
+    VkMemoryRequirements requirements;
+    presenter->api.GetImageMemoryRequirements(presenter->device, image, &requirements);
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    presenter->api.GetPhysicalDeviceMemoryProperties(presenter->physical, &memory_properties);
+    uint32_t memory_type = UINT32_MAX;
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags flags = memory_properties.memoryTypes[i].propertyFlags;
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+                (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+                (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memory_type = i;
+            break;
+        }
+    }
+    if (memory_type == UINT32_MAX) {
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    VkMemoryAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = requirements.size, .memoryTypeIndex = memory_type,
+    };
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &memory) != VK_SUCCESS) {
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    if (presenter->api.BindImageMemory(presenter->device, image, memory, 0) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, memory, NULL);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    VkImageSubresource subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+    VkSubresourceLayout layout;
+    presenter->api.GetImageSubresourceLayout(presenter->device, image, &subresource, &layout);
+    void *mapped = NULL;
+    if (presenter->api.MapMemory(presenter->device, memory, 0, requirements.size, 0,
+            &mapped) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, memory, NULL);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    size_t row_bytes = (size_t)width * 4u;
+    if (stride > 0 && (size_t)stride < row_bytes) row_bytes = (size_t)stride;
+    for (int y = 0; y < height; y++) {
+        memcpy((uint8_t *)mapped + layout.offset + (size_t)y * layout.rowPitch,
+                (const uint8_t *)data + (size_t)y * stride, row_bytes);
+    }
+    presenter->api.UnmapMemory(presenter->device, memory);
+    *out_image = image;
+    *out_memory = memory;
+    return true;
+}
+
+int trierarch_vulkan_presenter_present_shm(trierarch_vulkan_presenter *presenter,
+        const void *data, int width, int height, int stride, unsigned int format) {
+    if (!presenter || !data || width <= 0 || height <= 0) return -1;
+    VkImage source = VK_NULL_HANDLE;
+    VkDeviceMemory source_memory = VK_NULL_HANDLE;
+    if (!presenter_create_shm_image(presenter, data, width, height, stride, format,
+            &source, &source_memory)) return -1;
+    return presenter_present_source(presenter, source, source_memory, width, height);
 }
 
 void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter,

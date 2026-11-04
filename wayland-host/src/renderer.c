@@ -780,49 +780,34 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
     if (!trierarch_renderer_valid(renderer) || !server) return false;
     if (renderer->vulkan) {
         struct compositor_surface *surface;
-        struct compositor_surface *best_xdg = NULL;
-        struct compositor_surface *best_any = NULL;
-        long long best_xdg_area = 0, best_any_area = 0;
-        int roots = 0, dmabufs = 0;
+        struct compositor_surface *best = NULL;
+        long long best_area = 0;
+        int roots = 0;
         wl_list_for_each(surface, &server->surfaces, link) {
-            if (surface->parent || !surface->mapped || !surface->current ||
+            if (!surface->mapped || !surface->current ||
                     surface == server->cursor_surface || surface->is_cursor)
                 continue;
             roots++;
             struct shm_buffer *buffer = surface->current;
-            if (!buffer->dmabuf || buffer->dmabuf_fd < 0) continue;
-            dmabufs++;
+            bool usable = buffer->dmabuf ? buffer->dmabuf_fd >= 0
+                    : (buffer->data != NULL && !buffer->tvg_token);
+            if (!usable) continue;
             long long area = (long long)buffer->width * buffer->height;
-            if (surface->xdg_toplevel && area > best_xdg_area) {
-                best_xdg = surface;
-                best_xdg_area = area;
-            }
-            if (area > best_any_area) {
-                best_any = surface;
-                best_any_area = area;
+            if (area >= 128 * 128 && area > best_area) {
+                best = surface;
+                best_area = area;
             }
         }
-        struct compositor_surface *chosen = best_xdg ? best_xdg : best_any;
-        static struct compositor_surface *last_chosen;
-        static int64_t last_candidate_log;
-        int64_t now = monotonic_ns();
-        if (!chosen) {
-            if (now - last_candidate_log >= 1000000000LL) {
-                last_candidate_log = now;
-                LOGI("Vulkan scene has no dmabuf: roots=%d dmabufs=%d", roots, dmabufs);
+        if (!best) {
+            static int64_t last_empty_log;
+            int64_t now = monotonic_ns();
+            if (now - last_empty_log >= 1000000000LL) {
+                last_empty_log = now;
+                LOGI("Vulkan scene has no usable surface: roots=%d", roots);
             }
             return false;
         }
-        if (chosen != last_chosen || now - last_candidate_log >= 1000000000LL) {
-            last_chosen = chosen;
-            last_candidate_log = now;
-            struct shm_buffer *buffer = chosen->current;
-            LOGI("Vulkan scene surface=%p xdg=%d layer=%d size=%dx%d roots=%d dmabufs=%d",
-                    (void *)chosen, chosen->xdg_toplevel ? 1 : 0,
-                    chosen->layer_surface ? 1 : 0, buffer->width, buffer->height,
-                    roots, dmabufs);
-        }
-        struct shm_buffer *buffer = chosen->current;
+        struct shm_buffer *buffer = best->current;
         struct trierarch_vulkan_draw cursor_draw;
         bool cursor_set = false;
         if (server->cursor_visible && server->cursor_surface &&
@@ -848,14 +833,31 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
             };
             cursor_set = true;
         }
+        static int64_t last_scene_log;
+        int64_t now = monotonic_ns();
+        if (now - last_scene_log >= 1000000000LL) {
+            last_scene_log = now;
+            LOGI("Vulkan scene surface=%p xdg=%d layer=%d sub=%d size=%dx%d roots=%d shm=%d",
+                    (void *)best, best->xdg_toplevel ? 1 : 0,
+                    best->layer_surface ? 1 : 0, best->parent ? 1 : 0,
+                    buffer->width, buffer->height, roots, buffer->dmabuf ? 0 : 1);
+        }
         trierarch_surface_latch_frame_callbacks(server);
         trierarch_vulkan_presenter_set_cursor(
                 (trierarch_vulkan_presenter *)renderer->vulkan,
                 cursor_set ? &cursor_draw : NULL);
-        int result = trierarch_vulkan_presenter_present(
-                (trierarch_vulkan_presenter *)renderer->vulkan,
-                buffer->dmabuf_fd, buffer->width, buffer->height, buffer->stride,
-                buffer->format, buffer->dmabuf_modifier);
+        int result;
+        if (buffer->dmabuf) {
+            result = trierarch_vulkan_presenter_present(
+                    (trierarch_vulkan_presenter *)renderer->vulkan,
+                    buffer->dmabuf_fd, buffer->width, buffer->height, buffer->stride,
+                    buffer->format, buffer->dmabuf_modifier);
+        } else {
+            result = trierarch_vulkan_presenter_present_shm(
+                    (trierarch_vulkan_presenter *)renderer->vulkan,
+                    buffer->data, buffer->width, buffer->height, buffer->stride,
+                    buffer->format);
+        }
         if (result == 0) {
             trierarch_wayland_frame_presented(server,
                     (uint32_t)(monotonic_ns() / 1000000ULL));
