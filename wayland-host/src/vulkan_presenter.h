@@ -16,4 +16,11 @@ int trierarch_vulkan_presenter_self_test(ANativeWindow *window,
         const char *adrenotools_library, const char *driver_dir,
         const char *hook_dir, const char *tmp_dir);
 
+/* Configure a one-shot import check for a real Wayland dma-buf. */
+void trierarch_vulkan_configure_dmabuf_probe(const char *adrenotools_library,
+        const char *driver_dir, const char *hook_dir, const char *tmp_dir);
+bool trierarch_vulkan_dmabuf_probe_configured(void);
+int trierarch_vulkan_probe_dmabuf(int fd, int width, int height, int stride,
+        unsigned int format, unsigned long long modifier);
+
 #endif

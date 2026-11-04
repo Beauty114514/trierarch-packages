@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "server_internal.h"
 #include "tvg_scanout.h"
+#include "vulkan_presenter.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -84,6 +85,15 @@ static bool format_is_opaque(uint32_t format) {
 /* mmap alone does not establish CPU/GPU ownership of a dma-buf.  The guest
  * compositor may still be rendering when the Android host falls back to a
  * CPU upload, so bracket that read with the dma-buf synchronization ioctl. */
+static void maybe_probe_dmabuf(struct shm_buffer *buffer) {
+    static bool attempted;
+    if (attempted || !buffer || !buffer->dmabuf) return;
+    attempted = true;
+    if (!trierarch_vulkan_dmabuf_probe_configured()) return;
+    trierarch_vulkan_probe_dmabuf(buffer->dmabuf_fd, buffer->width, buffer->height,
+            buffer->stride, buffer->format, buffer->dmabuf_modifier);
+}
+
 static bool dmabuf_begin_cpu_read(const struct shm_buffer *buffer) {
     if (!buffer || !buffer->dmabuf || buffer->dmabuf_fd < 0)
         return false;
@@ -509,6 +519,7 @@ static void draw_surface(struct renderer_context *renderer,
         struct compositor_surface *surface, int x, int y) {
     struct shm_buffer *buffer = surface->current;
     if (!buffer) return;
+    if (buffer->dmabuf) maybe_probe_dmabuf(buffer);
     const char *last_path = "none";
     if (buffer->dmabuf) {
         static unsigned int trace_count;

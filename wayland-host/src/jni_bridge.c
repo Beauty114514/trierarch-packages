@@ -391,6 +391,23 @@ Java_app_trierarch_wayland_WaylandBridge_nativeSetKeyboardEvdevKey(JNIEnv *env, 
     return queued ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL
+Java_app_trierarch_wayland_WaylandBridge_nativeConfigureVulkanProbe(JNIEnv *env, jobject object,
+        jstring adrenotools_library, jstring driver_dir, jstring hook_dir, jstring tmp_dir) {
+    (void)object;
+    if (!adrenotools_library || !driver_dir || !hook_dir || !tmp_dir) return;
+    const char *adrenotools = (*env)->GetStringUTFChars(env, adrenotools_library, NULL);
+    const char *driver = (*env)->GetStringUTFChars(env, driver_dir, NULL);
+    const char *hook = (*env)->GetStringUTFChars(env, hook_dir, NULL);
+    const char *tmp = (*env)->GetStringUTFChars(env, tmp_dir, NULL);
+    trierarch_vulkan_configure_dmabuf_probe(adrenotools, driver, hook, tmp);
+    LOGI("configured dmabuf probe driver=%s", driver);
+    (*env)->ReleaseStringUTFChars(env, adrenotools_library, adrenotools);
+    (*env)->ReleaseStringUTFChars(env, driver_dir, driver);
+    (*env)->ReleaseStringUTFChars(env, hook_dir, hook);
+    (*env)->ReleaseStringUTFChars(env, tmp_dir, tmp);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_app_trierarch_wayland_WaylandBridge_nativeVulkanSelfTest(JNIEnv *env, jobject object,
         jobject surface, jstring adrenotools_library, jstring driver_dir,
