@@ -525,10 +525,16 @@ void trierarch_renderer_wait_idle(struct renderer_context *renderer) {
     if (!renderer || renderer->frame_fence == EGL_NO_SYNC_KHR ||
             !renderer->client_wait_sync || !renderer->destroy_sync)
         return;
+    /* Never block the host render loop forever on a guest/GPU fence.  A
+     * stuck fence must not pin deferred guest buffers and leave KWin waiting
+     * in an uninterruptible state.  The timeout is a recovery bound; the
+     * fence is still destroyed so the next frame can make progress. */
+    const EGLTime timeout_ns = 1000000000ULL;
     EGLint result = renderer->client_wait_sync(renderer->display, renderer->frame_fence,
-            EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, EGL_FOREVER_KHR);
-    if (result != EGL_CONDITION_SATISFIED_KHR && result != EGL_ALREADY_SIGNALED_KHR)
-        LOGE("EGL frame fence wait failed: result=0x%x", result);
+            EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, timeout_ns);
+    if (result != EGL_CONDITION_SATISFIED_KHR && result != EGL_ALREADY_SIGNALED_KHR) {
+        LOGE("EGL frame fence wait failed or timed out: result=0x%x", result);
+    }
     renderer->destroy_sync(renderer->display, renderer->frame_fence);
     renderer->frame_fence = EGL_NO_SYNC_KHR;
     renderer->frame_fence_created = false;
