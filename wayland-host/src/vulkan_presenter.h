@@ -27,11 +27,13 @@ typedef struct trierarch_vulkan_presenter trierarch_vulkan_presenter;
 bool trierarch_vulkan_presenter_configured(void);
 trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *window);
 struct trierarch_vulkan_draw {
+    unsigned long long key;
     int fd;
     const void *shm_data;
     int width;
     int height;
     int stride;
+    unsigned int offset;
     unsigned int format;
     unsigned long long modifier;
     int dst_x;
@@ -52,7 +54,8 @@ int trierarch_vulkan_presenter_present_keyed(trierarch_vulkan_presenter *present
 int trierarch_vulkan_presenter_present_shm(trierarch_vulkan_presenter *presenter,
         const void *data, int width, int height, int stride, unsigned int format);
 int trierarch_vulkan_presenter_present_scene(trierarch_vulkan_presenter *presenter,
-        const struct trierarch_vulkan_draw *root,
+        const struct trierarch_vulkan_draw *draws, int count,
+        int scene_width, int scene_height,
         const struct trierarch_vulkan_draw *cursor);
 void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter,
         const struct trierarch_vulkan_draw *cursor);

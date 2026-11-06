@@ -792,6 +792,80 @@ static bool is_tiny_viewport_underlay(const struct compositor_surface *surface) 
     return (int64_t)surface->current->width * surface->current->height <= 256;
 }
 
+#define VULKAN_SCENE_MAX_DRAWS 8
+
+static int vulkan_collect_draws(struct wayland_server *server,
+        struct compositor_surface *surface, int parent_x, int parent_y,
+        struct trierarch_vulkan_draw *draws, int count, bool *has_shm) {
+    if (!surface || surface == server->cursor_surface || surface->is_cursor ||
+            !surface->mapped || !surface->current)
+        return count;
+    struct shm_buffer *buffer = surface->current;
+    int scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
+    int width = surface->viewport_destination_set
+            ? surface->viewport_destination_width : buffer->width / scale;
+    int height = surface->viewport_destination_set
+            ? surface->viewport_destination_height : buffer->height / scale;
+    if (width <= 0 || height <= 0)
+        return count;
+    int own_x = parent_x + (surface->parent ? surface->subsurface_x :
+            (surface->layer_surface ? surface->layer_x : 0));
+    int own_y = parent_y + (surface->parent ? surface->subsurface_y :
+            (surface->layer_surface ? surface->layer_y : 0));
+    const bool tiny = (int64_t)buffer->width * buffer->height <= 256;
+    if (!tiny) {
+        if (buffer->dmabuf && buffer->dmabuf_fd >= 0) {
+            if (count < VULKAN_SCENE_MAX_DRAWS) {
+                draws[count++] = (struct trierarch_vulkan_draw){
+                    .key = buffer->serial,
+                    .fd = buffer->dmabuf_fd,
+                    .width = buffer->width,
+                    .height = buffer->height,
+                    .stride = buffer->stride,
+                    .offset = buffer->dmabuf_offset,
+                    .format = buffer->format,
+                    .modifier = buffer->dmabuf_modifier,
+                    .dst_x = own_x,
+                    .dst_y = own_y,
+                    .dst_width = width,
+                    .dst_height = height,
+                };
+            }
+        } else if (buffer->data && !buffer->tvg_token) {
+            *has_shm = true;
+        }
+    }
+    struct compositor_surface *child;
+    wl_list_for_each(child, &surface->children, subsurface_link)
+        count = vulkan_collect_draws(server, child, own_x, own_y, draws,
+                count, has_shm);
+    return count;
+}
+
+static void vulkan_scene_extent(struct wayland_server *server, int *out_w, int *out_h) {
+    int best_area = 0;
+    *out_w = 0;
+    *out_h = 0;
+    struct compositor_surface *surface;
+    wl_list_for_each(surface, &server->surfaces, link) {
+        if (surface->parent || surface == server->cursor_surface ||
+                surface->is_cursor || !surface->mapped || !surface->current)
+            continue;
+        struct shm_buffer *buffer = surface->current;
+        int scale = surface->buffer_scale > 0 ? surface->buffer_scale : 1;
+        int width = surface->viewport_destination_set
+                ? surface->viewport_destination_width : buffer->width / scale;
+        int height = surface->viewport_destination_set
+                ? surface->viewport_destination_height : buffer->height / scale;
+        int area = width * height;
+        if (width > 0 && height > 0 && area > best_area) {
+            best_area = area;
+            *out_w = width;
+            *out_h = height;
+        }
+    }
+}
+
 bool trierarch_renderer_render(struct renderer_context *renderer,
         struct wayland_server *server) {
     if (!trierarch_renderer_valid(renderer) || !server) return false;
@@ -845,26 +919,37 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
                     surface == server->cursor_surface || surface->is_cursor)
                 continue;
             roots++;
-            struct shm_buffer *buffer = surface->current;
-            bool usable = buffer->dmabuf ? buffer->dmabuf_fd >= 0
-                    : (buffer->data != NULL && !buffer->tvg_token);
+            struct shm_buffer *candidate = surface->current;
+            bool usable = candidate->dmabuf ? candidate->dmabuf_fd >= 0
+                    : (candidate->data != NULL && !candidate->tvg_token);
             if (!usable) continue;
-            long long area = (long long)buffer->width * buffer->height;
+            long long area = (long long)candidate->width * candidate->height;
             if (area >= 128 * 128 && area > best_area) {
                 best = surface;
                 best_area = area;
             }
         }
-        if (!best) {
-            static int64_t last_empty_log;
-            int64_t now = monotonic_ns();
-            if (now - last_empty_log >= 1000000000LL) {
-                last_empty_log = now;
-                LOGI("Vulkan scene has no usable surface: roots=%d", roots);
-            }
-            return false;
+        struct trierarch_vulkan_draw scene_draws[VULKAN_SCENE_MAX_DRAWS];
+        int scene_count = 0;
+        bool scene_has_shm = false;
+        wl_list_for_each(surface, &server->surfaces, link) {
+            if (surface->parent || surface == server->cursor_surface) continue;
+            scene_count = vulkan_collect_draws(server, surface, 0, 0,
+                    scene_draws, scene_count, &scene_has_shm);
         }
-        struct shm_buffer *buffer = best->current;
+        int scene_width = 0, scene_height = 0;
+        vulkan_scene_extent(server, &scene_width, &scene_height);
+        if (scene_width <= 0 || scene_height <= 0) {
+            for (int i = 0; i < scene_count; i++) {
+                int right = scene_draws[i].dst_x + scene_draws[i].dst_width;
+                int bottom = scene_draws[i].dst_y + scene_draws[i].dst_height;
+                if (right > scene_width) scene_width = right;
+                if (bottom > scene_height) scene_height = bottom;
+            }
+        }
+        const bool use_scene = scene_count > 0 && !scene_has_shm &&
+                scene_width > 0 && scene_height > 0;
+        struct shm_buffer *buffer = best ? best->current : NULL;
         struct trierarch_vulkan_draw cursor_draw;
         bool cursor_set = false;
         if (server->cursor_visible && server->cursor_surface &&
@@ -879,6 +964,7 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
                 .width = cursor->width,
                 .height = cursor->height,
                 .stride = cursor->stride,
+                .offset = cursor->dmabuf_offset,
                 .format = cursor->format,
                 .modifier = cursor->dmabuf_modifier,
                 .dst_x = (int)(wl_fixed_to_double(server->pointer_x) -
@@ -890,21 +976,48 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
             };
             cursor_set = true;
         }
+        if (!best && !use_scene) {
+            static int64_t last_empty_log;
+            int64_t now = monotonic_ns();
+            if (now - last_empty_log >= 1000000000LL) {
+                last_empty_log = now;
+                LOGI("Vulkan scene has no usable surface: roots=%d draws=%d shm=%d",
+                        roots, scene_count, scene_has_shm ? 1 : 0);
+            }
+            return false;
+        }
         static int64_t last_scene_log;
         int64_t now = monotonic_ns();
         if (now - last_scene_log >= 1000000000LL) {
             last_scene_log = now;
-            LOGI("Vulkan scene surface=%p xdg=%d layer=%d sub=%d size=%dx%d roots=%d shm=%d",
-                    (void *)best, best->xdg_toplevel ? 1 : 0,
-                    best->layer_surface ? 1 : 0, best->parent ? 1 : 0,
-                    buffer->width, buffer->height, roots, buffer->dmabuf ? 0 : 1);
+            if (use_scene) {
+                LOGI("Vulkan scene draws=%d extent=%dx%d shm=%d best=%p",
+                        scene_count, scene_width, scene_height,
+                        scene_has_shm ? 1 : 0, (void *)best);
+                for (int i = 0; i < scene_count; i++)
+                    LOGI("Vulkan scene draw[%d] key=%llu dst=%d,%d %dx%d src=%dx%d",
+                            i, scene_draws[i].key, scene_draws[i].dst_x,
+                            scene_draws[i].dst_y, scene_draws[i].dst_width,
+                            scene_draws[i].dst_height, scene_draws[i].width,
+                            scene_draws[i].height);
+            } else if (buffer) {
+                LOGI("Vulkan scene surface=%p xdg=%d layer=%d sub=%d size=%dx%d roots=%d shm=%d",
+                        (void *)best, best->xdg_toplevel ? 1 : 0,
+                        best->layer_surface ? 1 : 0, best->parent ? 1 : 0,
+                        buffer->width, buffer->height, roots, buffer->dmabuf ? 0 : 1);
+            }
         }
         trierarch_surface_latch_frame_callbacks(server);
         trierarch_vulkan_presenter_set_cursor(
                 (trierarch_vulkan_presenter *)renderer->vulkan,
                 cursor_set ? &cursor_draw : NULL);
         int result;
-        if (buffer->dmabuf) {
+        if (use_scene) {
+            result = trierarch_vulkan_presenter_present_scene(
+                    (trierarch_vulkan_presenter *)renderer->vulkan,
+                    scene_draws, scene_count, scene_width, scene_height,
+                    cursor_set ? &cursor_draw : NULL);
+        } else if (buffer->dmabuf) {
             result = trierarch_vulkan_presenter_present_keyed(
                     (trierarch_vulkan_presenter *)renderer->vulkan,
                     buffer->serial, buffer->dmabuf_fd, buffer->width,
