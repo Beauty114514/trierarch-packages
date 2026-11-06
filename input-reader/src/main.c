@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -33,7 +34,8 @@
 #define MAX_DEVICES 8
 #define FRAME_MAGIC 0x54524b42u /* "TRKB" */
 #define POLL_MS 250
-#define SCAN_MS 1000
+#define OWNER_CHECK_MS 1000
+#define RESCAN_MS 30000
 
 struct key_frame {
     uint32_t magic;
@@ -284,6 +286,32 @@ static bool owner_alive(void) {
     return errno == EPERM;
 }
 
+static int64_t monotonic_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static int open_input_watch(void) {
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (fd < 0) {
+        log_line("inotify_init1 failed: %s", strerror(errno));
+        return -1;
+    }
+    if (inotify_add_watch(fd, "/dev/input",
+            IN_CREATE | IN_DELETE | IN_ATTRIB | IN_MOVED_FROM | IN_MOVED_TO) < 0) {
+        log_line("inotify_add_watch(/dev/input) failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void drain_input_watch(int fd) {
+    char buffer[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+    while (read(fd, buffer, sizeof(buffer)) > 0) {}
+}
+
 static void usage(const char *program) {
     fprintf(stderr, "usage: %s [--owner-pid PID] [--verbose]\n", program);
 }
@@ -312,11 +340,44 @@ int main(int argc, char **argv) {
         devices[index].active = false;
     }
 
+    // Opening every /dev/input/event* node once per second closes the
+    // non-keyboard ones again immediately; each evdev_release calls
+    // synchronize_rcu() and a few of those per scan are enough to keep the
+    // RCU worker busy all the time.  Watch the directory instead and keep a
+    // slow safety rescan for devices that appear without an inotify event.
+    int watch_fd = open_input_watch();
+    int64_t next_rescan_ms = 0;
     while (running && owner_alive() && control_stdin_open()) {
-        scan_devices();
-        struct timespec delay = {.tv_sec = 0, .tv_nsec = SCAN_MS * 1000000L};
-        while (nanosleep(&delay, &delay) != 0 && errno == EINTR && running) {}
+        int64_t now = monotonic_ms();
+        if (now >= next_rescan_ms) {
+            scan_devices();
+            next_rescan_ms = now + RESCAN_MS;
+        }
+        if (watch_fd >= 0) {
+            int64_t until_rescan_ms = next_rescan_ms - monotonic_ms();
+            int timeout_ms = OWNER_CHECK_MS;
+            if (until_rescan_ms < timeout_ms) timeout_ms = (int)until_rescan_ms;
+            if (timeout_ms < 0) timeout_ms = 0;
+            struct pollfd watch = {.fd = watch_fd, .events = POLLIN};
+            int result = poll(&watch, 1, timeout_ms);
+            if (result > 0 && (watch.revents & POLLIN)) {
+                drain_input_watch(watch_fd);
+                scan_devices();
+                next_rescan_ms = monotonic_ms() + RESCAN_MS;
+            } else if (result < 0 && errno != EINTR) {
+                log_line("inotify poll failed: %s; using periodic rescan",
+                        strerror(errno));
+                close(watch_fd);
+                watch_fd = -1;
+            }
+        } else {
+            struct timespec delay = {
+                .tv_sec = 0, .tv_nsec = OWNER_CHECK_MS * 1000000L,
+            };
+            while (nanosleep(&delay, &delay) != 0 && errno == EINTR && running) {}
+        }
     }
+    if (watch_fd >= 0) close(watch_fd);
 
     running = 0;
     // Readers notice this within one poll interval and release EVIOCGRAB.
