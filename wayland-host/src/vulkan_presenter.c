@@ -735,7 +735,9 @@ struct trierarch_vulkan_presenter {
     VkSampler cursor_sampler;
     VkImageView *swap_views;
     VkFramebuffer *swap_framebuffers;
+    VkImage *swap_images;
     uint32_t swap_image_count;
+    VkPhysicalDeviceMemoryProperties memory_properties;
     struct trierarch_vulkan_draw cursor_draw;
     bool cursor_set;
 };
@@ -789,8 +791,10 @@ static void presenter_destroy_swapchain_resources(trierarch_vulkan_presenter *pr
     }
     free(presenter->swap_framebuffers);
     free(presenter->swap_views);
+    free(presenter->swap_images);
     presenter->swap_framebuffers = NULL;
     presenter->swap_views = NULL;
+    presenter->swap_images = NULL;
     presenter->swap_image_count = 0;
 }
 
@@ -956,22 +960,33 @@ static bool presenter_create_swapchain_resources(trierarch_vulkan_presenter *pre
     uint32_t count = 0;
     presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &count, NULL);
     if (!count) return false;
-    VkImage *images = calloc(count, sizeof(*images));
+    presenter->swap_images = calloc(count, sizeof(*presenter->swap_images));
     presenter->swap_views = calloc(count, sizeof(*presenter->swap_views));
     presenter->swap_framebuffers = calloc(count, sizeof(*presenter->swap_framebuffers));
     presenter->swap_image_count = count;
-    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &count, images);
-    if (!presenter_create_cursor_pipeline(presenter)) { free(images); return false; }
+    if (!presenter->swap_images || !presenter->swap_views || !presenter->swap_framebuffers) {
+        presenter_destroy_swapchain_resources(presenter);
+        return false;
+    }
+    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &count,
+            presenter->swap_images);
+    if (!presenter_create_cursor_pipeline(presenter)) {
+        presenter_destroy_swapchain_resources(presenter);
+        return false;
+    }
     for (uint32_t i = 0; i < count; i++) {
         VkImageViewCreateInfo view_info = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = images[i],
+            .image = presenter->swap_images[i],
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
             .format = presenter->format,
             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
         };
         if (presenter->api.CreateImageView(presenter->device, &view_info, NULL,
-                &presenter->swap_views[i]) != VK_SUCCESS) { free(images); return false; }
+                &presenter->swap_views[i]) != VK_SUCCESS) {
+            presenter_destroy_swapchain_resources(presenter);
+            return false;
+        }
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = presenter->cursor_pass,
@@ -980,9 +995,11 @@ static bool presenter_create_swapchain_resources(trierarch_vulkan_presenter *pre
             .layers = 1,
         };
         if (presenter->api.CreateFramebuffer(presenter->device, &framebuffer_info, NULL,
-                &presenter->swap_framebuffers[i]) != VK_SUCCESS) { free(images); return false; }
+                &presenter->swap_framebuffers[i]) != VK_SUCCESS) {
+            presenter_destroy_swapchain_resources(presenter);
+            return false;
+        }
     }
-    free(images);
     return true;
 }
 
@@ -1040,8 +1057,12 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
             &replacement) != VK_SUCCESS) {
         return false;
     }
-    if (presenter->swapchain)
+    if (presenter->swapchain) {
+        /* Views and framebuffers reference the old swapchain images; they must
+         * go before the swapchain itself. */
+        presenter_destroy_swapchain_resources(presenter);
         presenter->api.DestroySwapchainKHR(presenter->device, presenter->swapchain, NULL);
+    }
     presenter->swapchain = replacement;
     presenter->extent = extent;
     presenter->format = chosen.format;
@@ -1138,6 +1159,8 @@ trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *win
         .enabledExtensionCount = 3, .ppEnabledExtensionNames = device_extensions,
     };
     presenter->physical = physical;
+    presenter->api.GetPhysicalDeviceMemoryProperties(physical,
+            &presenter->memory_properties);
     presenter->window = window;
     if (presenter->api.CreateDevice(physical, &device_info, NULL, &presenter->device) != VK_SUCCESS)
         goto fail;
@@ -1273,11 +1296,12 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         presenter->api.DestroyImage(presenter->device, source, NULL);
         return -1;
     }
-    uint32_t swap_count = 0;
-    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &swap_count, NULL);
-    VkImage *swap_images = calloc(swap_count, sizeof(*swap_images));
-    presenter->api.GetSwapchainImagesKHR(presenter->device, presenter->swapchain, &swap_count, swap_images);
-    VkImage target = swap_images[image_index];
+    if (image_index >= presenter->swap_image_count || !presenter->swap_images) {
+        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+        presenter->api.DestroyImage(presenter->device, source, NULL);
+        return -1;
+    }
+    VkImage target = presenter->swap_images[image_index];
     VkImage cursor_image = VK_NULL_HANDLE;
     VkDeviceMemory cursor_memory = VK_NULL_HANDLE;
     VkImageView cursor_view = VK_NULL_HANDLE;
@@ -1415,7 +1439,10 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         presented = vk == VK_SUCCESS || vk == VK_SUBOPTIMAL_KHR;
     }
     if (presented) {
-        presenter->api.QueueWaitIdle(presenter->queue);
+        /* The source and cursor images are only read by the submitted blit,
+         * which the wait above completed.  The swapchain image is owned by the
+         * swapchain and the next AcquireNextImageKHR provides the pacing; do
+         * not stall the render thread on presentation itself. */
         presenter->frames_presented++;
         int64_t now = presenter_now_ns();
         if (presenter->frames_presented == 1 ||
@@ -1433,7 +1460,6 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
     } else {
         LOGI("Vulkan presenter frame failed result=%d image=%u", vk, image_index);
     }
-    free(swap_images);
     if (draw_cursor) {
         presenter->api.DestroyImageView(presenter->device, cursor_view, NULL);
         presenter->api.FreeMemory(presenter->device, cursor_memory, NULL);
@@ -1496,17 +1522,14 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
         .allocationSize = requirements.size,
         .memoryTypeIndex = 0,
     };
-    /* The first compatible type is found through the device's memory props. */
-    VkPhysicalDeviceMemoryProperties memory_properties;
-    VkPhysicalDevice physical = VK_NULL_HANDLE;
-    uint32_t device_count = 0;
-    presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, NULL);
-    if (device_count) presenter->api.EnumeratePhysicalDevices(presenter->instance, &device_count, &physical);
-    presenter->api.GetPhysicalDeviceMemoryProperties(physical, &memory_properties);
-    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
+    /* The first compatible type is found through the device's cached memory
+     * properties; enumerating the physical device for every frame is not
+     * needed and costs a driver round trip. */
+    for (uint32_t i = 0; i < presenter->memory_properties.memoryTypeCount; i++) {
         if ((requirements.memoryTypeBits & (1u << i)) &&
                 (fd_props.memoryTypeBits & (1u << i)) &&
-                (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                (presenter->memory_properties.memoryTypes[i].propertyFlags &
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
             allocate.memoryTypeIndex = i;
             break;
         }
