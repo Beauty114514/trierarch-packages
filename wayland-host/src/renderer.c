@@ -800,6 +800,46 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         struct compositor_surface *best = NULL;
         long long best_area = 0;
         int roots = 0;
+        static int64_t last_tree_log;
+        int64_t tree_now = monotonic_ns();
+        if (tree_now - last_tree_log >= 1000000000LL) {
+            last_tree_log = tree_now;
+            int logged = 0;
+            struct compositor_surface *entry;
+            wl_list_for_each(entry, &server->surfaces, link) {
+                if (logged++ >= 64) {
+                    LOGI("Vulkan surface tree truncated (%d shown)", 64);
+                    break;
+                }
+                int depth = 0;
+                struct compositor_surface *parent = entry->parent;
+                while (parent && depth < 8) {
+                    depth++;
+                    parent = parent->parent;
+                }
+                struct shm_buffer *b = entry->current;
+                LOGI("Vulkan surface[%d] %p wl=%p parent=%p depth=%d mapped=%d cursor=%d "
+                        "xdg=%d layer=%d sub=%d layer_kind=%u pos=%d,%d subpos=%d,%d "
+                        "scale=%d size=%dx%d buf=%p serial=%llu fd=%d bw=%d bh=%d "
+                        "stride=%d off=%u fmt=0x%x mod=0x%llx dmabuf=%d vp_dst=%dx%d",
+                        logged - 1, (void *)entry, (void *)entry->wl_surface,
+                        (void *)entry->parent, depth, entry->mapped ? 1 : 0,
+                        entry->is_cursor ? 1 : 0, entry->xdg_toplevel ? 1 : 0,
+                        entry->layer_surface ? 1 : 0, entry->parent ? 1 : 0,
+                        entry->layer_kind, entry->layer_x, entry->layer_y,
+                        entry->subsurface_x, entry->subsurface_y,
+                        entry->buffer_scale, entry->width, entry->height,
+                        (void *)b, b ? (unsigned long long)b->serial : 0ULL,
+                        b ? b->dmabuf_fd : -1, b ? b->width : 0,
+                        b ? b->height : 0, b ? b->stride : 0,
+                        b ? b->dmabuf_offset : 0,
+                        b ? b->format : 0,
+                        b ? (unsigned long long)b->dmabuf_modifier : 0ULL,
+                        b ? (b->dmabuf ? 1 : 0) : 0,
+                        entry->viewport_destination_set ? entry->viewport_destination_width : 0,
+                        entry->viewport_destination_set ? entry->viewport_destination_height : 0);
+            }
+        }
         wl_list_for_each(surface, &server->surfaces, link) {
             if (!surface->mapped || !surface->current ||
                     surface == server->cursor_surface || surface->is_cursor)
