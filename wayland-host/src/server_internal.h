@@ -82,6 +82,8 @@ struct shm_buffer {
     size_t dmabuf_mapping_size;
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
+    /* Unique per imported dma-buf, used as the Vulkan import-cache key. */
+    uint64_t serial;
     struct wayland_server *server;
     /* Number of queued deferred-release entries that hold a reference to this
      * buffer.  This is diagnostic only: the release queue itself owns the

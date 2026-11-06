@@ -37,6 +37,8 @@ struct dmabuf_params {
     bool used;
 };
 
+static uint64_t next_dmabuf_serial;
+
 static bool supported_format(uint32_t format) {
     return format == TRIERARCH_DRM_FORMAT_XRGB8888 ||
             format == TRIERARCH_DRM_FORMAT_ARGB8888 ||
@@ -105,6 +107,7 @@ static struct shm_buffer *make_dmabuf_buffer(struct wl_client *client,
         return NULL;
     }
     buffer->references = 1;
+    buffer->serial = __atomic_add_fetch(&next_dmabuf_serial, 1, __ATOMIC_RELAXED);
     buffer->destroy = trierarch_buffer_destroy_storage;
     buffer->dmabuf = true;
     buffer->tvg_token = tvg_token;

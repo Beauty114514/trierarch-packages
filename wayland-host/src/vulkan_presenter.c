@@ -707,6 +707,20 @@ cleanup_handle:
 /* ------------------------------------------------------------------------- */
 /* Persistent production presenter                                             */
 
+#define VULKAN_IMPORT_CACHE_SIZE 8
+
+struct dmabuf_import {
+    unsigned long long key;
+    int width;
+    int height;
+    unsigned int format;
+    unsigned long long modifier;
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageLayout layout;
+    unsigned long long last_used;
+};
+
 struct trierarch_vulkan_presenter {
     struct vk_api api;
     void *adrenotools;
@@ -738,6 +752,11 @@ struct trierarch_vulkan_presenter {
     VkImage *swap_images;
     uint32_t swap_image_count;
     VkPhysicalDeviceMemoryProperties memory_properties;
+    struct dmabuf_import imports[VULKAN_IMPORT_CACHE_SIZE];
+    unsigned int import_count;
+    unsigned long long import_clock;
+    unsigned long long import_hits;
+    unsigned long long import_misses;
     struct trierarch_vulkan_draw cursor_draw;
     bool cursor_set;
 };
@@ -747,10 +766,13 @@ bool trierarch_vulkan_presenter_configured(void) {
 }
 
 static void presenter_destroy_swapchain_resources(trierarch_vulkan_presenter *presenter);
+static void presenter_destroy_imports(trierarch_vulkan_presenter *presenter);
 
 static void destroy_presenter_objects(trierarch_vulkan_presenter *presenter) {
     if (!presenter) return;
+    if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
     presenter_destroy_swapchain_resources(presenter);
+    presenter_destroy_imports(presenter);
     if (presenter->device) {
         if (presenter->cursor_sampler) presenter->api.DestroySampler(presenter->device, presenter->cursor_sampler, NULL);
         if (presenter->cursor_descriptor_pool) presenter->api.DestroyDescriptorPool(presenter->device, presenter->cursor_descriptor_pool, NULL);
@@ -1277,8 +1299,165 @@ static bool presenter_import_cursor(trierarch_vulkan_presenter *presenter,
     return true;
 }
 
+static void presenter_destroy_import(trierarch_vulkan_presenter *presenter,
+        struct dmabuf_import *import) {
+    if (!presenter || !import) return;
+    if (presenter->device) {
+        if (import->image)
+            presenter->api.DestroyImage(presenter->device, import->image, NULL);
+        if (import->memory)
+            presenter->api.FreeMemory(presenter->device, import->memory, NULL);
+    }
+    memset(import, 0, sizeof(*import));
+}
+
+static void presenter_destroy_imports(trierarch_vulkan_presenter *presenter) {
+    if (!presenter) return;
+    if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
+    for (unsigned int i = 0; i < presenter->import_count; i++)
+        presenter_destroy_import(presenter, &presenter->imports[i]);
+    presenter->import_count = 0;
+}
+
+static struct dmabuf_import *presenter_find_import(
+        trierarch_vulkan_presenter *presenter, unsigned long long key,
+        int width, int height, unsigned int format, unsigned long long modifier) {
+    if (!key) return NULL;
+    for (unsigned int i = 0; i < presenter->import_count; i++) {
+        struct dmabuf_import *import = &presenter->imports[i];
+        if (import->key != key) continue;
+        if (import->width == width && import->height == height &&
+                import->format == format && import->modifier == modifier)
+            return import;
+        /* The buffer key was reused for a different description.  Drop the
+         * stale image before importing the new one. */
+        if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
+        presenter_destroy_import(presenter, import);
+        presenter->imports[i] = presenter->imports[--presenter->import_count];
+        return NULL;
+    }
+    return NULL;
+}
+
+static bool presenter_create_import(trierarch_vulkan_presenter *presenter,
+        unsigned long long key, int fd, int width, int height, int stride,
+        unsigned int format, unsigned long long modifier,
+        struct dmabuf_import *out) {
+    (void)stride;
+    memset(out, 0, sizeof(*out));
+    VkFormat vk_format = probe_format(format);
+    if (vk_format == VK_FORMAT_UNDEFINED) return false;
+    VkExternalMemoryImageCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = vk_format,
+        .extent = {(uint32_t)width, (uint32_t)height, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_LINEAR,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImage image = VK_NULL_HANDLE;
+    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &image) != VK_SUCCESS)
+        return false;
+    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
+    if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_props) != VK_SUCCESS) {
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    VkMemoryRequirements requirements;
+    presenter->api.GetImageMemoryRequirements(presenter->device, image, &requirements);
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = image,
+    };
+    int imported_fd = dup(fd);
+    if (imported_fd < 0) {
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    VkImportMemoryFdInfoKHR import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = imported_fd,
+        .pNext = &dedicated,
+    };
+    VkMemoryAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &import,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = 0,
+    };
+    for (uint32_t i = 0; i < presenter->memory_properties.memoryTypeCount; i++) {
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+                (fd_props.memoryTypeBits & (1u << i)) &&
+                (presenter->memory_properties.memoryTypes[i].propertyFlags &
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            allocate.memoryTypeIndex = i;
+            break;
+        }
+    }
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &memory) != VK_SUCCESS) {
+        close(imported_fd);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    if (presenter->api.BindImageMemory(presenter->device, image, memory, 0) != VK_SUCCESS) {
+        presenter->api.FreeMemory(presenter->device, memory, NULL);
+        presenter->api.DestroyImage(presenter->device, image, NULL);
+        return false;
+    }
+    out->key = key;
+    out->width = width;
+    out->height = height;
+    out->format = format;
+    out->modifier = modifier;
+    out->image = image;
+    out->memory = memory;
+    out->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    return true;
+}
+
+static struct dmabuf_import *presenter_get_import(trierarch_vulkan_presenter *presenter,
+        unsigned long long key, int fd, int width, int height, int stride,
+        unsigned int format, unsigned long long modifier) {
+    struct dmabuf_import *import = presenter_find_import(presenter, key,
+            width, height, format, modifier);
+    if (import) {
+        import->last_used = ++presenter->import_clock;
+        presenter->import_hits++;
+        return import;
+    }
+    if (presenter->import_count >= VULKAN_IMPORT_CACHE_SIZE) {
+        unsigned int oldest = 0;
+        for (unsigned int i = 1; i < presenter->import_count; i++) {
+            if (presenter->imports[i].last_used < presenter->imports[oldest].last_used)
+                oldest = i;
+        }
+        if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
+        presenter_destroy_import(presenter, &presenter->imports[oldest]);
+        presenter->imports[oldest] = presenter->imports[--presenter->import_count];
+    }
+    import = &presenter->imports[presenter->import_count];
+    if (!presenter_create_import(presenter, key, fd, width, height, stride,
+            format, modifier, import))
+        return NULL;
+    import->last_used = ++presenter->import_clock;
+    presenter->import_count++;
+    presenter->import_misses++;
+    return import;
+}
+
 static int presenter_present_source(trierarch_vulkan_presenter *presenter,
-        VkImage source, VkDeviceMemory source_memory, int width, int height) {
+        struct dmabuf_import *import, int width, int height) {
     uint32_t image_index = 0;
     VkResult vk = presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
             UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index);
@@ -1287,20 +1466,14 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         if (!presenter_create_swapchain(presenter) ||
                 presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
                         UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index) != VK_SUCCESS) {
-            presenter->api.FreeMemory(presenter->device, source_memory, NULL);
-            presenter->api.DestroyImage(presenter->device, source, NULL);
             return -1;
         }
     } else if (vk != VK_SUCCESS) {
-        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
-        presenter->api.DestroyImage(presenter->device, source, NULL);
         return -1;
     }
-    if (image_index >= presenter->swap_image_count || !presenter->swap_images) {
-        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
-        presenter->api.DestroyImage(presenter->device, source, NULL);
+    if (image_index >= presenter->swap_image_count || !presenter->swap_images)
         return -1;
-    }
+    VkImage source = import->image;
     VkImage target = presenter->swap_images[image_index];
     VkImage cursor_image = VK_NULL_HANDLE;
     VkDeviceMemory cursor_memory = VK_NULL_HANDLE;
@@ -1328,7 +1501,7 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
     presenter->api.BeginCommandBuffer(presenter->command, &begin);
     VkImageMemoryBarrier source_barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .oldLayout = import->layout,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1428,6 +1601,7 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
     };
     vk = presenter->api.QueueSubmit(presenter->queue, 1, &submit, VK_NULL_HANDLE);
     if (vk == VK_SUCCESS) vk = presenter->api.QueueWaitIdle(presenter->queue);
+    if (vk == VK_SUCCESS) import->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     VkPresentInfoKHR present = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .swapchainCount = 1, .pSwapchains = &presenter->swapchain,
@@ -1441,17 +1615,18 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
     if (presented) {
         /* The source and cursor images are only read by the submitted blit,
          * which the wait above completed.  The swapchain image is owned by the
-         * swapchain and the next AcquireNextImageKHR provides the pacing; do
-         * not stall the render thread on presentation itself. */
+         * swapchain; the next AcquireNextImageKHR provides the pacing. */
         presenter->frames_presented++;
         int64_t now = presenter_now_ns();
         if (presenter->frames_presented == 1 ||
                 now - presenter->last_present_log_ns >= 1000000000LL) {
             presenter->last_present_log_ns = now;
-            LOGI("Vulkan frame presented #%llu image=%u size=%ux%u suboptimal=%d",
+            LOGI("Vulkan frame presented #%llu image=%u size=%ux%u suboptimal=%d "
+                    "cache=%llu/%llu",
                     presenter->frames_presented, image_index,
                     presenter->extent.width, presenter->extent.height,
-                    vk == VK_SUBOPTIMAL_KHR ? 1 : 0);
+                    vk == VK_SUBOPTIMAL_KHR ? 1 : 0,
+                    presenter->import_hits, presenter->import_misses);
         }
         if (vk == VK_SUBOPTIMAL_KHR) presenter->suboptimal_frames++;
     } else if (vk == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -1465,88 +1640,36 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         presenter->api.FreeMemory(presenter->device, cursor_memory, NULL);
         presenter->api.DestroyImage(presenter->device, cursor_image, NULL);
     }
-    presenter->api.FreeMemory(presenter->device, source_memory, NULL);
-    presenter->api.DestroyImage(presenter->device, source, NULL);
     presenter->cursor_set = false;
     return vk == VK_SUCCESS ? 0 : -1;
+}
+
+int trierarch_vulkan_presenter_present_keyed(trierarch_vulkan_presenter *presenter,
+        unsigned long long key, int fd, int width, int height, int stride,
+        unsigned int format, unsigned long long modifier) {
+    if (!presenter || fd < 0 || width <= 0 || height <= 0) return -1;
+    struct dmabuf_import temporary;
+    struct dmabuf_import *import = NULL;
+    if (key) {
+        import = presenter_get_import(presenter, key, fd, width, height, stride,
+                format, modifier);
+        if (!import) return -1;
+    } else {
+        if (!presenter_create_import(presenter, 0, fd, width, height, stride,
+                format, modifier, &temporary))
+            return -1;
+        import = &temporary;
+    }
+    int result = presenter_present_source(presenter, import, width, height);
+    if (!key) presenter_destroy_import(presenter, &temporary);
+    return result;
 }
 
 int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
         int fd, int width, int height, int stride, unsigned int format,
         unsigned long long modifier) {
-    (void)stride; (void)modifier;
-    if (!presenter || fd < 0 || width <= 0 || height <= 0) return -1;
-    VkFormat vk_format = probe_format(format);
-    if (vk_format == VK_FORMAT_UNDEFINED) return -1;
-    VkExternalMemoryImageCreateInfo external = {
-        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-    };
-    VkImageCreateInfo image_info = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = &external,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = vk_format,
-        .extent = {(uint32_t)width, (uint32_t)height, 1},
-        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_LINEAR,
-        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    VkImage source = VK_NULL_HANDLE;
-    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &source) != VK_SUCCESS)
-        return -1;
-    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
-    if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
-            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_props) != VK_SUCCESS) {
-        presenter->api.DestroyImage(presenter->device, source, NULL);
-        return -1;
-    }
-    VkMemoryRequirements requirements;
-    presenter->api.GetImageMemoryRequirements(presenter->device, source, &requirements);
-    VkMemoryDedicatedAllocateInfo dedicated = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-        .image = source,
-    };
-    int imported_fd = dup(fd);
-    VkImportMemoryFdInfoKHR import = {
-        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
-        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-        .fd = imported_fd,
-        .pNext = &dedicated,
-    };
-    VkMemoryAllocateInfo allocate = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &import,
-        .allocationSize = requirements.size,
-        .memoryTypeIndex = 0,
-    };
-    /* The first compatible type is found through the device's cached memory
-     * properties; enumerating the physical device for every frame is not
-     * needed and costs a driver round trip. */
-    for (uint32_t i = 0; i < presenter->memory_properties.memoryTypeCount; i++) {
-        if ((requirements.memoryTypeBits & (1u << i)) &&
-                (fd_props.memoryTypeBits & (1u << i)) &&
-                (presenter->memory_properties.memoryTypes[i].propertyFlags &
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-            allocate.memoryTypeIndex = i;
-            break;
-        }
-    }
-    VkDeviceMemory source_memory = VK_NULL_HANDLE;
-    if (presenter->api.AllocateMemory(presenter->device, &allocate, NULL, &source_memory) != VK_SUCCESS) {
-        close(imported_fd);
-        presenter->api.DestroyImage(presenter->device, source, NULL);
-        return -1;
-    }
-    if (presenter->api.BindImageMemory(presenter->device, source, source_memory, 0) != VK_SUCCESS) {
-        presenter->api.FreeMemory(presenter->device, source_memory, NULL);
-        presenter->api.DestroyImage(presenter->device, source, NULL);
-        return -1;
-    }
-
-    return presenter_present_source(presenter, source, source_memory, width, height);
+    return trierarch_vulkan_presenter_present_keyed(presenter, 0, fd, width,
+            height, stride, format, modifier);
 }
 
 static bool presenter_create_shm_image(trierarch_vulkan_presenter *presenter,
@@ -1629,7 +1752,17 @@ int trierarch_vulkan_presenter_present_shm(trierarch_vulkan_presenter *presenter
     VkDeviceMemory source_memory = VK_NULL_HANDLE;
     if (!presenter_create_shm_image(presenter, data, width, height, stride, format,
             &source, &source_memory)) return -1;
-    return presenter_present_source(presenter, source, source_memory, width, height);
+    struct dmabuf_import temporary = {
+        .width = width,
+        .height = height,
+        .image = source,
+        .memory = source_memory,
+        .layout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    int result = presenter_present_source(presenter, &temporary, width, height);
+    presenter->api.FreeMemory(presenter->device, source_memory, NULL);
+    presenter->api.DestroyImage(presenter->device, source, NULL);
+    return result;
 }
 
 void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter,

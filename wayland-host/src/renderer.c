@@ -865,10 +865,11 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
                 cursor_set ? &cursor_draw : NULL);
         int result;
         if (buffer->dmabuf) {
-            result = trierarch_vulkan_presenter_present(
+            result = trierarch_vulkan_presenter_present_keyed(
                     (trierarch_vulkan_presenter *)renderer->vulkan,
-                    buffer->dmabuf_fd, buffer->width, buffer->height, buffer->stride,
-                    buffer->format, buffer->dmabuf_modifier);
+                    buffer->serial, buffer->dmabuf_fd, buffer->width,
+                    buffer->height, buffer->stride, buffer->format,
+                    buffer->dmabuf_modifier);
         } else {
             result = trierarch_vulkan_presenter_present_shm(
                     (trierarch_vulkan_presenter *)renderer->vulkan,
