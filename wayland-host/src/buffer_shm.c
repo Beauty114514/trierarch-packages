@@ -23,58 +23,163 @@ struct shm_pool {
 
 static void pool_unref(struct shm_pool *pool);
 
-/* Buffers replaced by a new commit are kept here until the renderer has
- * completed the frame that could still have sampled them.  Sending
- * wl_buffer.release at commit time lets the client reuse the buffer while the
- * host GPU is still reading it. */
-static pthread_mutex_t deferred_release_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct shm_buffer *deferred_releases;
+/* Buffers replaced by a new commit keep the reference the surface held until
+ * the renderer has completed every frame that could still have sampled them.
+ * Entries start on a "pending" list and are moved to a "ready" list at that
+ * safe point; the release timer then returns them to the client at the output
+ * cadence.  A separate entry per defer (rather than a pointer inside
+ * shm_buffer) is required: a client may attach the same wl_buffer again before
+ * its release arrives, and every commit transfers another reference. */
+struct deferred_release_entry {
+    struct shm_buffer *buffer;
+    struct deferred_release_entry *next;
+    uint64_t release_at_ns;
+};
 
-static bool deferred_contains(struct shm_buffer *buffer) {
-    unsigned int scanned = 0;
-    for (struct shm_buffer *entry = deferred_releases; entry && scanned < 1024;
-            entry = entry->deferred_next, scanned++) {
-        if (entry == buffer) return true;
-    }
-    return false;
+static pthread_mutex_t deferred_release_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct deferred_release_entry *deferred_pending_head;
+static struct deferred_release_entry *deferred_pending_tail;
+static unsigned int deferred_pending_count;
+static struct deferred_release_entry *deferred_ready_head;
+static struct deferred_release_entry *deferred_ready_tail;
+static unsigned int deferred_ready_count;
+static uint64_t deferred_last_release_ns;
+
+static void release_entry(struct deferred_release_entry *entry) {
+    struct shm_buffer *buffer = entry->buffer;
+    free(entry);
+    if (!buffer) return;
+    if (buffer->deferred_refs > 0) buffer->deferred_refs--;
+    if (buffer->server) buffer->server->diag_deferred_flushed++;
+    trierarch_shm_buffer_release(buffer);
+    trierarch_buffer_unref(buffer);
+}
+
+unsigned int trierarch_deferred_release_count(void) {
+    pthread_mutex_lock(&deferred_release_lock);
+    const unsigned int count = deferred_pending_count;
+    pthread_mutex_unlock(&deferred_release_lock);
+    return count;
 }
 
 void trierarch_defer_buffer_release(struct shm_buffer *buffer) {
-    if (!buffer)
+    if (!buffer) return;
+    struct deferred_release_entry *entry = calloc(1, sizeof(*entry));
+    if (!entry) {
+        /* Without an entry the surface's reference has nowhere to go.  This
+         * is the OOM path; return the buffer rather than pinning it forever. */
+        if (buffer->server) buffer->server->diag_deferred_overflow++;
+        LOGW("deferred release allocation failed; releasing buffer=%p now",
+                (void *)buffer);
+        trierarch_shm_buffer_release(buffer);
+        trierarch_buffer_unref(buffer);
         return;
+    }
+    entry->buffer = buffer;
     pthread_mutex_lock(&deferred_release_lock);
-    const bool duplicate = deferred_contains(buffer);
+    if (deferred_pending_tail) deferred_pending_tail->next = entry;
+    else deferred_pending_head = entry;
+    deferred_pending_tail = entry;
+    deferred_pending_count++;
+    const unsigned int depth = deferred_pending_count + deferred_ready_count;
+    buffer->deferred_refs++;
+    pthread_mutex_unlock(&deferred_release_lock);
+
     if (buffer->server) {
         buffer->server->diag_deferred_enqueued++;
-        if (duplicate) buffer->server->diag_deferred_duplicates++;
+        if (buffer->deferred_refs > 1)
+            buffer->server->diag_deferred_duplicates++;
+        if (buffer->server->diag_deferred_depth_max < depth)
+            buffer->server->diag_deferred_depth_max = depth;
+        if (depth > TRIERARCH_MAX_DEFERRED_RELEASES) {
+            buffer->server->diag_deferred_overflow++;
+            if (buffer->server->diag_deferred_overflow <= 8)
+                LOGW("deferred release backlog depth=%u; dropping pacing", depth);
+        }
+        if (buffer->server->diag_deferred_enqueued <= 8)
+            LOGI("deferred release enqueue buffer=%p %dx%d refs=%u busy=%u depth=%u",
+                    (void *)buffer, buffer->width, buffer->height,
+                    buffer->references, buffer->busy_users, depth);
     }
-    if (duplicate && buffer->server && buffer->server->diag_deferred_duplicates <= 8) {
-        LOGW("deferred release already queued buffer=%p refs=%u busy=%u depth-scan-hit",
-                (void *)buffer, buffer->references, buffer->busy_users);
-    } else if (!duplicate && buffer->server && buffer->server->diag_deferred_enqueued <= 8) {
-        LOGI("deferred release enqueue buffer=%p %dx%d refs=%u busy=%u",
-                (void *)buffer, buffer->width, buffer->height,
-                buffer->references, buffer->busy_users);
+}
+
+uint64_t trierarch_mark_deferred_releases_ready(uint64_t now_ns,
+        uint64_t interval_ns) {
+    pthread_mutex_lock(&deferred_release_lock);
+    if (!deferred_pending_head) {
+        const uint64_t next = deferred_ready_head
+                ? deferred_ready_head->release_at_ns : 0;
+        pthread_mutex_unlock(&deferred_release_lock);
+        return next;
     }
-    buffer->deferred_next = deferred_releases;
-    deferred_releases = buffer;
+    uint64_t release_at = now_ns;
+    if (interval_ns && release_at < deferred_last_release_ns + interval_ns)
+        release_at = deferred_last_release_ns + interval_ns;
+    deferred_last_release_ns = release_at;
+    for (struct deferred_release_entry *entry = deferred_pending_head; entry;
+            entry = entry->next)
+        entry->release_at_ns = release_at;
+    if (deferred_ready_tail) deferred_ready_tail->next = deferred_pending_head;
+    else deferred_ready_head = deferred_pending_head;
+    deferred_ready_tail = deferred_pending_tail;
+    deferred_ready_count += deferred_pending_count;
+    deferred_pending_head = deferred_pending_tail = NULL;
+    deferred_pending_count = 0;
+    const uint64_t next = deferred_ready_head->release_at_ns;
     pthread_mutex_unlock(&deferred_release_lock);
+    return next;
+}
+
+uint64_t trierarch_release_ready_releases(uint64_t now_ns) {
+    pthread_mutex_lock(&deferred_release_lock);
+    struct deferred_release_entry *due = NULL;
+    struct deferred_release_entry **due_tail = &due;
+    while (deferred_ready_head && deferred_ready_head->release_at_ns <= now_ns) {
+        struct deferred_release_entry *entry = deferred_ready_head;
+        deferred_ready_head = entry->next;
+        if (!deferred_ready_head) deferred_ready_tail = NULL;
+        deferred_ready_count--;
+        entry->next = NULL;
+        *due_tail = entry;
+        due_tail = &entry->next;
+    }
+    const uint64_t next = deferred_ready_head
+            ? deferred_ready_head->release_at_ns : 0;
+    pthread_mutex_unlock(&deferred_release_lock);
+
+    while (due) {
+        struct deferred_release_entry *next_entry = due->next;
+        release_entry(due);
+        due = next_entry;
+    }
+    return next;
 }
 
 void trierarch_flush_deferred_releases(void) {
     pthread_mutex_lock(&deferred_release_lock);
-    struct shm_buffer *buffer = deferred_releases;
-    deferred_releases = NULL;
+    struct deferred_release_entry *pending = deferred_pending_head;
+    struct deferred_release_entry *ready = deferred_ready_head;
+    deferred_pending_head = deferred_pending_tail = NULL;
+    deferred_ready_head = deferred_ready_tail = NULL;
+    deferred_pending_count = 0;
+    deferred_ready_count = 0;
+    deferred_last_release_ns = 0;
     pthread_mutex_unlock(&deferred_release_lock);
 
-    while (buffer) {
-        struct shm_buffer *next = buffer->deferred_next;
-        buffer->deferred_next = NULL;
-        if (buffer->server) buffer->server->diag_deferred_flushed++;
-        trierarch_shm_buffer_release(buffer);
-        trierarch_buffer_unref(buffer);
-        buffer = next;
+    while (pending) {
+        struct deferred_release_entry *next = pending->next;
+        release_entry(pending);
+        pending = next;
     }
+    while (ready) {
+        struct deferred_release_entry *next = ready->next;
+        release_entry(ready);
+        ready = next;
+    }
+}
+
+void trierarch_drain_deferred_releases(void) {
+    trierarch_flush_deferred_releases();
 }
 
 void trierarch_buffer_ref(struct shm_buffer *buffer) {

@@ -263,6 +263,7 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
     struct renderer_context *diagnostic_renderer = server->renderer;
     LOGI("present swap=%llu/%llu fence=%llu/%llu import=ok:%llu fail:%llu cpu:%llu none:%llu "
             "dmabuf=accept:%llu reject:%llu tvg:%llu deferred=enq:%llu dup:%llu flush:%llu "
+            "depth:max:%llu/%llu overflow:%llu "
             "cpu-sync=ok:%llu fail:%llu viewport=%llu acquire=wait:%llu fail:%llu "
             "last-frame=%llu buffer=%p %dx%d fmt=0x%x mod=0x%llx path=%s",
             (unsigned long long)server->diag_swap_ok,
@@ -279,6 +280,9 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
             (unsigned long long)server->diag_deferred_enqueued,
             (unsigned long long)server->diag_deferred_duplicates,
             (unsigned long long)server->diag_deferred_flushed,
+            (unsigned long long)trierarch_deferred_release_count(),
+            (unsigned long long)server->diag_deferred_depth_max,
+            (unsigned long long)server->diag_deferred_overflow,
             (unsigned long long)server->diag_cpu_sync_ok,
             (unsigned long long)server->diag_cpu_sync_fail,
             (unsigned long long)server->diag_viewport_changes,
@@ -306,6 +310,8 @@ void trierarch_renderer_report_performance(struct wayland_server *server) {
     server->diag_deferred_enqueued = 0;
     server->diag_deferred_duplicates = 0;
     server->diag_deferred_flushed = 0;
+    server->diag_deferred_depth_max = 0;
+    server->diag_deferred_overflow = 0;
     server->diag_cpu_sync_ok = 0;
     server->diag_cpu_sync_fail = 0;
     server->diag_viewport_changes = 0;
@@ -496,10 +502,15 @@ void trierarch_renderer_destroy(struct renderer_context *renderer) {
     if (renderer->server && renderer->server->renderer == renderer)
         renderer->server->renderer = NULL;
     if (renderer->vulkan) {
+        trierarch_vulkan_presenter_wait_idle(
+                (trierarch_vulkan_presenter *)renderer->vulkan);
+        trierarch_flush_deferred_releases();
         trierarch_vulkan_presenter_destroy((trierarch_vulkan_presenter *)renderer->vulkan);
         free(renderer);
         return;
     }
+    trierarch_renderer_wait_idle(renderer);
+    trierarch_flush_deferred_releases();
     if (renderer->frame_fence != EGL_NO_SYNC_KHR && renderer->destroy_sync) {
         renderer->destroy_sync(renderer->display, renderer->frame_fence);
         renderer->frame_fence = EGL_NO_SYNC_KHR;
@@ -865,11 +876,22 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
                     buffer->format);
         }
         if (result == 0) {
+            /* The Vulkan presenter already waited for the queue, so every
+             * buffer replaced by the commits dispatched for this frame can be
+             * returned to its client now.  The release timer paces the actual
+             * wl_buffer.release at the output cadence. */
+            trierarch_wayland_release_deferred(server);
             trierarch_wayland_frame_presented(server,
                     (uint32_t)(monotonic_ns() / 1000000ULL));
             server->perf_render_count++;
             return true;
         }
+        /* A failed present must not pin the previous generation forever.  The
+         * queue is idle after this wait, so drain it instead of growing the
+         * backlog while the frame is retried. */
+        trierarch_vulkan_presenter_wait_idle(
+                (trierarch_vulkan_presenter *)renderer->vulkan);
+        trierarch_flush_deferred_releases();
         trierarch_surface_requeue_frame_callbacks(server);
         return false;
     }
@@ -884,7 +906,7 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
      * to release both the guest buffers replaced by commits and the vtest
      * AHBs drawn in that frame. */
     tvg_scanout_begin_frame();
-    trierarch_flush_deferred_releases();
+    trierarch_wayland_release_deferred(server);
     uint64_t render_started_ns = monotonic_ns();
     bool surface_updated = renderer->observed_surface_commits != server->perf_surface_commit_generation
             || renderer->observed_surface_damage != server->perf_surface_damage_generation;

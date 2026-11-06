@@ -52,6 +52,60 @@ static int repaint_timer_fired(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
+static uint64_t release_now_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void arm_release_timer(struct wayland_server *server, uint64_t at_ns) {
+    if (!server || server->release_fd < 0) return;
+    uint64_t now = release_now_ns();
+    if (at_ns <= now) at_ns = now + 1000000ULL;
+    uint64_t delay = at_ns - now;
+    const struct itimerspec spec = {
+        .it_value = { .tv_sec = (time_t)(delay / 1000000000ULL),
+                      .tv_nsec = (long)(delay % 1000000000ULL) },
+    };
+    if (timerfd_settime(server->release_fd, 0, &spec, NULL) != 0) {
+        __android_log_print(ANDROID_LOG_WARN, TRIERARCH_TAG,
+                "unable to arm buffer release timer: %s", strerror(errno));
+        /* The safe point already established that the GPU is done.  Do not
+         * let a broken timer pin the backlog; return it now. */
+        trierarch_release_ready_releases(UINT64_MAX);
+    }
+}
+
+static int release_timer_fired(int fd, uint32_t mask, void *data) {
+    struct wayland_server *server = data;
+    drain_counter_fd(fd, mask, data);
+    uint64_t next = trierarch_release_ready_releases(release_now_ns());
+    if (next) arm_release_timer(server, next);
+    return 0;
+}
+
+/* Called by the renderer only after the GPU has finished every frame that
+ * could still have sampled the buffers replaced by commits.  The entries move
+ * to the ready list here; the timer gives them back to the client on the
+ * output cadence instead of in one burst at commit time. */
+void trierarch_wayland_release_deferred(struct wayland_server *server) {
+    if (!server) return;
+    const unsigned int pending = trierarch_deferred_release_count();
+    if (!pending) return;
+    uint64_t interval = server->release_interval_ns;
+    if (pending > TRIERARCH_MAX_DEFERRED_RELEASES) interval = 0;
+    uint64_t next = trierarch_mark_deferred_releases_ready(
+            release_now_ns(), interval);
+    if (!next) return;
+    if (server->release_source) {
+        arm_release_timer(server, next);
+    } else {
+        /* No timer source (timerfd creation failed): the safe point already
+         * proved the GPU is done, so return everything now rather than pin it. */
+        trierarch_release_ready_releases(UINT64_MAX);
+    }
+}
+
 wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled) {
     struct wayland_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
@@ -59,6 +113,8 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
     server->wake_fd = -1;
     server->telemetry_fd = -1;
     server->repaint_fd = -1;
+    server->release_fd = -1;
+    server->release_interval_ns = OUTPUT_REPAINT_INTERVAL_NS;
     server->display = wl_display_create();
     server->event_loop = server->display ? wl_display_get_event_loop(server->display) : NULL;
     if (!server->display || !server->event_loop) {
@@ -93,6 +149,7 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
     server->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     server->telemetry_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     server->repaint_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    server->release_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (server->wake_fd >= 0) {
         server->wake_source = wl_event_loop_add_fd(server->event_loop, server->wake_fd,
                 WL_EVENT_READABLE, drain_counter_fd, server);
@@ -110,6 +167,10 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
     if (server->repaint_fd >= 0) {
         server->repaint_source = wl_event_loop_add_fd(server->event_loop, server->repaint_fd,
                 WL_EVENT_READABLE, repaint_timer_fired, server);
+    }
+    if (server->release_fd >= 0) {
+        server->release_source = wl_event_loop_add_fd(server->event_loop, server->release_fd,
+                WL_EVENT_READABLE, release_timer_fired, server);
     }
     if (!server->display || !server->runtime_dir ||
             !server->wake_source || !server->telemetry_source || !server->repaint_source ||
@@ -202,10 +263,13 @@ void trierarch_wayland_destroy(wayland_server_t *server) {
     if (server->wake_source) wl_event_source_remove(server->wake_source);
     if (server->telemetry_source) wl_event_source_remove(server->telemetry_source);
     if (server->repaint_source) wl_event_source_remove(server->repaint_source);
+    if (server->release_source) wl_event_source_remove(server->release_source);
+    trierarch_drain_deferred_releases();
     if (server->display) wl_display_destroy(server->display);
     if (server->wake_fd >= 0) close(server->wake_fd);
     if (server->telemetry_fd >= 0) close(server->telemetry_fd);
     if (server->repaint_fd >= 0) close(server->repaint_fd);
+    if (server->release_fd >= 0) close(server->release_fd);
     free(server->runtime_dir);
     free(server);
 }

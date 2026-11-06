@@ -28,6 +28,12 @@ struct renderer_context;
 #define TRIERARCH_WL_COMPOSITOR_VERSION 6
 #define TRIERARCH_WL_SEAT_VERSION 9
 
+/* Bound the deferred-release backlog.  Above this depth the release is no
+ * longer paced: the host hands buffers back as soon as the renderer has
+ * completed the frame that used them, so a stalled compositor cannot pin an
+ * unbounded amount of guest memory. */
+#define TRIERARCH_MAX_DEFERRED_RELEASES 64
+
 /* Keep the packed 32-bit formats shared by the dma-buf and renderer paths.
  * On little-endian systems the byte order exposed by GL_RGBA differs between
  * the ARGB/XRGB and ABGR/XBGR families, so the renderer must inspect the
@@ -77,9 +83,10 @@ struct shm_buffer {
     uint32_t dmabuf_offset;
     uint64_t dmabuf_modifier;
     struct wayland_server *server;
-    /* Linked through the host's deferred-release list; the reference held by
-     * the surface is transferred to that list. */
-    struct shm_buffer *deferred_next;
+    /* Number of queued deferred-release entries that hold a reference to this
+     * buffer.  This is diagnostic only: the release queue itself owns the
+     * references, and a buffer may legitimately be queued more than once. */
+    unsigned int deferred_refs;
     struct wl_listener egl_resource_destroy_listener;
     bool egl_resource_destroy_listener_attached;
     struct wl_list pool_link;
@@ -177,9 +184,15 @@ struct wayland_server {
     struct wl_event_source *wake_source;
     struct wl_event_source *telemetry_source;
     struct wl_event_source *repaint_source;
+    /* Paced buffer-release timer.  Deferred buffers are only moved here after
+     * the renderer has completed the frame that could still have sampled
+     * them; the timer then returns them to the client at the output cadence. */
+    struct wl_event_source *release_source;
     int wake_fd;
     int telemetry_fd;
     int repaint_fd;
+    int release_fd;
+    uint64_t release_interval_ns;
     struct wl_list surfaces;
     /* One compositor-side wrapper per live EGL wl_buffer resource. */
     struct wl_list egl_buffers;
@@ -264,6 +277,8 @@ struct wayland_server {
     uint64_t diag_deferred_enqueued;
     uint64_t diag_deferred_duplicates;
     uint64_t diag_deferred_flushed;
+    uint64_t diag_deferred_depth_max;
+    uint64_t diag_deferred_overflow;
     uint64_t diag_viewport_changes;
     uint64_t diag_acquire_fence_waits;
     uint64_t diag_acquire_fence_failures;
@@ -309,6 +324,12 @@ void trierarch_buffer_ref(struct shm_buffer *buffer);
 void trierarch_buffer_unref(struct shm_buffer *buffer);
 void trierarch_defer_buffer_release(struct shm_buffer *buffer);
 void trierarch_flush_deferred_releases(void);
+unsigned int trierarch_deferred_release_count(void);
+uint64_t trierarch_mark_deferred_releases_ready(uint64_t now_ns,
+        uint64_t interval_ns);
+uint64_t trierarch_release_ready_releases(uint64_t now_ns);
+void trierarch_drain_deferred_releases(void);
+void trierarch_wayland_release_deferred(struct wayland_server *server);
 void trierarch_buffer_destroy_storage(struct shm_buffer *buffer);
 void trierarch_shm_buffer_release(struct shm_buffer *buffer);
 struct shm_buffer *trierarch_dmabuf_buffer_from_resource(struct wl_resource *resource);
