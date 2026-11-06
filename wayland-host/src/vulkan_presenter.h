@@ -48,7 +48,7 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
  * entry.  A zero key bypasses the cache. */
 int trierarch_vulkan_presenter_present_keyed(trierarch_vulkan_presenter *presenter,
         unsigned long long key, int fd, int width, int height, int stride,
-        unsigned int format, unsigned long long modifier);
+        unsigned int offset, unsigned int format, unsigned long long modifier);
 int trierarch_vulkan_presenter_present_shm(trierarch_vulkan_presenter *presenter,
         const void *data, int width, int height, int stride, unsigned int format);
 int trierarch_vulkan_presenter_present_scene(trierarch_vulkan_presenter *presenter,

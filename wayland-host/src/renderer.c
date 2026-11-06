@@ -868,8 +868,8 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
             result = trierarch_vulkan_presenter_present_keyed(
                     (trierarch_vulkan_presenter *)renderer->vulkan,
                     buffer->serial, buffer->dmabuf_fd, buffer->width,
-                    buffer->height, buffer->stride, buffer->format,
-                    buffer->dmabuf_modifier);
+                    buffer->height, buffer->stride, buffer->dmabuf_offset,
+                    buffer->format, buffer->dmabuf_modifier);
         } else {
             result = trierarch_vulkan_presenter_present_shm(
                     (trierarch_vulkan_presenter *)renderer->vulkan,

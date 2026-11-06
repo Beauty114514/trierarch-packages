@@ -26,6 +26,7 @@ struct vk_api {
     PFN_vkDestroyInstance DestroyInstance;
     PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties;
+    PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties;
     PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
     PFN_vkCreateDevice CreateDevice;
@@ -113,6 +114,7 @@ static bool load_instance_functions(struct vk_api *api, VkInstance instance) {
     if (!api->name) { LOGE("missing %s", "vk" #name); return false; }
     INSTANCE(EnumeratePhysicalDevices)
     INSTANCE(GetPhysicalDeviceProperties)
+    INSTANCE(EnumerateDeviceExtensionProperties)
     INSTANCE(GetPhysicalDeviceQueueFamilyProperties)
     INSTANCE(GetPhysicalDeviceMemoryProperties)
     INSTANCE(CreateDevice)
@@ -722,6 +724,7 @@ struct dmabuf_import {
     int width;
     int height;
     unsigned int format;
+    unsigned int offset;
     unsigned long long modifier;
     VkImage image;
     VkDeviceMemory memory;
@@ -765,6 +768,7 @@ struct trierarch_vulkan_presenter {
     VkImage *swap_images;
     uint32_t swap_image_count;
     VkPhysicalDeviceMemoryProperties memory_properties;
+    bool drm_modifier_supported;
     struct dmabuf_import imports[VULKAN_IMPORT_CACHE_SIZE];
     unsigned int import_count;
     unsigned long long import_clock;
@@ -1125,6 +1129,28 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
     return true;
 }
 
+static bool device_extension_supported(const struct vk_api *api,
+        VkPhysicalDevice physical, const char *name) {
+    uint32_t count = 0;
+    if (!api->EnumerateDeviceExtensionProperties ||
+            api->EnumerateDeviceExtensionProperties(physical, NULL, &count, NULL) != VK_SUCCESS ||
+            !count)
+        return false;
+    VkExtensionProperties *extensions = calloc(count, sizeof(*extensions));
+    if (!extensions) return false;
+    bool found = false;
+    if (api->EnumerateDeviceExtensionProperties(physical, NULL, &count, extensions) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (strcmp(extensions[i].extensionName, name) == 0) {
+                found = true;
+                break;
+            }
+        }
+    }
+    free(extensions);
+    return found;
+}
+
 trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *window) {
     if (!window || !trierarch_vulkan_presenter_configured()) return NULL;
     trierarch_vulkan_presenter *presenter = calloc(1, sizeof(*presenter));
@@ -1201,15 +1227,26 @@ trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *win
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = presenter->family, .queueCount = 1, .pQueuePriorities = &priority,
     };
-    const char *device_extensions[] = {
+    const char *device_extensions[5] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
         VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
     };
+    uint32_t device_extension_count = 3;
+    presenter->drm_modifier_supported = device_extension_supported(&presenter->api,
+            physical, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+    if (presenter->drm_modifier_supported)
+        device_extensions[device_extension_count++] =
+                VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME;
+    if (device_extension_supported(&presenter->api, physical,
+            VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME))
+        device_extensions[device_extension_count++] =
+                VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME;
     VkDeviceCreateInfo device_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue_info,
-        .enabledExtensionCount = 3, .ppEnabledExtensionNames = device_extensions,
+        .enabledExtensionCount = device_extension_count,
+        .ppEnabledExtensionNames = device_extensions,
     };
     presenter->physical = physical;
     presenter->api.GetPhysicalDeviceMemoryProperties(physical,
@@ -1360,13 +1397,15 @@ static void presenter_destroy_imports(trierarch_vulkan_presenter *presenter) {
 
 static struct dmabuf_import *presenter_find_import(
         trierarch_vulkan_presenter *presenter, unsigned long long key,
-        int width, int height, unsigned int format, unsigned long long modifier) {
+        int width, int height, unsigned int format, unsigned int offset,
+        unsigned long long modifier) {
     if (!key) return NULL;
     for (unsigned int i = 0; i < presenter->import_count; i++) {
         struct dmabuf_import *import = &presenter->imports[i];
         if (import->key != key) continue;
         if (import->width == width && import->height == height &&
-                import->format == format && import->modifier == modifier)
+                import->format == format && import->offset == offset &&
+                import->modifier == modifier)
             return import;
         /* The buffer key was reused for a different description.  Drop the
          * stale image before importing the new one. */
@@ -1380,14 +1419,26 @@ static struct dmabuf_import *presenter_find_import(
 
 static bool presenter_create_import(trierarch_vulkan_presenter *presenter,
         unsigned long long key, int fd, int width, int height, int stride,
-        unsigned int format, unsigned long long modifier,
+        unsigned int offset, unsigned int format, unsigned long long modifier,
         struct dmabuf_import *out) {
-    (void)stride;
     memset(out, 0, sizeof(*out));
     VkFormat vk_format = probe_format(format);
     if (vk_format == VK_FORMAT_UNDEFINED) return false;
+    VkSubresourceLayout plane = {
+        .offset = offset,
+        .rowPitch = (uint32_t)stride,
+    };
+    VkImageDrmFormatModifierExplicitCreateInfoEXT explicit_layout = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
+        .drmFormatModifier = modifier,
+        .drmFormatModifierPlaneCount = 1,
+        .pPlaneLayouts = &plane,
+    };
+    const bool use_explicit_layout = presenter->drm_modifier_supported && stride > 0;
+    bool used_explicit_layout = use_explicit_layout;
     VkExternalMemoryImageCreateInfo external = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .pNext = use_explicit_layout ? &explicit_layout : NULL,
         .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
     };
     VkImageCreateInfo image_info = {
@@ -1397,14 +1448,36 @@ static bool presenter_create_import(trierarch_vulkan_presenter *presenter,
         .format = vk_format,
         .extent = {(uint32_t)width, (uint32_t)height, 1},
         .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_LINEAR,
+        .tiling = use_explicit_layout ? VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+                                      : VK_IMAGE_TILING_LINEAR,
         .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     VkImage image = VK_NULL_HANDLE;
-    if (presenter->api.CreateImage(presenter->device, &image_info, NULL, &image) != VK_SUCCESS)
+    VkResult image_result = presenter->api.CreateImage(presenter->device, &image_info,
+            NULL, &image);
+    if (image_result != VK_SUCCESS && use_explicit_layout) {
+        /* Drivers without a usable explicit-modifier path still get the old
+         * tightly-packed linear import; only the pitch is lost. */
+        static unsigned int fallback_logs;
+        if (fallback_logs++ < 8)
+            LOGE("explicit dma-buf layout rejected (%dx%d pitch=%d modifier=0x%llx); "
+                    "falling back to linear tiling", width, height, stride,
+                    (unsigned long long)modifier);
+        external.pNext = NULL;
+        image_info.tiling = VK_IMAGE_TILING_LINEAR;
+        used_explicit_layout = false;
+        image_result = presenter->api.CreateImage(presenter->device, &image_info,
+                NULL, &image);
+    }
+    if (image_result != VK_SUCCESS)
         return false;
+    static unsigned int import_logs;
+    if (import_logs++ < 8)
+        LOGI("dmabuf import %dx%d pitch=%d offset=%u modifier=0x%llx path=%s",
+                width, height, stride, offset, (unsigned long long)modifier,
+                used_explicit_layout ? "explicit-modifier" : "linear");
     VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
     if (presenter->api.GetMemoryFdPropertiesKHR(presenter->device,
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fd_props) != VK_SUCCESS) {
@@ -1458,6 +1531,7 @@ static bool presenter_create_import(trierarch_vulkan_presenter *presenter,
     out->width = width;
     out->height = height;
     out->format = format;
+    out->offset = offset;
     out->modifier = modifier;
     out->image = image;
     out->memory = memory;
@@ -1467,9 +1541,9 @@ static bool presenter_create_import(trierarch_vulkan_presenter *presenter,
 
 static struct dmabuf_import *presenter_get_import(trierarch_vulkan_presenter *presenter,
         unsigned long long key, int fd, int width, int height, int stride,
-        unsigned int format, unsigned long long modifier) {
+        unsigned int offset, unsigned int format, unsigned long long modifier) {
     struct dmabuf_import *import = presenter_find_import(presenter, key,
-            width, height, format, modifier);
+            width, height, format, offset, modifier);
     if (import) {
         import->last_used = ++presenter->import_clock;
         presenter->import_hits++;
@@ -1487,7 +1561,7 @@ static struct dmabuf_import *presenter_get_import(trierarch_vulkan_presenter *pr
     }
     import = &presenter->imports[presenter->import_count];
     if (!presenter_create_import(presenter, key, fd, width, height, stride,
-            format, modifier, import))
+            offset, format, modifier, import))
         return NULL;
     import->last_used = ++presenter->import_clock;
     presenter->import_count++;
@@ -1727,17 +1801,17 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
 
 int trierarch_vulkan_presenter_present_keyed(trierarch_vulkan_presenter *presenter,
         unsigned long long key, int fd, int width, int height, int stride,
-        unsigned int format, unsigned long long modifier) {
+        unsigned int offset, unsigned int format, unsigned long long modifier) {
     if (!presenter || fd < 0 || width <= 0 || height <= 0) return -1;
     struct dmabuf_import temporary;
     struct dmabuf_import *import = NULL;
     if (key) {
         import = presenter_get_import(presenter, key, fd, width, height, stride,
-                format, modifier);
+                offset, format, modifier);
         if (!import) return -1;
     } else {
         if (!presenter_create_import(presenter, 0, fd, width, height, stride,
-                format, modifier, &temporary))
+                offset, format, modifier, &temporary))
             return -1;
         import = &temporary;
     }
@@ -1751,7 +1825,7 @@ int trierarch_vulkan_presenter_present(trierarch_vulkan_presenter *presenter,
         int fd, int width, int height, int stride, unsigned int format,
         unsigned long long modifier) {
     return trierarch_vulkan_presenter_present_keyed(presenter, 0, fd, width,
-            height, stride, format, modifier);
+            height, stride, 0, format, modifier);
 }
 
 static bool presenter_create_shm_image(trierarch_vulkan_presenter *presenter,
