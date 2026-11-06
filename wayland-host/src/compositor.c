@@ -183,9 +183,10 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
             server, trierarch_data_device_bind);
     wl_global_create(server->display, &zwlr_layer_shell_v1_interface, 4,
             server, trierarch_layer_shell_bind);
-    wl_global_create(server->display,
-            &zwp_linux_explicit_synchronization_v1_interface, 2,
-            server, trierarch_explicit_sync_bind);
+    /* Explicit sync is intentionally not advertised until the dmabuf fence
+     * acquire/release path is complete.  KWin otherwise waits forever on a
+     * fence this host cannot signal.  DroidDeck uses implicit synchronization
+     * and paced buffer release for the same reason. */
     server->valid = true;
     return server;
 }
