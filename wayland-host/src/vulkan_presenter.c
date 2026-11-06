@@ -43,6 +43,10 @@ struct vk_api {
     PFN_vkAcquireNextImageKHR AcquireNextImageKHR;
     PFN_vkQueuePresentKHR QueuePresentKHR;
     PFN_vkQueueWaitIdle QueueWaitIdle;
+    PFN_vkCreateFence CreateFence;
+    PFN_vkDestroyFence DestroyFence;
+    PFN_vkWaitForFences WaitForFences;
+    PFN_vkResetFences ResetFences;
     PFN_vkCreateCommandPool CreateCommandPool;
     PFN_vkDestroyCommandPool DestroyCommandPool;
     PFN_vkAllocateCommandBuffers AllocateCommandBuffers;
@@ -133,6 +137,10 @@ static void load_device(struct vk_api *api, VkInstance instance) {
     DEVICE(AcquireNextImageKHR)
     DEVICE(QueuePresentKHR)
     DEVICE(QueueWaitIdle)
+    DEVICE(CreateFence)
+    DEVICE(DestroyFence)
+    DEVICE(WaitForFences)
+    DEVICE(ResetFences)
     DEVICE(CreateCommandPool)
     DEVICE(DestroyCommandPool)
     DEVICE(AllocateCommandBuffers)
@@ -737,6 +745,11 @@ struct trierarch_vulkan_presenter {
     VkCommandPool pool;
     VkCommandBuffer command;
     VkSemaphore acquired;
+    VkFence frame_fence;
+    bool frame_pending;
+    VkImage pending_cursor_image;
+    VkDeviceMemory pending_cursor_memory;
+    VkImageView pending_cursor_view;
     unsigned long long frames_presented;
     unsigned long long suboptimal_frames;
     int64_t last_present_log_ns;
@@ -773,6 +786,24 @@ static void destroy_presenter_objects(trierarch_vulkan_presenter *presenter) {
     if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
     presenter_destroy_swapchain_resources(presenter);
     presenter_destroy_imports(presenter);
+    if (presenter->pending_cursor_image || presenter->pending_cursor_memory ||
+            presenter->pending_cursor_view) {
+        if (presenter->pending_cursor_view)
+            presenter->api.DestroyImageView(presenter->device,
+                    presenter->pending_cursor_view, NULL);
+        if (presenter->pending_cursor_memory)
+            presenter->api.FreeMemory(presenter->device,
+                    presenter->pending_cursor_memory, NULL);
+        if (presenter->pending_cursor_image)
+            presenter->api.DestroyImage(presenter->device,
+                    presenter->pending_cursor_image, NULL);
+        presenter->pending_cursor_view = VK_NULL_HANDLE;
+        presenter->pending_cursor_memory = VK_NULL_HANDLE;
+        presenter->pending_cursor_image = VK_NULL_HANDLE;
+    }
+    if (presenter->frame_fence)
+        presenter->api.DestroyFence(presenter->device, presenter->frame_fence, NULL);
+    presenter->frame_pending = false;
     if (presenter->device) {
         if (presenter->cursor_sampler) presenter->api.DestroySampler(presenter->device, presenter->cursor_sampler, NULL);
         if (presenter->cursor_descriptor_pool) presenter->api.DestroyDescriptorPool(presenter->device, presenter->cursor_descriptor_pool, NULL);
@@ -1206,6 +1237,14 @@ trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *win
     VkSemaphoreCreateInfo semaphore_info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     if (presenter->api.CreateSemaphore(presenter->device, &semaphore_info, NULL,
             &presenter->acquired) != VK_SUCCESS) goto fail;
+    if (!presenter->api.CreateFence || !presenter->api.DestroyFence ||
+            !presenter->api.WaitForFences || !presenter->api.ResetFences) {
+        LOGE("Vulkan fence entry points are missing");
+        goto fail;
+    }
+    VkFenceCreateInfo fence_info = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (presenter->api.CreateFence(presenter->device, &fence_info, NULL,
+            &presenter->frame_fence) != VK_SUCCESS) goto fail;
     LOGI("Vulkan presenter created %ux%u format=%d", presenter->extent.width,
             presenter->extent.height, presenter->format);
     return presenter;
@@ -1456,8 +1495,40 @@ static struct dmabuf_import *presenter_get_import(trierarch_vulkan_presenter *pr
     return import;
 }
 
+static void presenter_destroy_pending_cursor(trierarch_vulkan_presenter *presenter) {
+    if (!presenter || !presenter->device) return;
+    if (presenter->pending_cursor_view)
+        presenter->api.DestroyImageView(presenter->device,
+                presenter->pending_cursor_view, NULL);
+    if (presenter->pending_cursor_memory)
+        presenter->api.FreeMemory(presenter->device,
+                presenter->pending_cursor_memory, NULL);
+    if (presenter->pending_cursor_image)
+        presenter->api.DestroyImage(presenter->device,
+                presenter->pending_cursor_image, NULL);
+    presenter->pending_cursor_view = VK_NULL_HANDLE;
+    presenter->pending_cursor_memory = VK_NULL_HANDLE;
+    presenter->pending_cursor_image = VK_NULL_HANDLE;
+}
+
+static bool presenter_wait_frame(trierarch_vulkan_presenter *presenter,
+        uint64_t timeout_ns) {
+    if (!presenter->frame_pending || !presenter->frame_fence) return true;
+    VkResult result = presenter->api.WaitForFences(presenter->device, 1,
+            &presenter->frame_fence, VK_TRUE, timeout_ns);
+    if (result != VK_SUCCESS) {
+        LOGE("Vulkan frame fence wait failed result=%d", result);
+        return false;
+    }
+    presenter->api.ResetFences(presenter->device, 1, &presenter->frame_fence);
+    presenter_destroy_pending_cursor(presenter);
+    presenter->frame_pending = false;
+    return true;
+}
+
 static int presenter_present_source(trierarch_vulkan_presenter *presenter,
-        struct dmabuf_import *import, int width, int height) {
+        struct dmabuf_import *import, int width, int height, bool async) {
+    if (!presenter_wait_frame(presenter, 1000000000ULL)) return -1;
     uint32_t image_index = 0;
     VkResult vk = presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
             UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index);
@@ -1599,9 +1670,22 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         .pWaitDstStageMask = &wait_stage,
         .commandBufferCount = 1, .pCommandBuffers = &presenter->command,
     };
-    vk = presenter->api.QueueSubmit(presenter->queue, 1, &submit, VK_NULL_HANDLE);
-    if (vk == VK_SUCCESS) vk = presenter->api.QueueWaitIdle(presenter->queue);
-    if (vk == VK_SUCCESS) import->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    /* presenter_wait_frame() has already reset the fence.  The first async
+     * submit uses the fence in its initial unsignaled state. */
+    VkFence submit_fence = async ? presenter->frame_fence : VK_NULL_HANDLE;
+    vk = presenter->api.QueueSubmit(presenter->queue, 1, &submit, submit_fence);
+    bool submitted = vk == VK_SUCCESS;
+    if (submitted && async) {
+        presenter->pending_cursor_image = cursor_image;
+        presenter->pending_cursor_memory = cursor_memory;
+        presenter->pending_cursor_view = cursor_view;
+        presenter->frame_pending = true;
+        draw_cursor = false;
+    }
+    if (submitted && !async)
+        vk = presenter->api.QueueWaitIdle(presenter->queue);
+    if (vk == VK_SUCCESS)
+        import->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     VkPresentInfoKHR present = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .swapchainCount = 1, .pSwapchains = &presenter->swapchain,
@@ -1613,9 +1697,6 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         presented = vk == VK_SUCCESS || vk == VK_SUBOPTIMAL_KHR;
     }
     if (presented) {
-        /* The source and cursor images are only read by the submitted blit,
-         * which the wait above completed.  The swapchain image is owned by the
-         * swapchain; the next AcquireNextImageKHR provides the pacing. */
         presenter->frames_presented++;
         int64_t now = presenter_now_ns();
         if (presenter->frames_presented == 1 ||
@@ -1660,7 +1741,8 @@ int trierarch_vulkan_presenter_present_keyed(trierarch_vulkan_presenter *present
             return -1;
         import = &temporary;
     }
-    int result = presenter_present_source(presenter, import, width, height);
+    int result = presenter_present_source(presenter, import, width, height,
+            key != 0);
     if (!key) presenter_destroy_import(presenter, &temporary);
     return result;
 }
@@ -1759,7 +1841,8 @@ int trierarch_vulkan_presenter_present_shm(trierarch_vulkan_presenter *presenter
         .memory = source_memory,
         .layout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-    int result = presenter_present_source(presenter, &temporary, width, height);
+    int result = presenter_present_source(presenter, &temporary, width, height,
+            false);
     presenter->api.FreeMemory(presenter->device, source_memory, NULL);
     presenter->api.DestroyImage(presenter->device, source, NULL);
     return result;
@@ -1786,7 +1869,15 @@ int trierarch_vulkan_presenter_present_scene(trierarch_vulkan_presenter *present
 }
 
 void trierarch_vulkan_presenter_wait_idle(trierarch_vulkan_presenter *presenter) {
-    if (presenter && presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
+    if (!presenter) return;
+    if (presenter->frame_pending && presenter->frame_fence) {
+        presenter->api.WaitForFences(presenter->device, 1,
+                &presenter->frame_fence, VK_TRUE, UINT64_MAX);
+        presenter->api.ResetFences(presenter->device, 1, &presenter->frame_fence);
+        presenter_destroy_pending_cursor(presenter);
+        presenter->frame_pending = false;
+    }
+    if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
 }
 
 void trierarch_vulkan_presenter_destroy(trierarch_vulkan_presenter *presenter) {
