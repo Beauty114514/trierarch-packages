@@ -68,10 +68,12 @@ void trierarch_output_bind(struct wl_client *client, void *data,
 void trierarch_wayland_set_output_size(wayland_server_t *opaque, int width, int height) {
     struct wayland_server *server = (struct wayland_server *)opaque;
     if (!server) return;
+    if (width > 0) server->input_width = width;
+    if (height > 0) server->input_height = height;
     if (width <= 0 || height <= 0 ||
             (server->output_width == width && server->output_height == height)) return;
-    server->output_width = width > 0 ? width : server->output_width;
-    server->output_height = height > 0 ? height : server->output_height;
+    server->output_width = width;
+    server->output_height = height;
 
     struct output_resource *output;
     wl_list_for_each(output, &server->output_resources, link)

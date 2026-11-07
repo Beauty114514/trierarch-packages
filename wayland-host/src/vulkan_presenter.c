@@ -1129,6 +1129,28 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
     return true;
 }
 
+static bool presenter_ensure_swapchain_size(trierarch_vulkan_presenter *presenter) {
+    if (!presenter || !presenter->device || !presenter->surface) return false;
+    VkSurfaceCapabilitiesKHR caps;
+    if (presenter->api.GetPhysicalDeviceSurfaceCapabilitiesKHR(presenter->physical,
+            presenter->surface, &caps) != VK_SUCCESS)
+        return true;
+    VkExtent2D extent = caps.currentExtent;
+    if (extent.width == UINT32_MAX) {
+        extent.width = (uint32_t)ANativeWindow_getWidth(presenter->window);
+        extent.height = (uint32_t)ANativeWindow_getHeight(presenter->window);
+        if (extent.width > caps.maxImageExtent.width) extent.width = caps.maxImageExtent.width;
+        if (extent.height > caps.maxImageExtent.height) extent.height = caps.maxImageExtent.height;
+    }
+    if (extent.width == presenter->extent.width &&
+            extent.height == presenter->extent.height)
+        return true;
+    LOGI("Vulkan surface resized %ux%u -> %ux%u; recreating swapchain",
+            presenter->extent.width, presenter->extent.height,
+            extent.width, extent.height);
+    return presenter_create_swapchain(presenter);
+}
+
 static bool device_extension_supported(const struct vk_api *api,
         VkPhysicalDevice physical, const char *name) {
     uint32_t count = 0;
@@ -1603,6 +1625,7 @@ static bool presenter_wait_frame(trierarch_vulkan_presenter *presenter,
 static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         struct dmabuf_import *import, int width, int height, bool async) {
     if (!presenter_wait_frame(presenter, 1000000000ULL)) return -1;
+    if (!presenter_ensure_swapchain_size(presenter)) return -1;
     uint32_t image_index = 0;
     VkResult vk = presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
             UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index);
@@ -1935,10 +1958,13 @@ void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter
 
 static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
         const struct trierarch_vulkan_draw *draws, int count,
-        int scene_width, int scene_height, bool async) {
-    if (!presenter || !draws || count <= 0 || scene_width <= 0 || scene_height <= 0)
+        const struct trierarch_output_transform *transform, bool async) {
+    if (!presenter || !draws || count <= 0 || !transform ||
+            transform->scale <= 0 || transform->scene_width <= 0 ||
+            transform->scene_height <= 0)
         return -1;
     if (!presenter_wait_frame(presenter, 1000000000ULL)) return -1;
+    if (!presenter_ensure_swapchain_size(presenter)) return -1;
     uint32_t image_index = 0;
     VkResult vk = presenter->api.AcquireNextImageKHR(presenter->device, presenter->swapchain,
             UINT64_MAX, presenter->acquired, VK_NULL_HANDLE, &image_index);
@@ -1981,8 +2007,19 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
     VkImage cursor_image = VK_NULL_HANDLE;
     VkDeviceMemory cursor_memory = VK_NULL_HANDLE;
     VkImageView cursor_view = VK_NULL_HANDLE;
+    struct trierarch_vulkan_draw cursor_draw = presenter->cursor_draw;
+    if (presenter->cursor_set) {
+        cursor_draw.dst_x = transform->offset_x +
+                (int)(cursor_draw.dst_x * transform->scale + 0.5);
+        cursor_draw.dst_y = transform->offset_y +
+                (int)(cursor_draw.dst_y * transform->scale + 0.5);
+        cursor_draw.dst_width = (int)(cursor_draw.dst_width * transform->scale + 0.5);
+        cursor_draw.dst_height = (int)(cursor_draw.dst_height * transform->scale + 0.5);
+        if (cursor_draw.dst_width < 1) cursor_draw.dst_width = 1;
+        if (cursor_draw.dst_height < 1) cursor_draw.dst_height = 1;
+    }
     bool draw_cursor = presenter->cursor_set &&
-            presenter_import_cursor(presenter, &presenter->cursor_draw,
+            presenter_import_cursor(presenter, &cursor_draw,
                     &cursor_image, &cursor_memory, &cursor_view);
     if (draw_cursor) {
         VkDescriptorImageInfo image_info = {
@@ -2039,10 +2076,14 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 0, NULL, 0, NULL, 1, &source_barrier);
 
-        int64_t x0 = (int64_t)draw->dst_x * target_width / scene_width;
-        int64_t y0 = (int64_t)draw->dst_y * target_height / scene_height;
-        int64_t x1 = (int64_t)(draw->dst_x + draw->dst_width) * target_width / scene_width;
-        int64_t y1 = (int64_t)(draw->dst_y + draw->dst_height) * target_height / scene_height;
+        int64_t x0 = transform->offset_x +
+                (int64_t)(draw->dst_x * transform->scale + 0.5);
+        int64_t y0 = transform->offset_y +
+                (int64_t)(draw->dst_y * transform->scale + 0.5);
+        int64_t x1 = transform->offset_x +
+                (int64_t)((draw->dst_x + draw->dst_width) * transform->scale + 0.5);
+        int64_t y1 = transform->offset_y +
+                (int64_t)((draw->dst_y + draw->dst_height) * transform->scale + 0.5);
         if (x0 < 0) x0 = 0;
         if (y0 < 0) y0 = 0;
         if (x1 > target_width) x1 = target_width;
@@ -2101,10 +2142,10 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
         float w = (float)presenter->extent.width;
         float h = (float)presenter->extent.height;
         float push[8] = {
-            presenter->cursor_draw.dst_x / w * 2.0f - 1.0f,
-            presenter->cursor_draw.dst_y / h * 2.0f - 1.0f,
-            (presenter->cursor_draw.dst_x + presenter->cursor_draw.dst_width) / w * 2.0f - 1.0f,
-            (presenter->cursor_draw.dst_y + presenter->cursor_draw.dst_height) / h * 2.0f - 1.0f,
+            cursor_draw.dst_x / w * 2.0f - 1.0f,
+            cursor_draw.dst_y / h * 2.0f - 1.0f,
+            (cursor_draw.dst_x + cursor_draw.dst_width) / w * 2.0f - 1.0f,
+            (cursor_draw.dst_y + cursor_draw.dst_height) / h * 2.0f - 1.0f,
             0.0f, 0.0f, 1.0f, 1.0f,
         };
         presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
@@ -2183,12 +2224,11 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
 
 int trierarch_vulkan_presenter_present_scene(trierarch_vulkan_presenter *presenter,
         const struct trierarch_vulkan_draw *draws, int count,
-        int scene_width, int scene_height,
+        const struct trierarch_output_transform *transform,
         const struct trierarch_vulkan_draw *cursor) {
     if (!presenter || !draws || count <= 0) return -1;
     trierarch_vulkan_presenter_set_cursor(presenter, cursor);
-    return presenter_present_draws(presenter, draws, count, scene_width,
-            scene_height, true);
+    return presenter_present_draws(presenter, draws, count, transform, true);
 }
 
 void trierarch_vulkan_presenter_wait_idle(trierarch_vulkan_presenter *presenter) {

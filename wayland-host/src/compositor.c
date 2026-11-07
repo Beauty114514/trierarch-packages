@@ -135,6 +135,9 @@ wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_
     }
     server->output_width = 1080;
     server->output_height = 1920;
+    server->input_width = 1080;
+    server->input_height = 1920;
+    server->output_scale = 1.0;
     server->pointer_x = wl_fixed_from_int(server->output_width / 2);
     server->pointer_y = wl_fixed_from_int(server->output_height / 2);
     server->cursor_visible = true;

@@ -88,21 +88,49 @@ static void send_pointer_motion(struct wayland_server *server, uint32_t time_ms)
     }
 }
 
-void trierarch_pointer_move_absolute(struct wayland_server *server,
+static void pointer_scene_size(const struct wayland_server *server,
+        float *width, float *height) {
+    *width = server->scene_width > 0 ? server->scene_width : server->output_width;
+    *height = server->scene_height > 0 ? server->scene_height : server->output_height;
+}
+
+static void pointer_set_scene(struct wayland_server *server,
         float x, float y, uint32_t time_ms) {
-    if (!server) return;
-    if (server->output_width > 0) x = x < 0 ? 0 : (x > server->output_width ? server->output_width : x);
-    if (server->output_height > 0) y = y < 0 ? 0 : (y > server->output_height ? server->output_height : y);
+    float width, height;
+    pointer_scene_size(server, &width, &height);
+    if (width > 0) x = x < 0 ? 0 : (x > width ? width : x);
+    if (height > 0) y = y < 0 ? 0 : (y > height ? height : y);
     server->pointer_x = wl_fixed_from_double(x);
     server->pointer_y = wl_fixed_from_double(y);
     send_pointer_motion(server, time_ms);
     trierarch_wayland_request_render(server);
 }
 
+void trierarch_pointer_move_absolute(struct wayland_server *server,
+        float x, float y, uint32_t time_ms) {
+    if (!server) return;
+    float scene_w, scene_h;
+    pointer_scene_size(server, &scene_w, &scene_h);
+    if (server->output_scale > 0) {
+        x = (x - server->output_offset_x) / (float)server->output_scale;
+        y = (y - server->output_offset_y) / (float)server->output_scale;
+    } else {
+        float input_w = server->input_width > 0 ? server->input_width : server->output_width;
+        float input_h = server->input_height > 0 ? server->input_height : server->output_height;
+        if (input_w > 0) x = x * scene_w / input_w;
+        if (input_h > 0) y = y * scene_h / input_h;
+    }
+    pointer_set_scene(server, x, y, time_ms);
+}
+
 void trierarch_pointer_move_relative(struct wayland_server *server,
         float delta_x, float delta_y, uint32_t time_ms) {
     if (!server) return;
-    trierarch_pointer_move_absolute(server,
+    if (server->output_scale > 0) {
+        delta_x /= (float)server->output_scale;
+        delta_y /= (float)server->output_scale;
+    }
+    pointer_set_scene(server,
             (float)wl_fixed_to_double(server->pointer_x) + delta_x,
             (float)wl_fixed_to_double(server->pointer_y) + delta_y, time_ms);
 }

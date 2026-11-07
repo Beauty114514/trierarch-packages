@@ -10,6 +10,7 @@
 #include <android/log.h>
 #include <errno.h>
 #include <linux/dma-buf.h>
+#include <math.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -950,6 +951,43 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         const bool use_scene = scene_count > 0 && !scene_has_shm &&
                 scene_width > 0 && scene_height > 0;
         struct shm_buffer *buffer = best ? best->current : NULL;
+        struct trierarch_output_transform transform = {
+            .scale = 1.0,
+            .scene_width = scene_width,
+            .scene_height = scene_height,
+        };
+        int target_w = ANativeWindow_getWidth(renderer->window);
+        int target_h = ANativeWindow_getHeight(renderer->window);
+        if (use_scene) {
+            if (target_w > 0 && target_h > 0) {
+                double sx = (double)target_w / scene_width;
+                double sy = (double)target_h / scene_height;
+                transform.scale = sx < sy ? sx : sy;
+                transform.offset_x = (target_w -
+                        (int)(scene_width * transform.scale + 0.5)) / 2;
+                transform.offset_y = (target_h -
+                        (int)(scene_height * transform.scale + 0.5)) / 2;
+            }
+            server->scene_width = scene_width;
+            server->scene_height = scene_height;
+            server->output_offset_x = transform.offset_x;
+            server->output_offset_y = transform.offset_y;
+            server->output_scale = transform.scale;
+            static int64_t last_transform_log;
+            int64_t transform_now = monotonic_ns();
+            if (transform_now - last_transform_log >= 1000000000LL) {
+                last_transform_log = transform_now;
+                LOGI("Vulkan output scene=%dx%d target=%dx%d scale=%.4f offset=%d,%d",
+                        scene_width, scene_height, target_w, target_h,
+                        transform.scale, transform.offset_x, transform.offset_y);
+            }
+        } else if (buffer) {
+            server->scene_width = buffer->width;
+            server->scene_height = buffer->height;
+            server->output_offset_x = 0;
+            server->output_offset_y = 0;
+            server->output_scale = 1.0;
+        }
         struct trierarch_vulkan_draw cursor_draw;
         bool cursor_set = false;
         if (server->cursor_visible && server->cursor_surface &&
@@ -1015,7 +1053,7 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         if (use_scene) {
             result = trierarch_vulkan_presenter_present_scene(
                     (trierarch_vulkan_presenter *)renderer->vulkan,
-                    scene_draws, scene_count, scene_width, scene_height,
+                    scene_draws, scene_count, &transform,
                     cursor_set ? &cursor_draw : NULL);
         } else if (buffer->dmabuf) {
             result = trierarch_vulkan_presenter_present_keyed(
@@ -1076,6 +1114,11 @@ bool trierarch_renderer_render(struct renderer_context *renderer,
         return false;
     eglQuerySurface(renderer->display, renderer->surface, EGL_WIDTH, &renderer->width);
     eglQuerySurface(renderer->display, renderer->surface, EGL_HEIGHT, &renderer->height);
+    server->scene_width = renderer->width;
+    server->scene_height = renderer->height;
+    server->output_offset_x = 0;
+    server->output_offset_y = 0;
+    server->output_scale = 1.0;
     glViewport(0, 0, renderer->width, renderer->height);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);

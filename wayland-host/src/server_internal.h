@@ -223,6 +223,15 @@ struct wayland_server {
     char *runtime_dir;
     int32_t output_width;
     int32_t output_height;
+    /* Android SurfaceView pixels used by input events. */
+    int32_t input_width;
+    int32_t input_height;
+    /* Guest output pixels and the uniform fit transform to the SurfaceView. */
+    int32_t scene_width;
+    int32_t scene_height;
+    int32_t output_offset_x;
+    int32_t output_offset_y;
+    double output_scale;
     uint32_t next_serial;
     bool valid;
     struct renderer_context *renderer;
