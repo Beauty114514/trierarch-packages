@@ -762,11 +762,19 @@ struct trierarch_vulkan_presenter {
     VkDescriptorSetLayout cursor_descriptor_layout;
     VkDescriptorPool cursor_descriptor_pool;
     VkDescriptorSet cursor_descriptor;
+    VkDescriptorSet composite_descriptor;
     VkSampler cursor_sampler;
     VkImageView *swap_views;
     VkFramebuffer *swap_framebuffers;
     VkImage *swap_images;
     uint32_t swap_image_count;
+    VkExtent2D identity_extent;
+    VkExtent2D display_extent;
+    VkSurfaceTransformFlagBitsKHR current_transform;
+    VkImage composite_image;
+    VkDeviceMemory composite_memory;
+    VkImageView composite_view;
+    VkImageLayout composite_layout;
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool drm_modifier_supported;
     struct dmabuf_import imports[VULKAN_IMPORT_CACHE_SIZE];
@@ -785,11 +793,14 @@ bool trierarch_vulkan_presenter_configured(void) {
 static void presenter_destroy_swapchain_resources(trierarch_vulkan_presenter *presenter);
 static void presenter_destroy_imports(trierarch_vulkan_presenter *presenter);
 
+static void presenter_destroy_composite(trierarch_vulkan_presenter *presenter);
+
 static void destroy_presenter_objects(trierarch_vulkan_presenter *presenter) {
     if (!presenter) return;
     if (presenter->queue) presenter->api.QueueWaitIdle(presenter->queue);
     presenter_destroy_swapchain_resources(presenter);
     presenter_destroy_imports(presenter);
+    presenter_destroy_composite(presenter);
     if (presenter->pending_cursor_image || presenter->pending_cursor_memory ||
             presenter->pending_cursor_view) {
         if (presenter->pending_cursor_view)
@@ -1001,6 +1012,8 @@ static bool presenter_create_cursor_pipeline(trierarch_vulkan_presenter *present
     };
     if (presenter->api.AllocateDescriptorSets(presenter->device, &set_info,
             &presenter->cursor_descriptor) != VK_SUCCESS) return false;
+    if (presenter->api.AllocateDescriptorSets(presenter->device, &set_info,
+            &presenter->composite_descriptor) != VK_SUCCESS) return false;
     VkSamplerCreateInfo sampler_info = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
@@ -1009,6 +1022,91 @@ static bool presenter_create_cursor_pipeline(trierarch_vulkan_presenter *present
     };
     if (presenter->api.CreateSampler(presenter->device, &sampler_info, NULL,
             &presenter->cursor_sampler) != VK_SUCCESS) return false;
+    return true;
+}
+
+static void presenter_destroy_composite(trierarch_vulkan_presenter *presenter) {
+    if (!presenter || !presenter->device) return;
+    if (presenter->composite_view)
+        presenter->api.DestroyImageView(presenter->device, presenter->composite_view, NULL);
+    if (presenter->composite_image)
+        presenter->api.DestroyImage(presenter->device, presenter->composite_image, NULL);
+    if (presenter->composite_memory)
+        presenter->api.FreeMemory(presenter->device, presenter->composite_memory, NULL);
+    presenter->composite_view = VK_NULL_HANDLE;
+    presenter->composite_image = VK_NULL_HANDLE;
+    presenter->composite_memory = VK_NULL_HANDLE;
+    presenter->composite_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+static bool presenter_create_composite(trierarch_vulkan_presenter *presenter,
+        VkExtent2D extent) {
+    presenter_destroy_composite(presenter);
+    if (extent.width == 0 || extent.height == 0) return true;
+    VkImageCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = presenter->format,
+        .extent = {extent.width, extent.height, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (presenter->api.CreateImage(presenter->device, &info, NULL,
+            &presenter->composite_image) != VK_SUCCESS)
+        return false;
+    VkMemoryRequirements req;
+    presenter->api.GetImageMemoryRequirements(presenter->device,
+            presenter->composite_image, &req);
+    uint32_t type = 0;
+    for (uint32_t i = 0; i < presenter->memory_properties.memoryTypeCount; i++) {
+        if ((req.memoryTypeBits & (1u << i)) &&
+                (presenter->memory_properties.memoryTypes[i].propertyFlags &
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            type = i;
+            break;
+        }
+    }
+    VkMemoryAllocateInfo alloc = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = req.size,
+        .memoryTypeIndex = type,
+    };
+    if (presenter->api.AllocateMemory(presenter->device, &alloc, NULL,
+            &presenter->composite_memory) != VK_SUCCESS ||
+            presenter->api.BindImageMemory(presenter->device, presenter->composite_image,
+                    presenter->composite_memory, 0) != VK_SUCCESS) {
+        presenter_destroy_composite(presenter);
+        return false;
+    }
+    VkImageViewCreateInfo view = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = presenter->composite_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = presenter->format,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    if (presenter->api.CreateImageView(presenter->device, &view, NULL,
+            &presenter->composite_view) != VK_SUCCESS) {
+        presenter_destroy_composite(presenter);
+        return false;
+    }
+    VkDescriptorImageInfo image_info = {
+        .sampler = presenter->cursor_sampler,
+        .imageView = presenter->composite_view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = presenter->composite_descriptor,
+        .dstBinding = 0, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &image_info,
+    };
+    presenter->api.UpdateDescriptorSets(presenter->device, 1, &write, 0, NULL);
+    presenter->composite_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return true;
 }
 
@@ -1091,13 +1189,26 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
         }
     }
     free(formats);
-    VkExtent2D extent = caps.currentExtent;
-    if (extent.width == UINT32_MAX) {
-        extent.width = (uint32_t)ANativeWindow_getWidth(presenter->window);
-        extent.height = (uint32_t)ANativeWindow_getHeight(presenter->window);
-        if (extent.width > caps.maxImageExtent.width) extent.width = caps.maxImageExtent.width;
-        if (extent.height > caps.maxImageExtent.height) extent.height = caps.maxImageExtent.height;
+    VkExtent2D display = caps.currentExtent;
+    if (display.width == UINT32_MAX) {
+        display.width = (uint32_t)ANativeWindow_getWidth(presenter->window);
+        display.height = (uint32_t)ANativeWindow_getHeight(presenter->window);
+        if (display.width > caps.maxImageExtent.width) display.width = caps.maxImageExtent.width;
+        if (display.height > caps.maxImageExtent.height) display.height = caps.maxImageExtent.height;
     }
+    if (presenter->identity_extent.width == 0) {
+        presenter->identity_extent = display;
+        if (caps.currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR |
+                VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            presenter->identity_extent.width = display.height;
+            presenter->identity_extent.height = display.width;
+        }
+    } else if (caps.currentTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+        presenter->identity_extent = display;
+    }
+    VkExtent2D extent = presenter->identity_extent;
+    presenter->display_extent = display;
+    presenter->current_transform = caps.currentTransform;
     VkCompositeAlphaFlagBitsKHR composite = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & composite)) composite = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     uint32_t image_count = caps.minImageCount + 1;
@@ -1133,6 +1244,11 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
     presenter->extent = extent;
     presenter->format = chosen.format;
     if (!presenter_create_swapchain_resources(presenter)) return false;
+    if (presenter->current_transform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR &&
+            !presenter_create_composite(presenter, presenter->display_extent))
+        return false;
+    if (presenter->current_transform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+        presenter_destroy_composite(presenter);
     LOGI("Vulkan presenter swapchain %ux%u format=%d", extent.width, extent.height,
             chosen.format);
     return true;
@@ -1178,12 +1294,12 @@ static bool presenter_ensure_swapchain_size(trierarch_vulkan_presenter *presente
         if (extent.width > caps.maxImageExtent.width) extent.width = caps.maxImageExtent.width;
         if (extent.height > caps.maxImageExtent.height) extent.height = caps.maxImageExtent.height;
     }
-    if (extent.width == presenter->extent.width &&
-            extent.height == presenter->extent.height)
+    if (extent.width == presenter->display_extent.width &&
+            extent.height == presenter->display_extent.height &&
+            caps.currentTransform == presenter->current_transform)
         return true;
-    LOGI("Vulkan surface resized %ux%u -> %ux%u; recreating swapchain",
-            presenter->extent.width, presenter->extent.height,
-            extent.width, extent.height);
+    LOGI("Vulkan surface changed display=%ux%u transform=%s; recreating swapchain",
+            extent.width, extent.height, surface_transform_name(caps.currentTransform));
     return presenter_create_swapchain(presenter);
 }
 
@@ -1778,12 +1894,12 @@ static int presenter_present_source(trierarch_vulkan_presenter *presenter,
         presenter->api.CmdSetScissor(presenter->command, 0, 1, &scissor);
         float w = (float)presenter->extent.width;
         float h = (float)presenter->extent.height;
-        float push[8] = {
+        float push[9] = {
             presenter->cursor_draw.dst_x / w * 2.0f - 1.0f,
             presenter->cursor_draw.dst_y / h * 2.0f - 1.0f,
             (presenter->cursor_draw.dst_x + presenter->cursor_draw.dst_width) / w * 2.0f - 1.0f,
             (presenter->cursor_draw.dst_y + presenter->cursor_draw.dst_height) / h * 2.0f - 1.0f,
-            0.0f, 0.0f, 1.0f, 1.0f,
+            0.0f, 0.0f, 1.0f, 1.0f, 0.0f,
         };
         presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
                 VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), push);
@@ -1992,6 +2108,175 @@ void trierarch_vulkan_presenter_set_cursor(trierarch_vulkan_presenter *presenter
     }
 }
 
+static int surface_rotation(VkSurfaceTransformFlagBitsKHR transform) {
+    if (transform & VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) return 1;
+    if (transform & VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) return 2;
+    if (transform & VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) return 3;
+    return 0;
+}
+
+static void rotate_display_rect(int rot, int display_w, int display_h,
+        int x, int y, int w, int h, int *rx, int *ry, int *rw, int *rh) {
+    if (rot == 1) {
+        *rx = display_h - (y + h);
+        *ry = x;
+        *rw = h;
+        *rh = w;
+    } else if (rot == 2) {
+        *rx = display_w - (x + w);
+        *ry = display_h - (y + h);
+        *rw = w;
+        *rh = h;
+    } else if (rot == 3) {
+        *rx = y;
+        *ry = display_w - (x + w);
+        *rw = h;
+        *rh = w;
+    } else {
+        *rx = x;
+        *ry = y;
+        *rw = w;
+        *rh = h;
+    }
+}
+
+static void presenter_record_rotated_final(trierarch_vulkan_presenter *presenter,
+        uint32_t image_index, VkImageSubresourceRange range,
+        const VkClearColorValue *black, VkImage cursor_image,
+        const struct trierarch_vulkan_draw *cursor_draw, bool draw_cursor) {
+    VkImageMemoryBarrier composite_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = presenter->composite_image,
+        .subresourceRange = range,
+    };
+    presenter->api.CmdPipelineBarrier(presenter->command,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &composite_barrier);
+    presenter->composite_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkImage swap_image = presenter->swap_images[image_index];
+    VkImageMemoryBarrier swap_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swap_image,
+        .subresourceRange = range,
+    };
+    presenter->api.CmdPipelineBarrier(presenter->command,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, NULL, 0, NULL, 1, &swap_barrier);
+    presenter->api.CmdClearColorImage(presenter->command, swap_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, black, 1, &range);
+    swap_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swap_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    swap_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swap_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    presenter->api.CmdPipelineBarrier(presenter->command,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, NULL, 0, NULL, 1, &swap_barrier);
+    if (draw_cursor) {
+        VkImageMemoryBarrier cursor_barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = cursor_image,
+            .subresourceRange = range,
+        };
+        if (cursor_barrier.image) {
+            presenter->api.CmdPipelineBarrier(presenter->command,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, NULL, 0, NULL, 1, &cursor_barrier);
+        }
+    }
+
+    VkRenderPassBeginInfo pass_begin = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = presenter->cursor_pass,
+        .framebuffer = presenter->swap_framebuffers[image_index],
+        .renderArea = {{0, 0}, presenter->extent},
+    };
+    presenter->api.CmdBeginRenderPass(presenter->command, &pass_begin,
+            VK_SUBPASS_CONTENTS_INLINE);
+    presenter->api.CmdBindPipeline(presenter->command,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, presenter->cursor_pipeline);
+    VkViewport viewport = {0, 0, (float)presenter->extent.width,
+            (float)presenter->extent.height, 0, 1};
+    VkRect2D scissor = {{0, 0}, presenter->extent};
+    presenter->api.CmdSetViewport(presenter->command, 0, 1, &viewport);
+    presenter->api.CmdSetScissor(presenter->command, 0, 1, &scissor);
+
+    int rot = surface_rotation(presenter->current_transform);
+    int dw = (int)presenter->display_extent.width;
+    int dh = (int)presenter->display_extent.height;
+    int rx, ry, rw, rh;
+    rotate_display_rect(rot, dw, dh, 0, 0, dw, dh, &rx, &ry, &rw, &rh);
+    double fit = (double)presenter->extent.width / rw;
+    double fit_h = (double)presenter->extent.height / rh;
+    if (fit_h < fit) fit = fit_h;
+    int fw = (int)(rw * fit + 0.5);
+    int fh = (int)(rh * fit + 0.5);
+    int fx = ((int)presenter->extent.width - fw) / 2;
+    int fy = ((int)presenter->extent.height - fh) / 2;
+    float w = (float)presenter->extent.width;
+    float h = (float)presenter->extent.height;
+    VkDescriptorSet composite_set = presenter->composite_descriptor;
+    presenter->api.CmdBindDescriptorSets(presenter->command,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, presenter->cursor_layout, 0, 1,
+            &composite_set, 0, NULL);
+    float push[9] = {
+        (float)fx / w * 2.0f - 1.0f,
+        (float)fy / h * 2.0f - 1.0f,
+        (float)(fx + fw) / w * 2.0f - 1.0f,
+        (float)(fy + fh) / h * 2.0f - 1.0f,
+        0.0f, 0.0f, 1.0f, 1.0f, (float)rot,
+    };
+    presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
+            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), push);
+    presenter->api.CmdDraw(presenter->command, 4, 1, 0, 0);
+
+    if (draw_cursor && cursor_draw) {
+        int crx, cry, crw, crh;
+        rotate_display_rect(rot, dw, dh, cursor_draw->dst_x, cursor_draw->dst_y,
+                cursor_draw->dst_width, cursor_draw->dst_height,
+                &crx, &cry, &crw, &crh);
+        int cx = fx + (int)(crx * fit + 0.5);
+        int cy = fy + (int)(cry * fit + 0.5);
+        int cw = (int)(crw * fit + 0.5);
+        int ch = (int)(crh * fit + 0.5);
+        if (cw < 1) cw = 1;
+        if (ch < 1) ch = 1;
+        VkDescriptorSet cursor_set = presenter->cursor_descriptor;
+        presenter->api.CmdBindDescriptorSets(presenter->command,
+                VK_PIPELINE_BIND_POINT_GRAPHICS, presenter->cursor_layout, 0, 1,
+                &cursor_set, 0, NULL);
+        float cursor_push[9] = {
+            (float)cx / w * 2.0f - 1.0f,
+            (float)cy / h * 2.0f - 1.0f,
+            (float)(cx + cw) / w * 2.0f - 1.0f,
+            (float)(cy + ch) / h * 2.0f - 1.0f,
+            0.0f, 0.0f, 1.0f, 1.0f, (float)rot,
+        };
+        presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
+                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(cursor_push), cursor_push);
+        presenter->api.CmdDraw(presenter->command, 4, 1, 0, 0);
+    }
+    presenter->api.CmdEndRenderPass(presenter->command);
+}
+
 static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
         const struct trierarch_vulkan_draw *draws, int count,
         const struct trierarch_output_transform *transform, bool async) {
@@ -2039,7 +2324,10 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
     }
     if (!entry_count) return -1;
 
-    VkImage target = presenter->swap_images[image_index];
+    const bool rotate_scene = presenter->current_transform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR &&
+            presenter->composite_image;
+    VkImage target = rotate_scene ? presenter->composite_image :
+            presenter->swap_images[image_index];
     VkImage cursor_image = VK_NULL_HANDLE;
     VkDeviceMemory cursor_memory = VK_NULL_HANDLE;
     VkImageView cursor_view = VK_NULL_HANDLE;
@@ -2078,7 +2366,8 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkImageMemoryBarrier target_barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .oldLayout = rotate_scene ? presenter->composite_layout :
+                VK_IMAGE_LAYOUT_UNDEFINED,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2093,8 +2382,10 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
     presenter->api.CmdClearColorImage(presenter->command, target,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
 
-    int target_width = (int)presenter->extent.width;
-    int target_height = (int)presenter->extent.height;
+    int target_width = rotate_scene ? (int)presenter->display_extent.width :
+            (int)presenter->extent.width;
+    int target_height = rotate_scene ? (int)presenter->display_extent.height :
+            (int)presenter->extent.height;
     for (int i = 0; i < entry_count; i++) {
         const struct trierarch_vulkan_draw *draw = entries[i].draw;
         struct dmabuf_import *import = entries[i].import;
@@ -2136,67 +2427,73 @@ static int presenter_present_draws(trierarch_vulkan_presenter *presenter,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
     }
 
-    target_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    target_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    if (draw_cursor) {
-        target_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        target_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-        presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
-                &target_barrier);
-        VkImageMemoryBarrier cursor_barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = cursor_image,
-            .subresourceRange = range,
-        };
-        presenter->api.CmdPipelineBarrier(presenter->command,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 0, NULL, 0, NULL, 1, &cursor_barrier);
-        VkRenderPassBeginInfo pass_begin = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = presenter->cursor_pass,
-            .framebuffer = presenter->swap_framebuffers[image_index],
-            .renderArea = {{0, 0}, presenter->extent},
-        };
-        presenter->api.CmdBeginRenderPass(presenter->command, &pass_begin,
-                VK_SUBPASS_CONTENTS_INLINE);
-        presenter->api.CmdBindPipeline(presenter->command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                presenter->cursor_pipeline);
-        presenter->api.CmdBindDescriptorSets(presenter->command,
-                VK_PIPELINE_BIND_POINT_GRAPHICS, presenter->cursor_layout, 0, 1,
-                &presenter->cursor_descriptor, 0, NULL);
-        VkViewport viewport = {0, 0, (float)presenter->extent.width,
-                (float)presenter->extent.height, 0, 1};
-        VkRect2D scissor = {{0, 0}, presenter->extent};
-        presenter->api.CmdSetViewport(presenter->command, 0, 1, &viewport);
-        presenter->api.CmdSetScissor(presenter->command, 0, 1, &scissor);
-        float w = (float)presenter->extent.width;
-        float h = (float)presenter->extent.height;
-        float push[8] = {
-            cursor_draw.dst_x / w * 2.0f - 1.0f,
-            cursor_draw.dst_y / h * 2.0f - 1.0f,
-            (cursor_draw.dst_x + cursor_draw.dst_width) / w * 2.0f - 1.0f,
-            (cursor_draw.dst_y + cursor_draw.dst_height) / h * 2.0f - 1.0f,
-            0.0f, 0.0f, 1.0f, 1.0f,
-        };
-        presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
-                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), push);
-        presenter->api.CmdDraw(presenter->command, 4, 1, 0, 0);
-        presenter->api.CmdEndRenderPass(presenter->command);
+    if (rotate_scene) {
+        presenter_record_rotated_final(presenter, image_index, range, &black,
+                cursor_image, &cursor_draw, draw_cursor);
     } else {
-        target_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1,
-                &target_barrier);
+    target_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        target_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (draw_cursor) {
+            target_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            target_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+            presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
+                    &target_barrier);
+            VkImageMemoryBarrier cursor_barrier = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = cursor_image,
+                .subresourceRange = range,
+            };
+            presenter->api.CmdPipelineBarrier(presenter->command,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, NULL, 0, NULL, 1, &cursor_barrier);
+            VkRenderPassBeginInfo pass_begin = {
+                .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                .renderPass = presenter->cursor_pass,
+                .framebuffer = presenter->swap_framebuffers[image_index],
+                .renderArea = {{0, 0}, presenter->extent},
+            };
+            presenter->api.CmdBeginRenderPass(presenter->command, &pass_begin,
+                    VK_SUBPASS_CONTENTS_INLINE);
+            presenter->api.CmdBindPipeline(presenter->command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    presenter->cursor_pipeline);
+            presenter->api.CmdBindDescriptorSets(presenter->command,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS, presenter->cursor_layout, 0, 1,
+                    &presenter->cursor_descriptor, 0, NULL);
+            VkViewport viewport = {0, 0, (float)presenter->extent.width,
+                    (float)presenter->extent.height, 0, 1};
+            VkRect2D scissor = {{0, 0}, presenter->extent};
+            presenter->api.CmdSetViewport(presenter->command, 0, 1, &viewport);
+            presenter->api.CmdSetScissor(presenter->command, 0, 1, &scissor);
+            float w = (float)presenter->extent.width;
+            float h = (float)presenter->extent.height;
+            float push[9] = {
+                cursor_draw.dst_x / w * 2.0f - 1.0f,
+                cursor_draw.dst_y / h * 2.0f - 1.0f,
+                (cursor_draw.dst_x + cursor_draw.dst_width) / w * 2.0f - 1.0f,
+                (cursor_draw.dst_y + cursor_draw.dst_height) / h * 2.0f - 1.0f,
+                0.0f, 0.0f, 1.0f, 1.0f, 0.0f,
+            };
+            presenter->api.CmdPushConstants(presenter->command, presenter->cursor_layout,
+                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), push);
+            presenter->api.CmdDraw(presenter->command, 4, 1, 0, 0);
+            presenter->api.CmdEndRenderPass(presenter->command);
+        } else {
+            target_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            presenter->api.CmdPipelineBarrier(presenter->command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1,
+                    &target_barrier);
+        }
     }
     presenter->api.EndCommandBuffer(presenter->command);
 
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT |
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1, .pWaitSemaphores = &presenter->acquired,
