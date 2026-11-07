@@ -1060,12 +1060,21 @@ static bool presenter_create_swapchain_resources(trierarch_vulkan_presenter *pre
     return true;
 }
 
+static const char *surface_transform_name(VkSurfaceTransformFlagBitsKHR transform);
+
 static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
     if (!presenter || !presenter->device || !presenter->surface || !presenter->window) return false;
     presenter->api.QueueWaitIdle(presenter->queue);
     VkSurfaceCapabilitiesKHR caps;
     presenter->api.GetPhysicalDeviceSurfaceCapabilitiesKHR(presenter->physical,
             presenter->surface, &caps);
+    LOGI("Vulkan swapchain create caps extent=%ux%u currentTransform=%s supported=0x%x "
+            "window=%dx%d",
+            caps.currentExtent.width, caps.currentExtent.height,
+            surface_transform_name(caps.currentTransform),
+            (unsigned)caps.supportedTransforms,
+            ANativeWindow_getWidth(presenter->window),
+            ANativeWindow_getHeight(presenter->window));
     uint32_t format_count = 0;
     presenter->api.GetPhysicalDeviceSurfaceFormatsKHR(presenter->physical,
             presenter->surface, &format_count, NULL);
@@ -1129,12 +1138,39 @@ static bool presenter_create_swapchain(trierarch_vulkan_presenter *presenter) {
     return true;
 }
 
+static const char *surface_transform_name(VkSurfaceTransformFlagBitsKHR transform) {
+    switch (transform) {
+    case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR: return "identity";
+    case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR: return "rotate90";
+    case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR: return "rotate180";
+    case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR: return "rotate270";
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR: return "mirror";
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR: return "mirror90";
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR: return "mirror180";
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR: return "mirror270";
+    default: return "unknown";
+    }
+}
+
 static bool presenter_ensure_swapchain_size(trierarch_vulkan_presenter *presenter) {
     if (!presenter || !presenter->device || !presenter->surface) return false;
     VkSurfaceCapabilitiesKHR caps;
     if (presenter->api.GetPhysicalDeviceSurfaceCapabilitiesKHR(presenter->physical,
             presenter->surface, &caps) != VK_SUCCESS)
         return true;
+    static int64_t last_caps_log;
+    int64_t caps_now = presenter_now_ns();
+    if (caps_now - last_caps_log >= 1000000000LL) {
+        last_caps_log = caps_now;
+        LOGI("Vulkan surface caps extent=%ux%u currentTransform=%s supported=0x%x "
+                "window=%dx%d swapchain=%ux%u",
+                caps.currentExtent.width, caps.currentExtent.height,
+                surface_transform_name(caps.currentTransform),
+                (unsigned)caps.supportedTransforms,
+                ANativeWindow_getWidth(presenter->window),
+                ANativeWindow_getHeight(presenter->window),
+                presenter->extent.width, presenter->extent.height);
+    }
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == UINT32_MAX) {
         extent.width = (uint32_t)ANativeWindow_getWidth(presenter->window);
