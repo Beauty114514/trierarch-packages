@@ -55,6 +55,12 @@ It never uses the inherited host `WAYLAND_DISPLAY`; the fallback always uses
 the socket created by the nested KWin process. It does not kill a
 `plasmashell` started by startplasma.
 
+The supervisor scans `/proc` only during discovery and while `plasmashell` is
+missing. After a session and shell are known, it checks cached PID identities
+instead of rescanning `/proc` on every poll. The steady-state poll is one
+second; the status file is written on state changes and at most every five
+seconds.
+
 ## Limitations
 
 - Plasma Wayland only; X11 and standalone KWin are out of scope.
