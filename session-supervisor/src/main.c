@@ -16,7 +16,15 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { DEFAULT_OBSERVE_MS = 10000, PLASMA_GRACE_MS = 8000, POLL_MS = 100, MAX_KNOWN_SOCKETS = 32, MAX_ENVIRONMENT_BYTES = 131072 };
+enum {
+    DEFAULT_OBSERVE_MS = 10000,
+    DEFAULT_GRACE_MS = 8000,
+    POLL_MS = 100,
+    MAX_KNOWN_SOCKETS = 32,
+    MAX_ENVIRONMENT_BYTES = 131072,
+    MAX_FALLBACK_ATTEMPTS = 5,
+    MAX_BACKOFF_MS = 30000,
+};
 static const char *const DROIDSPACES_BINARY = "/data/local/Droidspaces/bin/droidspaces";
 
 static volatile sig_atomic_t running = 1;
@@ -40,6 +48,60 @@ static void log_line(FILE *log, const char *format, ...) {
 static void sleep_milliseconds(long milliseconds) {
     struct timespec delay = {.tv_sec = milliseconds / 1000, .tv_nsec = (milliseconds % 1000) * 1000000L};
     while (nanosleep(&delay, &delay) != 0 && errno == EINTR && running) {}
+}
+
+static bool is_decimal(const char *value);
+
+static bool systemd_user_available(void) {
+    if (access("/run/systemd/system", F_OK) != 0) return false;
+    DIR *directory = opendir("/run/user");
+    if (!directory) return false;
+    bool available = false;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!is_decimal(entry->d_name)) continue;
+        char path[PATH_MAX];
+        int length = snprintf(path, sizeof(path), "/run/user/%s/systemd/private", entry->d_name);
+        if (length < 0 || (size_t)length >= sizeof(path)) continue;
+        struct stat metadata;
+        if (lstat(path, &metadata) == 0 && S_ISSOCK(metadata.st_mode)) {
+            available = true;
+            break;
+        }
+    }
+    closedir(directory);
+    return available;
+}
+
+static long fallback_backoff_ms(int attempts) {
+    long delay = 1000;
+    for (int index = 1; index < attempts && delay < MAX_BACKOFF_MS; index++) {
+        delay *= 2;
+        if (delay > MAX_BACKOFF_MS) delay = MAX_BACKOFF_MS;
+    }
+    return delay;
+}
+
+static void write_status(const char *path, const char *state, pid_t plasma_session,
+        pid_t kwin, pid_t shell, pid_t fallback, int attempts, bool systemd,
+        const char *socket) {
+    if (!path) return;
+    char temporary[PATH_MAX];
+    int length = snprintf(temporary, sizeof(temporary), "%s.%ld.tmp", path, (long)getpid());
+    if (length < 0 || (size_t)length >= sizeof(temporary)) return;
+    FILE *file = fopen(temporary, "w");
+    if (!file) return;
+    fprintf(file, "{\n");
+    fprintf(file, "  \"state\": \"%s\",\n", state);
+    fprintf(file, "  \"plasma_session\": %ld,\n", (long)plasma_session);
+    fprintf(file, "  \"kwin\": %ld,\n", (long)kwin);
+    fprintf(file, "  \"socket\": \"%s\",\n", socket ? socket : "");
+    fprintf(file, "  \"plasmashell\": %ld,\n", (long)shell);
+    fprintf(file, "  \"fallback_pid\": %ld,\n", (long)fallback);
+    fprintf(file, "  \"fallback_attempts\": %d,\n", attempts);
+    fprintf(file, "  \"systemd_user\": %s\n", systemd ? "true" : "false");
+    fprintf(file, "}\n");
+    if (fclose(file) != 0 || rename(temporary, path) != 0) unlink(temporary);
 }
 
 static bool is_decimal(const char *value) {
@@ -332,29 +394,6 @@ static pid_t launch_plasmashell(FILE *log, pid_t plasma_session, const char *soc
     return child;
 }
 
-static void supervise_child(FILE *log, pid_t child) {
-    managed_child = child;
-    while (running) {
-        int status = 0;
-        pid_t result = waitpid(child, &status, WNOHANG);
-        if (result == child) {
-            log_line(log, "plasma-wayland: managed plasmashell exited with status=%d", status);
-            managed_child = 0;
-            return;
-        }
-        if (result < 0 && errno != EINTR) {
-            log_line(log, "plasma-wayland: waitpid failed: %s", strerror(errno));
-            managed_child = 0;
-            return;
-        }
-        sleep_milliseconds(POLL_MS);
-    }
-    int status = 0;
-    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-    managed_child = 0;
-    log_line(log, "plasma-wayland: managed plasmashell stopped with session");
-}
-
 static long parse_milliseconds(const char *value) {
     char *end = NULL;
     errno = 0;
@@ -364,8 +403,11 @@ static long parse_milliseconds(const char *value) {
 }
 
 int main(int argc, char **argv) {
-    const char *runtime_directory = NULL, *log_path = NULL;
+    const char *runtime_directory = NULL, *log_path = NULL, *status_path = NULL;
+    const char *fallback_mode = "auto";
     long observe_milliseconds = DEFAULT_OBSERVE_MS;
+    long grace_milliseconds = DEFAULT_GRACE_MS;
+    bool dry_run = false;
     pid_t owner_pid = 0;
     unsigned long long owner_start_time = 0;
     pid_t session_pgid = 0;
@@ -373,13 +415,20 @@ int main(int argc, char **argv) {
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--runtime-dir") == 0 && index + 1 < argc) runtime_directory = argv[++index];
         else if (strcmp(argv[index], "--log") == 0 && index + 1 < argc) log_path = argv[++index];
+        else if (strcmp(argv[index], "--status-file") == 0 && index + 1 < argc) status_path = argv[++index];
         else if (strcmp(argv[index], "--observe-ms") == 0 && index + 1 < argc) observe_milliseconds = parse_milliseconds(argv[++index]);
+        else if (strcmp(argv[index], "--grace-ms") == 0 && index + 1 < argc) grace_milliseconds = parse_milliseconds(argv[++index]);
+        else if (strcmp(argv[index], "--fallback") == 0 && index + 1 < argc) fallback_mode = argv[++index];
+        else if (strcmp(argv[index], "--dry-run") == 0) dry_run = true;
         else if (strcmp(argv[index], "--owner-pid") == 0 && index + 1 < argc) owner_pid = (pid_t)strtol(argv[++index], NULL, 10);
         else if (strcmp(argv[index], "--owner-start-time") == 0 && index + 1 < argc) owner_start_time = strtoull(argv[++index], NULL, 10);
         else if (strcmp(argv[index], "--pgid") == 0 && index + 1 < argc) session_pgid = (pid_t)strtol(argv[++index], NULL, 10);
         else if (strcmp(argv[index], "--stop-container") == 0 && index + 1 < argc) stop_container = argv[++index];
         else {
-            fprintf(stderr, "usage: %s --runtime-dir DIRECTORY --log FILE [--observe-ms 0..60000] | --owner-pid PID --owner-start-time TICKS (--pgid PGID | --stop-container NAME)\n", argv[0]);
+            fprintf(stderr, "usage: %s --runtime-dir DIRECTORY --log FILE [--status-file FILE] "
+                    "[--observe-ms 0..60000] [--grace-ms 0..60000] "
+                    "[--fallback auto|always|off] [--dry-run] | "
+                    "--owner-pid PID --owner-start-time TICKS (--pgid PGID | --stop-container NAME)\n", argv[0]);
             return 2;
         }
     }
@@ -395,8 +444,12 @@ int main(int argc, char **argv) {
         }
         return watch_owner(owner_pid, owner_start_time, session_pgid, stop_container);
     }
-    if (!runtime_directory || !log_path || observe_milliseconds < 0) {
-        fprintf(stderr, "runtime directory, log file, and valid observation duration are required\n");
+    if (!runtime_directory || !log_path || observe_milliseconds < 0 ||
+            grace_milliseconds < 0 ||
+            (strcmp(fallback_mode, "auto") != 0 &&
+             strcmp(fallback_mode, "always") != 0 &&
+             strcmp(fallback_mode, "off") != 0)) {
+        fprintf(stderr, "runtime directory, log file, valid durations, and fallback mode are required\n");
         return 2;
     }
     FILE *log = fopen(log_path, "a");
@@ -408,48 +461,141 @@ int main(int argc, char **argv) {
     signal(SIGINT, stop);
     char *known[MAX_KNOWN_SOCKETS] = {0};
     size_t known_count = 0;
+    bool discovered = false;
+    bool systemd_logged = false;
+    bool wait_logged = false;
+    bool shell_logged = false;
+    bool exhausted_logged = false;
     long socket_seen_at = -1;
-    bool plasma_adapter_finished = false;
-    bool plasma_wait_logged = false;
-    bool plasma_seen_logged = false;
-    log_line(log, "session supervisor started; runtime=%s observe_ms=%ld", runtime_directory, observe_milliseconds);
-    for (long elapsed = 0; running && elapsed <= observe_milliseconds; elapsed += POLL_MS) {
-        observe_sockets(log, runtime_directory, known, &known_count);
-        if (!plasma_adapter_finished) {
-            pid_t plasma_session = find_process_named("plasma_session");
-            char socket[NAME_MAX + 1] = {0};
-            pid_t kwin = plasma_session ? find_nested_kwin_socket(plasma_session, runtime_directory, socket, sizeof(socket)) : 0;
+    long next_retry_at = 0;
+    int fallback_attempts = 0;
+    pid_t fallback_pid = 0;
+    pid_t plasma_session = 0;
+    pid_t kwin = 0;
+    pid_t shell = 0;
+    char socket[NAME_MAX + 1] = {0};
+    const char *state = "DISCOVER";
+    long elapsed = 0;
+    log_line(log, "session supervisor started; runtime=%s observe_ms=%ld grace_ms=%ld fallback=%s dry_run=%d",
+            runtime_directory, observe_milliseconds, grace_milliseconds, fallback_mode, dry_run ? 1 : 0);
+    while (running) {
+        if (!discovered) observe_sockets(log, runtime_directory, known, &known_count);
+        plasma_session = find_process_named("plasma_session");
+        bool systemd_user = systemd_user_available();
+        if (!discovered) {
+            kwin = plasma_session ? find_nested_kwin_socket(plasma_session, runtime_directory,
+                    socket, sizeof(socket)) : 0;
             if (kwin > 0) {
-                if (socket_seen_at < 0) {
-                    socket_seen_at = elapsed;
-                    log_line(log, "plasma-wayland: detected plasma_session=%ld kwin_wayland=%ld socket=%s", (long)plasma_session, (long)kwin, socket);
+                discovered = true;
+                socket_seen_at = elapsed;
+                state = "WAIT_SHELL";
+                log_line(log, "plasma-wayland: detected plasma_session=%ld kwin_wayland=%ld socket=%s",
+                        (long)plasma_session, (long)kwin, socket);
+            } else if (elapsed >= observe_milliseconds) {
+                log_line(log, "plasma-wayland: adapter did not match during startup observation");
+                break;
+            }
+        }
+        if (discovered) {
+            if (plasma_session <= 0) {
+                log_line(log, "plasma-wayland: plasma_session exited");
+                break;
+            }
+            char refreshed[NAME_MAX + 1] = {0};
+            pid_t refreshed_kwin = find_nested_kwin_socket(plasma_session, runtime_directory,
+                    refreshed, sizeof(refreshed));
+            if (refreshed_kwin <= 0) {
+                log_line(log, "plasma-wayland: kwin_wayland exited");
+                break;
+            }
+            if (strcmp(refreshed, socket) != 0) {
+                log_line(log, "plasma-wayland: socket changed %s -> %s", socket, refreshed);
+                snprintf(socket, sizeof(socket), "%s", refreshed);
+            }
+            kwin = refreshed_kwin;
+            shell = find_process_named("plasmashell");
+            if (fallback_pid > 0) {
+                int status = 0;
+                pid_t reaped = waitpid(fallback_pid, &status, WNOHANG);
+                if (reaped == fallback_pid) {
+                    log_line(log, "plasma-wayland: fallback plasmashell exited with status=%d", status);
+                    fallback_pid = 0;
+                    managed_child = 0;
+                    if (shell <= 0 && fallback_attempts < MAX_FALLBACK_ATTEMPTS)
+                        next_retry_at = elapsed + fallback_backoff_ms(fallback_attempts);
                 }
-                if (find_process_named("plasmashell") > 0) {
-                    if (!plasma_seen_logged) {
-                        plasma_seen_logged = true;
-                        log_line(log, "plasma-wayland: plasmashell detected; leaving lifecycle to startplasma");
+            }
+            shell = find_process_named("plasmashell");
+            if (shell > 0) {
+                if (!shell_logged) {
+                    shell_logged = true;
+                    state = "SHELL_OK";
+                    log_line(log, "plasma-wayland: plasmashell detected; leaving lifecycle to startplasma");
+                }
+                fallback_attempts = 0;
+                next_retry_at = 0;
+                wait_logged = false;
+                exhausted_logged = false;
+            } else {
+                shell_logged = false;
+                bool allow_fallback = strcmp(fallback_mode, "off") != 0 &&
+                        (strcmp(fallback_mode, "always") == 0 || !systemd_user);
+                if (systemd_user && strcmp(fallback_mode, "always") != 0) {
+                    if (!systemd_logged) {
+                        systemd_logged = true;
+                        log_line(log, "plasma-wayland: systemd user session available; waiting for startplasma");
                     }
-                } else if (elapsed - socket_seen_at >= PLASMA_GRACE_MS) {
-                    if (find_process_named("plasma_session") > 0) {
-                        if (!plasma_wait_logged) {
-                            plasma_wait_logged = true;
-                            log_line(log, "plasma-wayland: plasmashell absent after %dms; waiting for startplasma", PLASMA_GRACE_MS);
+                    state = "WAIT_STARTPLASMA";
+                } else if (allow_fallback && elapsed - socket_seen_at >= grace_milliseconds) {
+                    if (!wait_logged) {
+                        wait_logged = true;
+                        log_line(log, "plasma-wayland: plasmashell absent after %ldms; starting fallback",
+                                grace_milliseconds);
+                    }
+                    if (fallback_attempts >= MAX_FALLBACK_ATTEMPTS && !exhausted_logged) {
+                        exhausted_logged = true;
+                        state = "FALLBACK_EXHAUSTED";
+                        log_line(log, "plasma-wayland: fallback attempts exhausted");
+                    }
+                    if (fallback_pid == 0 && fallback_attempts < MAX_FALLBACK_ATTEMPTS &&
+                            elapsed >= next_retry_at) {
+                        if (dry_run) {
+                            fallback_attempts++;
+                            next_retry_at = elapsed + fallback_backoff_ms(fallback_attempts);
+                            state = "FALLBACK_DRY_RUN";
+                            log_line(log, "plasma-wayland: dry-run would launch plasmashell --replace on %s (attempt %d)",
+                                    socket, fallback_attempts);
+                        } else {
+                            pid_t child = launch_plasmashell(log, plasma_session, socket);
+                            fallback_attempts++;
+                            if (child > 0) {
+                                fallback_pid = child;
+                                managed_child = child;
+                                state = "SUPERVISE_FALLBACK";
+                            } else {
+                                next_retry_at = elapsed + fallback_backoff_ms(fallback_attempts);
+                                state = "FALLBACK_FAILED";
+                            }
                         }
-                    } else {
-                        log_line(log, "plasma-wayland: plasma_session exited; starting fallback");
-                        pid_t child = launch_plasmashell(log, plasma_session, socket);
-                        plasma_adapter_finished = true;
-                        if (child > 0) supervise_child(log, child);
-                        break;
                     }
+                } else {
+                    state = "WAIT_SHELL";
                 }
             }
         }
-        if (elapsed == observe_milliseconds) break;
-        sleep_milliseconds(POLL_MS);
+        write_status(status_path, state, plasma_session, kwin, shell, fallback_pid,
+                fallback_attempts, systemd_user, socket);
+        elapsed += POLL_MS;
+        if (running) sleep_milliseconds(POLL_MS);
     }
-    if (!plasma_adapter_finished) log_line(log, "plasma-wayland: adapter did not match during startup observation");
-    log_line(log, "session supervisor observation finished; sockets=%zu", known_count);
+    if (fallback_pid > 0) {
+        kill(fallback_pid, SIGTERM);
+        int status = 0;
+        while (waitpid(fallback_pid, &status, 0) < 0 && errno == EINTR) {}
+        fallback_pid = 0;
+        managed_child = 0;
+    }
+    log_line(log, "session supervisor stopped; sockets=%zu", known_count);
     for (size_t index = 0; index < known_count; index++) free(known[index]);
     fclose(log);
     return 0;
