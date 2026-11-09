@@ -1,0 +1,29 @@
+--- a/src/backends/wayland/wayland_backend.cpp
++++ b/src/backends/wayland/wayland_backend.cpp
+@@ -449,6 +449,26 @@
+         m_renderDevice = GpuManager::self()->compatibleRenderDevice(dmabuf->mainDevice());
+     }
+ 
++    // A nested compositor can receive dma-buf feedback whose main device is
++    // not openable inside the guest. Select an explicitly configured render
++    // node only when the feedback device cannot be matched.
++    if (!m_renderDevice && qEnvironmentVariableIsSet("TRIERARCH_NESTED_RENDER_NODE")) {
++        const auto nodes = GpuManager::splitPathList(qEnvironmentVariable("KWIN_RENDER_NODES"));
++        const auto &devices = GpuManager::self()->renderDevices();
++        for (const auto &node : nodes) {
++            for (const auto &device : devices) {
++                if (device->path() == node) {
++                    m_renderDevice = device.get();
++                    qCWarning(KWIN_WAYLAND_BACKEND) << "Using explicit nested render node" << node;
++                    break;
++                }
++            }
++            if (m_renderDevice) {
++                break;
++            }
++        }
++    }
++
+     createOutputs();
+ 
+     m_seat = std::make_unique<WaylandSeat>(m_display->seat(), this);
