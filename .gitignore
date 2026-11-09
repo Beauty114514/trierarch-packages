@@ -26,3 +26,10 @@
 **/.idea/
 **/*.iml
 **/.DS_Store
+
+# kwin-compat keeps its release manifest and staging note tracked; the
+# library binary itself remains ignored by kwin-compat/.gitignore.
+!kwin-compat/dist/
+!kwin-compat/dist/.gitkeep
+!kwin-compat/dist/README.md
+!kwin-compat/dist/manifest.json
