@@ -62,6 +62,8 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
         ),
         format!("--bind={rootfs}/sys/.empty:/sys/fs/selinux"),
     ];
+    let adreno_fake_drm = prepare_adreno_fake_drm(spec, &mut argv)?;
+
     let x11 = !spec.x11_socket_directory.as_os_str().is_empty();
     let wayland = !spec.wayland_runtime_directory.as_os_str().is_empty();
     let virgl = !spec.virgl_runtime_directory.as_os_str().is_empty();
@@ -212,7 +214,66 @@ pub(super) fn build_exec_args(spec: &ProotSpec) -> Result<(Vec<CString>, Vec<CSt
     }
     validate_environment(&spec.graphics_environment)?;
     env.extend(spec.graphics_environment.iter().cloned());
+    if adreno_fake_drm {
+        env.push("TRIERARCH_NESTED_RENDER_NODE=1".into());
+        env.push("KWIN_RENDER_NODES=/dev/dri/renderD0".into());
+    }
     Ok((strings(&argv)?, strings(&env)?))
+}
+
+/// Build the synthetic DRM render node that DroidDeck-style nested KWin
+/// needs on Adreno. PRoot shares Android's /dev, so a real DRM render node is
+/// unavailable; bind a regular mount point over /dev/dri and the KGSL device
+/// over renderD0, together with the minimal sysfs attributes libdrm reads.
+fn prepare_adreno_fake_drm(spec: &ProotSpec, argv: &mut Vec<String>) -> Result<bool> {
+    let adreno = spec
+        .graphics_environment
+        .iter()
+        .any(|value| value == "TRIERARCH_RENDERER=adreno");
+    if !adreno || !std::path::Path::new("/dev/kgsl-3d0").exists() {
+        return Ok(false);
+    }
+    let files = spec
+        .rootfs
+        .parent()
+        .and_then(std::path::Path::parent)
+        .context("PRoot rootfs is not inside the app files directory")?;
+    let base = files.join("gpu/adreno");
+    let dri = base.join("dri");
+    let char_dir = base.join("sys/dev/char");
+    let class_drm = base.join("sys/class/drm");
+    std::fs::create_dir_all(&dri)?;
+    std::fs::create_dir_all(&class_drm)?;
+
+    let metadata = std::fs::metadata("/dev/kgsl-3d0")?;
+    use std::os::unix::fs::MetadataExt;
+    let device = metadata.rdev();
+    let major = ((device >> 8) & 0xfff) | ((device >> 32) & !0xfff);
+    let minor = (device & 0xff) | ((device >> 12) & !0xff);
+    let node = format!("{major}:{minor}");
+    let device_dir = char_dir.join(&node).join("device");
+    let drm_dir = device_dir.join("drm/renderD0");
+    std::fs::create_dir_all(&drm_dir)?;
+    std::fs::write(drm_dir.join("dev"), format!("{node}\n"))?;
+    std::fs::write(drm_dir.join("uevent"), format!("{node}\n"))?;
+    std::fs::write(device_dir.join("uevent"), "DRIVER=kgsl-3d0\nMODALIAS=platform:kgsl-3d0\n")?;
+    let render = dri.join("renderD0");
+    std::fs::File::create(&render)?;
+    let char_link = class_drm.join("renderD0");
+    let _ = std::fs::remove_file(&char_link);
+    std::os::unix::fs::symlink(format!("/sys/dev/char/{node}"), &char_link)?;
+    let subsystem = device_dir.join("subsystem");
+    let _ = std::fs::remove_file(&subsystem);
+    std::os::unix::fs::symlink("/sys/bus/platform", &subsystem)?;
+    let driver = device_dir.join("driver");
+    let _ = std::fs::remove_file(&driver);
+    std::os::unix::fs::symlink("/sys/bus/platform/drivers/msm_drm", &driver)?;
+
+    argv.push(format!("--bind={}:/dev/dri", dri.display()));
+    argv.push("--bind=/dev/kgsl-3d0:/dev/dri/renderD0".into());
+    argv.push(format!("--bind={}:/sys/dev/char", char_dir.display()));
+    argv.push(format!("--bind={}:/sys/class/drm", class_drm.display()));
+    Ok(true)
 }
 
 fn shell_words(values: &[String]) -> String {
