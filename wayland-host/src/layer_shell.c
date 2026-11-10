@@ -215,22 +215,22 @@ void trierarch_layer_surface_commit(struct compositor_surface *surface) {
     const int32_t width = anchored_size(surface->layer_width,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
-            surface->server->output_width,
+            trierarch_output_logical_width(surface->server),
             surface->layer_margin_left, surface->layer_margin_right);
     const int32_t height = anchored_size(surface->layer_height,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM,
-            surface->server->output_height,
+            trierarch_output_logical_height(surface->server),
             surface->layer_margin_top, surface->layer_margin_bottom);
     surface->layer_x = anchored_position(surface->layer_width,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
-            surface->server->output_width, width,
+            trierarch_output_logical_width(surface->server), width,
             surface->layer_margin_left, surface->layer_margin_right);
     surface->layer_y = anchored_position(surface->layer_height,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP,
             anchor & ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM,
-            surface->server->output_height, height,
+            trierarch_output_logical_height(surface->server), height,
             surface->layer_margin_top, surface->layer_margin_bottom);
     if (!surface->layer_configured) {
         surface->layer_configured = true;

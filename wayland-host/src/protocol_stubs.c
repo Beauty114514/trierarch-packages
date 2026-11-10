@@ -31,7 +31,12 @@ static void fractional_get(struct wl_client *client, struct wl_resource *manager
     compositor_surface->fractional_scale = resource;
     wl_resource_set_implementation(resource, &fractional_surface_impl,
             compositor_surface, NULL);
-    wp_fractional_scale_v1_send_preferred_scale(resource, 120);
+    struct wayland_server *server = compositor_surface->server;
+    int32_t percent = server && server->desktop_scale_percent > 0
+            ? server->desktop_scale_percent : 100;
+    /* wp_fractional_scale_v1 carries 120ths of a scale unit, not percent. */
+    int32_t preferred = percent * 120 / 100;
+    wp_fractional_scale_v1_send_preferred_scale(resource, preferred);
 }
 static void fractional_destroy(struct wl_client *client, struct wl_resource *resource) {
     (void)client;

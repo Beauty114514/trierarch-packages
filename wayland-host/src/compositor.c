@@ -106,10 +106,13 @@ void trierarch_wayland_release_deferred(struct wayland_server *server) {
     }
 }
 
-wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled) {
+wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled,
+        int desktop_scale_percent) {
     struct wayland_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
     server->dmabuf_enabled = dmabuf_enabled;
+    server->desktop_scale_percent = desktop_scale_percent > 0
+            ? desktop_scale_percent : 100;
     server->wake_fd = -1;
     server->telemetry_fd = -1;
     server->repaint_fd = -1;

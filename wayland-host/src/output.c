@@ -7,6 +7,23 @@ struct output_resource {
     struct wl_resource *resource;
 };
 
+static int32_t scale_percent(const struct wayland_server *server) {
+    return server && server->desktop_scale_percent > 0
+            ? server->desktop_scale_percent : 100;
+}
+
+int trierarch_output_logical_width(wayland_server_t *opaque) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    int32_t width = server && server->output_width > 0 ? server->output_width : 1080;
+    return width * 100 / scale_percent(server);
+}
+
+int trierarch_output_logical_height(wayland_server_t *opaque) {
+    struct wayland_server *server = (struct wayland_server *)opaque;
+    int32_t height = server && server->output_height > 0 ? server->output_height : 1920;
+    return height * 100 / scale_percent(server);
+}
+
 static void output_release(struct wl_client *client, struct wl_resource *resource) {
     (void)client;
     wl_resource_destroy(resource);
@@ -33,7 +50,10 @@ static void send_output_state(struct wayland_server *server, struct wl_resource 
             WL_OUTPUT_TRANSFORM_NORMAL);
     wl_output_send_mode(resource, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
             width, height, 60000);
-    if (version >= 2) wl_output_send_scale(resource, 1);
+    if (version >= 2) {
+        int32_t scale = scale_percent(server) / 100;
+        wl_output_send_scale(resource, scale > 0 ? scale : 1);
+    }
     if (version >= 4) {
         wl_output_send_name(resource, "Trierarch-1");
         wl_output_send_description(resource, "Trierarch Wayland Output");

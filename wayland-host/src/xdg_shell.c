@@ -270,7 +270,8 @@ void trierarch_surface_send_configure(struct compositor_surface *surface) {
     uint32_t *maximized = wl_array_add(&states, sizeof(*maximized));
     if (maximized) *maximized = XDG_TOPLEVEL_STATE_MAXIMIZED;
     xdg_toplevel_send_configure(surface->xdg_toplevel,
-            surface->server->output_width, surface->server->output_height, &states);
+            trierarch_output_logical_width(surface->server),
+            trierarch_output_logical_height(surface->server), &states);
     wl_array_release(&states);
     uint32_t serial = wl_display_next_serial(surface->server->display);
     trace_xdg_event("send_configure", wl_resource_get_client(surface->xdg_surface),

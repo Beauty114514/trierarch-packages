@@ -10,8 +10,8 @@ struct xdg_output_resource {
 static void send_output_state(struct wayland_server *server,
         struct wl_resource *resource) {
     uint32_t version = (uint32_t)wl_resource_get_version(resource);
-    int32_t width = server && server->output_width > 0 ? server->output_width : 1080;
-    int32_t height = server && server->output_height > 0 ? server->output_height : 1920;
+    int32_t width = trierarch_output_logical_width(server);
+    int32_t height = trierarch_output_logical_height(server);
     zxdg_output_v1_send_logical_position(resource, 0, 0);
     zxdg_output_v1_send_logical_size(resource, width, height);
     if (version >= 2) {

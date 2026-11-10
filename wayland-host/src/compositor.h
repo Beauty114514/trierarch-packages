@@ -6,7 +6,8 @@
 
 typedef struct wayland_server wayland_server_t;
 
-wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled);
+wayland_server_t *trierarch_wayland_create(const char *runtime_dir, bool dmabuf_enabled,
+        int desktop_scale_percent);
 void trierarch_wayland_destroy(wayland_server_t *server);
 void trierarch_wayland_dispatch(wayland_server_t *server);
 void trierarch_wayland_wake(wayland_server_t *server);
@@ -14,6 +15,8 @@ bool trierarch_wayland_begin_repaint(wayland_server_t *server);
 void trierarch_wayland_repaint_failed(wayland_server_t *server);
 void trierarch_wayland_request_render(wayland_server_t *server);
 void trierarch_wayland_set_output_size(wayland_server_t *server, int width, int height);
+int trierarch_output_logical_width(wayland_server_t *server);
+int trierarch_output_logical_height(wayland_server_t *server);
 bool trierarch_wayland_has_surface(wayland_server_t *server);
 void trierarch_pointer_move_absolute(wayland_server_t *server,
         float x, float y, uint32_t time_ms);

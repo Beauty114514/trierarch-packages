@@ -223,6 +223,9 @@ struct wayland_server {
     char *runtime_dir;
     int32_t output_width;
     int32_t output_height;
+    /* Guest desktop scale in percent.  This changes only the guest's logical
+     * output; the physical output mode and Android surface stay untouched. */
+    int32_t desktop_scale_percent;
     /* Android SurfaceView pixels used by input events. */
     int32_t input_width;
     int32_t input_height;

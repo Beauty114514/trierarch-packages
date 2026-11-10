@@ -180,7 +180,7 @@ static void *dispatch_loop(void *argument) {
 
 JNIEXPORT jboolean JNICALL
 Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object,
-        jstring runtime_directory, jstring buffer_mode) {
+        jstring runtime_directory, jstring buffer_mode, jint desktop_scale_percent) {
     (void)object;
     const char *runtime = (*env)->GetStringUTFChars(env, runtime_directory, NULL);
     if (!runtime) return JNI_FALSE;
@@ -197,7 +197,8 @@ Java_app_trierarch_wayland_WaylandBridge_nativeStart(JNIEnv *env, jobject object
         mode_conflict = server_dmabuf_enabled != dmabuf_enabled;
     }
     if (!server && !mode_conflict) {
-        server = trierarch_wayland_create(runtime, dmabuf_enabled);
+        server = trierarch_wayland_create(runtime, dmabuf_enabled,
+                (int)desktop_scale_percent);
         if (server) {
             server_dmabuf_enabled = dmabuf_enabled;
             dispatch_running = true;
