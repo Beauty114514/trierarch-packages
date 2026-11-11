@@ -107,7 +107,9 @@ static const struct xdg_toplevel_interface xdg_toplevel_impl = {
 
 static void xdg_toplevel_resource_destroy(struct wl_resource *resource) {
     struct compositor_surface *surface = wl_resource_get_user_data(resource);
-    if (surface) surface->xdg_toplevel = NULL;
+    if (!surface) return;
+    surface->xdg_toplevel = NULL;
+    trierarch_seat_refresh_focus(surface->server);
 }
 
 static void xdg_surface_destroy(struct wl_client *client, struct wl_resource *resource) {

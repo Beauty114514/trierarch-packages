@@ -294,7 +294,11 @@ static void surface_resource_destroy(struct wl_resource *resource) {
     if (surface->pending_explicit_release)
         wl_resource_destroy(surface->pending_explicit_release);
     surface->pending_detach = false;
+    struct wayland_server *server = surface->server;
+    surface->mapped = false;
+    surface->current = NULL;
     wl_list_remove(&surface->link);
+    if (server) trierarch_seat_refresh_focus(server);
     free(surface);
 }
 
@@ -426,6 +430,9 @@ void trierarch_surface_commit(struct compositor_surface *surface) {
     if (surface->xdg_surface && !surface->configured)
         trierarch_surface_send_configure(surface);
     trierarch_layer_surface_commit(surface);
+    /* Focus may change when a surface maps, unmaps, or resizes without the
+     * pointer moving. */
+    trierarch_seat_refresh_focus(surface->server);
     if (surface->current && surface->current->tvg_token &&
         surface->current->tvg_fd >= 0)
         tvg_scanout_present_fd(surface->current->tvg_fd);

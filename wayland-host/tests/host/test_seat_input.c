@@ -30,8 +30,10 @@ struct client_state {
     int configured;
     int keymap_seen;
     int keyboard_enter_seen;
+    int keyboard_leave_seen;
     int key_seen;
     int pointer_enter_seen;
+    int pointer_leave_seen;
     int pointer_motion_seen;
     int pointer_button_seen;
 };
@@ -67,7 +69,8 @@ static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t seria
 }
 static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t serial,
         struct wl_surface *surface) {
-    (void)data; (void)pointer; (void)serial; (void)surface;
+    (void)pointer; (void)serial; (void)surface;
+    ((struct client_state *)data)->pointer_leave_seen++;
 }
 static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time,
         wl_fixed_t x, wl_fixed_t y) {
@@ -117,7 +120,8 @@ static void keyboard_enter(void *data, struct wl_keyboard *keyboard, uint32_t se
 }
 static void keyboard_leave(void *data, struct wl_keyboard *keyboard, uint32_t serial,
         struct wl_surface *surface) {
-    (void)data; (void)keyboard; (void)serial; (void)surface;
+    (void)keyboard; (void)serial; (void)surface;
+    ((struct client_state *)data)->keyboard_leave_seen++;
 }
 static void keyboard_key(void *data, struct wl_keyboard *keyboard, uint32_t serial,
         uint32_t time, uint32_t key, uint32_t state_value) {
@@ -262,6 +266,24 @@ int main(void) {
     wl_pointer_add_listener(state.pointer2, &pointer_listener, &state);
     state.keyboard2 = wl_seat_get_keyboard(state.seat);
     wl_keyboard_add_listener(state.keyboard2, &keyboard_listener, &state);
+    assert(wl_display_roundtrip(state.display) >= 0);
+    assert(state.pointer_enter_seen > pointer_enters);
+    assert(state.keyboard_enter_seen > keyboard_enters);
+
+    /* Unmapping the focused surface must refresh focus even without pointer
+     * motion. */
+    wl_surface_attach(state.surface, NULL, 0, 0);
+    wl_surface_commit(state.surface);
+    assert(wl_display_roundtrip(state.display) >= 0);
+    assert(state.pointer_leave_seen > 0);
+    assert(state.keyboard_leave_seen > 0);
+
+    /* Remapping it must restore enter without another motion event. */
+    pointer_enters = state.pointer_enter_seen;
+    keyboard_enters = state.keyboard_enter_seen;
+    wl_surface_attach(state.surface, buffer, 0, 0);
+    wl_surface_damage(state.surface, 0, 0, 640, 480);
+    wl_surface_commit(state.surface);
     assert(wl_display_roundtrip(state.display) >= 0);
     assert(state.pointer_enter_seen > pointer_enters);
     assert(state.keyboard_enter_seen > keyboard_enters);

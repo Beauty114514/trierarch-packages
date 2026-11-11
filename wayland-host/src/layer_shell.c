@@ -131,6 +131,7 @@ static void layer_surface_resource_destroy(struct wl_resource *resource) {
     surface->layer_surface = NULL;
     surface->layer_configured = false;
     surface->mapped = false;
+    trierarch_seat_refresh_focus(surface->server);
     trierarch_wayland_request_render(surface->server);
 }
 

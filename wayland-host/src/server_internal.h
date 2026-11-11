@@ -27,6 +27,7 @@ struct compositor_surface;
  * dangling pointer to that surface. */
 void trierarch_seat_surface_destroyed(struct wayland_server *server,
         struct compositor_surface *surface);
+void trierarch_seat_refresh_focus(struct wayland_server *server);
 
 /* Keep these in sync with the protocol behavior implemented by this host.
  * wl_resource versions are negotiated per client, so raising the advertised

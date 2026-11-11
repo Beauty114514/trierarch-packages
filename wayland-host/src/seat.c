@@ -343,6 +343,12 @@ static void update_keyboard_focus(struct wayland_server *server) {
     send_keyboard_enter(server, target);
 }
 
+void trierarch_seat_refresh_focus(struct wayland_server *server) {
+    if (!server) return;
+    update_pointer_focus(server);
+    update_keyboard_focus(server);
+}
+
 static void update_keyboard_modifiers(struct wayland_server *server, uint32_t key, bool pressed) {
     uint32_t bit = 0;
     switch (key) {
