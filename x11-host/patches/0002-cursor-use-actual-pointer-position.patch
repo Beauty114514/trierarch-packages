@@ -1,0 +1,25 @@
+--- a/lorie/InitOutput.c
++++ b/lorie/InitOutput.c
+@@ -441,7 +441,7 @@
+     }
+ }
+ 
+-static void lorieSetCursor(unused DeviceIntPtr pDev, unused ScreenPtr pScr, CursorPtr pCurs, int x0, int y0) {
++static void lorieSetCursor(DeviceIntPtr pDev, ScreenPtr pScr, CursorPtr pCurs, int x0, int y0) {
+     CursorBitsPtr bits = pCurs ? pCurs->bits : NULL;
+     if (pCurs && (pCurs->bits->width >= 512 || pCurs->bits->height >= 512))
+         // We do not have enough memory allocated for such a big cursor, let's display default "X" cursor
+@@ -461,7 +461,12 @@
+     pvfb->state->cursor.updated = true;
+     lorie_mutex_unlock(&pvfb->state->cursor.lock, &pvfb->state->cursor.lockingPid);
+ 
+-    lorieMoveCursor(NULL, NULL, x0, y0);
++    /* SetCursor also runs when only the cursor image changes.  The x/y
++     * arguments can then be stale; keep the sprite on the real X pointer. */
++    int pointerX = x0;
++    int pointerY = y0;
++    if (pDev) miPointerGetPosition(pDev, &pointerX, &pointerY);
++    lorieMoveCursor(pDev, pScr, pointerX, pointerY);
+ }
+ 
+ static miPointerSpriteFuncRec loriePointerSpriteFuncs = {
