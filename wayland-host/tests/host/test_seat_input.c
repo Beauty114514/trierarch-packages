@@ -21,7 +21,9 @@ struct client_state {
     struct xdg_wm_base *wm_base;
     struct wl_seat *seat;
     struct wl_pointer *pointer;
+    struct wl_pointer *pointer2;
     struct wl_keyboard *keyboard;
+    struct wl_keyboard *keyboard2;
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
@@ -252,6 +254,18 @@ int main(void) {
     assert(state.pointer_motion_seen > 0);
     assert(state.pointer_button_seen > 0);
 
+    /* A client may recreate its input objects without changing focus.  The
+     * new resources must receive enter immediately, before any new motion. */
+    int pointer_enters = state.pointer_enter_seen;
+    int keyboard_enters = state.keyboard_enter_seen;
+    state.pointer2 = wl_seat_get_pointer(state.seat);
+    wl_pointer_add_listener(state.pointer2, &pointer_listener, &state);
+    state.keyboard2 = wl_seat_get_keyboard(state.seat);
+    wl_keyboard_add_listener(state.keyboard2, &keyboard_listener, &state);
+    assert(wl_display_roundtrip(state.display) >= 0);
+    assert(state.pointer_enter_seen > pointer_enters);
+    assert(state.keyboard_enter_seen > keyboard_enters);
+
     /* Destroying the focused surface must clear both seat focus pointers;
      * later input must not dereference the freed surface. */
     xdg_toplevel_destroy(state.toplevel);
@@ -263,6 +277,8 @@ int main(void) {
     trierarch_keyboard_set_key(server, 30, false, 8);
     assert(wl_display_roundtrip(state.display) >= 0);
 
+    wl_pointer_destroy(state.pointer2);
+    wl_keyboard_destroy(state.keyboard2);
     wl_pointer_destroy(state.pointer);
     wl_keyboard_destroy(state.keyboard);
     wl_seat_destroy(state.seat);

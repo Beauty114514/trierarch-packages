@@ -43,15 +43,22 @@ static struct compositor_surface *find_pointer_target(struct wayland_server *ser
     return best;
 }
 
+static void send_pointer_enter_to_resource(struct wayland_server *server,
+        struct wl_resource *resource, struct compositor_surface *surface) {
+    if (!surface || !surface->wl_surface || !resource) return;
+    if (wl_resource_get_client(resource) != wl_resource_get_client(surface->wl_surface))
+        return;
+    wl_pointer_send_enter(resource, wl_display_next_serial(server->display),
+            surface->wl_surface, server->pointer_x, server->pointer_y);
+}
+
 static void send_pointer_enter(struct wayland_server *server, struct compositor_surface *surface) {
     if (!surface || !surface->wl_surface) return;
     struct wl_client *client = wl_resource_get_client(surface->wl_surface);
-    uint32_t serial = wl_display_next_serial(server->display);
     struct pointer_resource *tracked;
     wl_list_for_each(tracked, &server->pointer_resources, link) {
         if (wl_resource_get_client(tracked->resource) == client)
-            wl_pointer_send_enter(tracked->resource, serial, surface->wl_surface,
-                    server->pointer_x, server->pointer_y);
+            send_pointer_enter_to_resource(server, tracked->resource, surface);
     }
 }
 
@@ -291,21 +298,29 @@ static void track_keyboard_resource(struct wayland_server *server, struct wl_res
     wl_list_insert(&server->keyboard_resources, &tracked->link);
 }
 
+static void send_keyboard_enter_to_resource(struct wayland_server *server,
+        struct wl_resource *resource, struct compositor_surface *surface) {
+    if (!surface || !surface->wl_surface || !resource) return;
+    if (wl_resource_get_client(resource) != wl_resource_get_client(surface->wl_surface))
+        return;
+    struct wl_array keys;
+    wl_array_init(&keys);
+    wl_keyboard_send_enter(resource, wl_display_next_serial(server->display),
+            surface->wl_surface, &keys);
+    wl_keyboard_send_modifiers(resource, wl_display_next_serial(server->display),
+            server->keyboard_mods_depressed, 0, server->keyboard_mods_locked, 0);
+    wl_array_release(&keys);
+}
+
 static void send_keyboard_enter(struct wayland_server *server,
         struct compositor_surface *surface) {
     if (!surface || !surface->wl_surface) return;
     struct wl_client *client = wl_resource_get_client(surface->wl_surface);
-    struct wl_array keys;
-    wl_array_init(&keys);
     struct keyboard_resource *tracked;
     wl_list_for_each(tracked, &server->keyboard_resources, link) {
-        if (wl_resource_get_client(tracked->resource) != client) continue;
-        wl_keyboard_send_enter(tracked->resource, wl_display_next_serial(server->display),
-                surface->wl_surface, &keys);
-        wl_keyboard_send_modifiers(tracked->resource, wl_display_next_serial(server->display),
-                server->keyboard_mods_depressed, 0, server->keyboard_mods_locked, 0);
+        if (wl_resource_get_client(tracked->resource) == client)
+            send_keyboard_enter_to_resource(server, tracked->resource, surface);
     }
-    wl_array_release(&keys);
 }
 
 static void send_keyboard_leave(struct wayland_server *server,
@@ -401,6 +416,8 @@ static void seat_get_pointer(struct wl_client *client, struct wl_resource *seat,
     struct wayland_server *server = wl_resource_get_user_data(seat);
     wl_resource_set_implementation(resource, &pointer_impl, server, NULL);
     track_pointer_resource(server, resource);
+    if (server->pointer_focus)
+        send_pointer_enter_to_resource(server, resource, server->pointer_focus);
 }
 
 static void seat_get_keyboard(struct wl_client *client, struct wl_resource *seat,
@@ -420,7 +437,13 @@ static void seat_get_keyboard(struct wl_client *client, struct wl_resource *seat
     send_keymap(resource);
     if (wl_resource_get_version(resource) >= 4)
         wl_keyboard_send_repeat_info(resource, 25, 600);
+    struct compositor_surface *previous_focus = server->keyboard_focus;
     update_keyboard_focus(server);
+    if (server->keyboard_focus && server->keyboard_focus == previous_focus) {
+        /* The focus was already current, so update_keyboard_focus() returned
+         * early and did not send enter to this newly created resource. */
+        send_keyboard_enter_to_resource(server, resource, server->keyboard_focus);
+    }
 }
 
 static void seat_get_touch(struct wl_client *client, struct wl_resource *seat,
