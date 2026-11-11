@@ -24,7 +24,7 @@ static void *server_thread(void *unused) {
 
 static void start_server(const char *runtime_dir) {
     server_should_stop = 0;
-    server = trierarch_wayland_create(runtime_dir, true);
+    server = trierarch_wayland_create(runtime_dir, true, 100);
     assert(server != NULL);
     assert(pthread_create(&server_thread_id, NULL, server_thread, NULL) == 0);
 }

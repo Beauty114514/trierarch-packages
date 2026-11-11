@@ -20,7 +20,7 @@ int main(void) {
     char *runtime_dir = mkdtemp(template);
     assert(runtime_dir != NULL);
 
-    wayland_server_t *server = trierarch_wayland_create(runtime_dir, false);
+    wayland_server_t *server = trierarch_wayland_create(runtime_dir, false, 100);
     assert(server != NULL);
     assert(exists(runtime_dir, "wayland-trierarch"));
     assert(!exists(runtime_dir, "dmabuf-feedback.sock"));

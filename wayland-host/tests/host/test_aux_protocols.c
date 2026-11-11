@@ -95,7 +95,7 @@ int main(void) {
     char template[] = "/tmp/trierarch-wayland-aux-XXXXXX";
     char *runtime_dir = mkdtemp(template);
     assert(runtime_dir != NULL);
-    server = trierarch_wayland_create(runtime_dir, false);
+    server = trierarch_wayland_create(runtime_dir, false, 100);
     assert(server != NULL);
     pthread_t thread;
     assert(pthread_create(&thread, NULL, server_thread, NULL) == 0);

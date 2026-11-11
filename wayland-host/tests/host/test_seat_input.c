@@ -207,7 +207,7 @@ int main(void) {
     char template[] = "/tmp/trierarch-wayland-input-XXXXXX";
     char *runtime_dir = mkdtemp(template);
     assert(runtime_dir != NULL);
-    server = trierarch_wayland_create(runtime_dir, false);
+    server = trierarch_wayland_create(runtime_dir, false, 100);
     assert(server != NULL);
     pthread_t thread;
     assert(pthread_create(&thread, NULL, server_thread, NULL) == 0);
@@ -252,12 +252,20 @@ int main(void) {
     assert(state.pointer_motion_seen > 0);
     assert(state.pointer_button_seen > 0);
 
-    wl_pointer_destroy(state.pointer);
-    wl_keyboard_destroy(state.keyboard);
-    wl_seat_destroy(state.seat);
+    /* Destroying the focused surface must clear both seat focus pointers;
+     * later input must not dereference the freed surface. */
     xdg_toplevel_destroy(state.toplevel);
     xdg_surface_destroy(state.xdg_surface);
     wl_surface_destroy(state.surface);
+    assert(wl_display_roundtrip(state.display) >= 0);
+    trierarch_pointer_move_absolute(server, 200.0f, 220.0f, 6);
+    trierarch_keyboard_set_key(server, 30, true, 7);
+    trierarch_keyboard_set_key(server, 30, false, 8);
+    assert(wl_display_roundtrip(state.display) >= 0);
+
+    wl_pointer_destroy(state.pointer);
+    wl_keyboard_destroy(state.keyboard);
+    wl_seat_destroy(state.seat);
     wl_buffer_destroy(buffer);
     wl_compositor_destroy(state.compositor);
     wl_shm_destroy(state.shm);

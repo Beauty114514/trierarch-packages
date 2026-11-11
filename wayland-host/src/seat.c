@@ -181,6 +181,24 @@ void trierarch_pointer_scroll(struct wayland_server *server,
     }
 }
 
+void trierarch_seat_surface_destroyed(struct wayland_server *server,
+        struct compositor_surface *surface) {
+    if (!server || !surface) return;
+    if (server->pointer_focus == surface) {
+        server->pointer_focus = NULL;
+        /* The client surface is going away; there is no valid target for a
+         * button release event anymore.  Drop the host-side pressed state so
+         * the next surface does not inherit a stuck button. */
+        server->pointer_buttons = 0;
+    }
+    if (server->keyboard_focus == surface) {
+        server->keyboard_focus = NULL;
+        /* Keep modifier locks, but do not leave a pressed key latched to a
+         * surface that no longer exists. */
+        server->keyboard_pressed = 0;
+    }
+}
+
 void trierarch_pointer_reset(struct wayland_server *server, uint32_t time_ms) {
     if (!server) return;
     for (int button = 1; button <= 3; button++) {

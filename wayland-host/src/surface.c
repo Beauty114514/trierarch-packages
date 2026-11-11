@@ -260,8 +260,8 @@ static void surface_resource_destroy(struct wl_resource *resource) {
         wl_list_init(&child->subsurface_link);
         child->parent = NULL;
     }
-    if (surface->server && surface->server->pointer_focus == surface)
-        surface->server->pointer_focus = NULL;
+    if (surface->server)
+        trierarch_seat_surface_destroyed(surface->server, surface);
     if (surface->server && surface->server->cursor_surface == surface) {
         surface->server->cursor_surface = NULL;
         surface->server->cursor_hotspot_x = 0;

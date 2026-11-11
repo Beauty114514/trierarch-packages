@@ -21,6 +21,12 @@
 #include "linux-explicit-synchronization-unstable-v1-server-protocol.h"
 
 struct renderer_context;
+struct compositor_surface;
+
+/* Called before a compositor surface is freed so seat focus never keeps a
+ * dangling pointer to that surface. */
+void trierarch_seat_surface_destroyed(struct wayland_server *server,
+        struct compositor_surface *surface);
 
 /* Keep these in sync with the protocol behavior implemented by this host.
  * wl_resource versions are negotiated per client, so raising the advertised
