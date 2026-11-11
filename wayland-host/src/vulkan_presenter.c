@@ -224,7 +224,7 @@ int trierarch_vulkan_presenter_self_test(ANativeWindow *window,
         return 1;
     }
     void *handle = open_libvulkan(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */,
-            tmp_dir, hook_dir, driver_dir, "vulkan.ad07xx.so", NULL, NULL);
+            tmp_dir, hook_dir, driver_dir, "libvulkan_freedreno.so", NULL, NULL);
     LOGI("adrenotools handle=%p", handle);
     if (!handle) {
         dlclose(adrenotools);
@@ -514,7 +514,7 @@ int trierarch_vulkan_probe_dmabuf(int fd, int width, int height, int stride,
             "adrenotools_open_libvulkan");
     if (!open_libvulkan) { dlclose(adrenotools); return -1; }
     void *handle = open_libvulkan(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */,
-            probe_tmp, probe_hook, probe_driver, "vulkan.ad07xx.so", NULL, NULL);
+            probe_tmp, probe_hook, probe_driver, "libvulkan_freedreno.so", NULL, NULL);
     if (!handle) { dlclose(adrenotools); return -1; }
 
     struct vk_api api;
@@ -1341,7 +1341,7 @@ trierarch_vulkan_presenter *trierarch_vulkan_presenter_create(ANativeWindow *win
         return NULL;
     }
     void *vulkan_handle = open_libvulkan(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */,
-            probe_tmp, probe_hook, probe_driver, "vulkan.ad07xx.so", NULL, NULL);
+            probe_tmp, probe_hook, probe_driver, "libvulkan_freedreno.so", NULL, NULL);
     if (!vulkan_handle) {
         dlclose(presenter->adrenotools);
         free(presenter);
