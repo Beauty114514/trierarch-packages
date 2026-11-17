@@ -7,10 +7,11 @@ PROBE_OUT := dist/linux/aarch64/libdrm-lease-probe.so
 COMPAT_OUT := dist/linux/aarch64/libdrm-lease-compat.so
 PRIME_OUT := dist/linux/aarch64/libdrm-prime-compat.so
 NAME_OUT := dist/linux/aarch64/libdrm-device-name-compat.so
+SINGLE_OUT := dist/linux/aarch64/libgbm-single-device.so
 
-.PHONY: all probe compat prime name clean
+.PHONY: all probe compat prime name single clean
 
-all: probe compat prime name
+all: probe compat prime name single
 
 probe: $(PROBE_OUT)
 
@@ -19,6 +20,8 @@ compat: $(COMPAT_OUT)
 prime: $(PRIME_OUT)
 
 name: $(NAME_OUT)
+
+single: $(SINGLE_OUT)
 
 $(PROBE_OUT): src/drm_lease_probe.c
 	mkdir -p $(dir $@)
@@ -36,5 +39,9 @@ $(NAME_OUT): src/drm_device_name_compat.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
+$(SINGLE_OUT): src/gbm_single_device.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -pthread
+
 clean:
-	rm -f $(PROBE_OUT) $(COMPAT_OUT) $(PRIME_OUT) $(NAME_OUT)
+	rm -f $(PROBE_OUT) $(COMPAT_OUT) $(PRIME_OUT) $(NAME_OUT) $(SINGLE_OUT)
