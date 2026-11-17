@@ -8,10 +8,11 @@ COMPAT_OUT := dist/linux/aarch64/libdrm-lease-compat.so
 PRIME_OUT := dist/linux/aarch64/libdrm-prime-compat.so
 NAME_OUT := dist/linux/aarch64/libdrm-device-name-compat.so
 SINGLE_OUT := dist/linux/aarch64/libgbm-single-device.so
+COMBINED_OUT := dist/linux/aarch64/libaquamarine-compat.so
 
-.PHONY: all probe compat prime name single clean
+.PHONY: all probe compat prime name single combined clean
 
-all: probe compat prime name single
+all: probe compat prime name single combined
 
 probe: $(PROBE_OUT)
 
@@ -22,6 +23,8 @@ prime: $(PRIME_OUT)
 name: $(NAME_OUT)
 
 single: $(SINGLE_OUT)
+
+combined: $(COMBINED_OUT)
 
 $(PROBE_OUT): src/drm_lease_probe.c
 	mkdir -p $(dir $@)
@@ -43,5 +46,9 @@ $(SINGLE_OUT): src/gbm_single_device.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -pthread
 
+$(COMBINED_OUT): src/aquamarine_compat.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) -pthread
+
 clean:
-	rm -f $(PROBE_OUT) $(COMPAT_OUT) $(PRIME_OUT) $(NAME_OUT) $(SINGLE_OUT)
+	rm -f $(PROBE_OUT) $(COMPAT_OUT) $(PRIME_OUT) $(NAME_OUT) $(SINGLE_OUT) $(COMBINED_OUT)

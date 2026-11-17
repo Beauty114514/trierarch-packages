@@ -1,3 +1,6 @@
+> This standalone shim is kept for reference.  The release artifact is the
+> combined `libaquamarine-compat.so`; see `AQUAMARINE-COMPAT.md`.
+
 # Single GBM device shim
 
 `src/gbm_single_device.c` is an opt-in `LD_PRELOAD` library for PRoot
