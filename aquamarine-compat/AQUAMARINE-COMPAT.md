@@ -1,3 +1,7 @@
+> **Development only.** PRoot Hyprland is experimental and is not a public
+> solution yet. Do not publish this library as a release asset until the buffer
+> and compositor path is stable.
+
 # Aquamarine PRoot compatibility shim
 
 `src/aquamarine_compat.c` is a single opt-in `LD_PRELOAD` library for PRoot
