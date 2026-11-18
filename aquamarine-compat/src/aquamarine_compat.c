@@ -12,11 +12,15 @@
 //      an unsupported/fallback result.
 //   4. Hyprland creates a second gbm_device() for its EGL fallback; on the
 //      fake KGSL node that second creation can block forever.
+//   5. Hyprland's LinuxDMABUF commence() validates every plane with
+//      drmPrimeFDToHandle() before its own EGLImage import path.  The fake
+//      KGSL node rejects that ioctl, so Hyprland sends wl_buffer.failed before
+//      the EGL import can run.
 //
-// This library answers the first three probes for the synthetic node only and
-// makes the second GBM creation reuse the first device.  Every other fd keeps
-// the real libdrm/libgbm behaviour.  It is opt-in through LD_PRELOAD and does
-// not touch normal rooted DRM sessions.
+// This library answers the first three probes and the PRIME validation for the
+// synthetic node only and makes the second GBM creation reuse the first
+// device.  Every other fd keeps the real libdrm/libgbm behaviour.  It is
+// opt-in through LD_PRELOAD and does not touch normal rooted DRM sessions.
 
 #define _GNU_SOURCE
 
@@ -42,12 +46,17 @@ typedef int (*drm_get_cap_fn)(int fd, uint64_t capability, uint64_t *value);
 typedef int (*drm_mode_create_lease_fn)(int fd, const uint32_t *objects,
                                         int num_objects, unsigned int flags,
                                         uint32_t *lessee_id);
+typedef int (*drm_prime_fd_to_handle_fn)(int fd, int prime_fd,
+                                         uint32_t *handle);
+typedef int (*drm_close_buffer_handle_fn)(int fd, uint32_t handle);
 typedef struct gbm_device *(*gbm_create_device_fn)(int fd);
 typedef void (*gbm_device_destroy_fn)(struct gbm_device *device);
 
 static drm_get_device_name_fn real_get_device_name;
 static drm_get_cap_fn real_get_cap;
 static drm_mode_create_lease_fn real_create_lease;
+static drm_prime_fd_to_handle_fn real_prime_fd_to_handle;
+static drm_close_buffer_handle_fn real_close_buffer_handle;
 static gbm_create_device_fn real_create_device;
 static gbm_device_destroy_fn real_destroy_device;
 
@@ -67,6 +76,8 @@ static void load_symbols(void) {
     LOAD(real_get_device_name, "drmGetDeviceNameFromFd2");
     LOAD(real_get_cap, "drmGetCap");
     LOAD(real_create_lease, "drmModeCreateLease");
+    LOAD(real_prime_fd_to_handle, "drmPrimeFDToHandle");
+    LOAD(real_close_buffer_handle, "drmCloseBufferHandle");
     LOAD(real_create_device, "gbm_create_device");
     LOAD(real_destroy_device, "gbm_device_destroy");
 #undef LOAD
@@ -81,6 +92,11 @@ static bool is_fake_render_node(int fd) {
         return false;
     target[length] = '\0';
     return strcmp(target, "/dev/dri/renderD0") == 0;
+}
+
+static bool fake_prime_import_enabled(void) {
+    const char *enabled = getenv("TRIERARCH_FAKE_PRIME_IMPORT");
+    return enabled && strcmp(enabled, "0") != 0;
 }
 
 static void debug_log(const char *message, int fd) {
@@ -130,6 +146,38 @@ int drmModeCreateLease(int fd, const uint32_t *objects, int num_objects,
         return -ENOSYS;
     }
     return real_create_lease(fd, objects, num_objects, flags, lessee_id);
+}
+
+int drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle) {
+    pthread_once(&symbols_once, load_symbols);
+    if (handle && fake_prime_import_enabled() && is_fake_render_node(fd)) {
+        /*
+         * Hyprland only uses this call as a validation gate in
+         * CLinuxDMABUFParamsResource::commence(); it closes the handle
+         * immediately and never renders through it.  The renderer's real
+         * EGLImage import happens afterwards in OpenGL.cpp.  Return a
+         * synthetic handle so the EGLImage path gets a chance to run.
+         */
+        *handle = 1;
+        debug_log("fake PRIME fd-to-handle import", fd);
+        return 0;
+    }
+    if (!real_prime_fd_to_handle) {
+        errno = ENOSYS;
+        return -ENOSYS;
+    }
+    return real_prime_fd_to_handle(fd, prime_fd, handle);
+}
+
+int drmCloseBufferHandle(int fd, uint32_t handle) {
+    pthread_once(&symbols_once, load_symbols);
+    if (fake_prime_import_enabled() && is_fake_render_node(fd))
+        return 0;
+    if (!real_close_buffer_handle) {
+        errno = ENOSYS;
+        return -ENOSYS;
+    }
+    return real_close_buffer_handle(fd, handle);
 }
 
 struct gbm_device *gbm_create_device(int fd) {
