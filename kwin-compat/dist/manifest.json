@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "artifacts": [
     {
-      "id": "kwin-compat-archlinuxarm-6.8.2-2-aarch64",
+      "id": "kwin-compat-archlinuxarm-6.8.3-1-aarch64",
       "status": "staging",
       "distro": "archlinuxarm",
-      "kwinPackage": "6.8.2-2",
-      "kwinUpstream": "6.8.2",
+      "kwinPackage": "6.8.3-1",
+      "kwinUpstream": "6.8.3",
       "arch": "aarch64",
-      "file": "libkwin-6.8.2-2-archlinuxarm-aarch64.so",
-      "size": 16208784,
-      "sha256": "ad9b0ea676b01d822e979e962ed12c72b4537d6794a0a09fa4ade195cca23d3e",
+      "file": "libkwin-6.8.3-1-archlinuxarm-aarch64.so",
+      "size": 16214352,
+      "sha256": "59e14b110d69eb78290fe240ed4fedde2fb2b6d13ac70d2f187fb49a7c6b32cd",
       "patch": "patches/0001-wayland-render-node.patch",
       "url": null
     }

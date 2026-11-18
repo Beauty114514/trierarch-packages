@@ -2,8 +2,8 @@
   "tested": [
     {
       "distro": "archlinuxarm",
-      "package": "kwin 6.8.2-2",
-      "upstream": "6.8.2",
+      "package": "kwin 6.8.3-1",
+      "upstream": "6.8.3",
       "arch": "aarch64",
       "patch": "0001-wayland-render-node.patch"
     }

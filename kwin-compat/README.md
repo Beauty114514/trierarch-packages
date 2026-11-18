@@ -31,13 +31,13 @@ The source tree must already contain the KWin version matching the guest's
 
 ```bash
 cd trierarch-packages/kwin-compat
-./build-arch.sh /path/to/kwin-6.8.2 /path/to/kwin-build 6
+./build-arch.sh /path/to/kwin-6.8.3 /path/to/kwin-build 6
 ```
 
 On Debian/Kali (with the matching source package unpacked):
 
 ```bash
-./build-debian.sh /path/to/kwin-6.8.2 /path/to/kwin-build 6
+./build-debian.sh /path/to/kwin-6.8.3 /path/to/kwin-build 6
 ```
 
 Both wrappers call `build-source.sh`. The target `kwin` produces
@@ -51,7 +51,7 @@ Qt/KF6 dependencies tied to the guest's KWin package.
 Use a name that records the ABI inputs, for example:
 
 ```text
-libkwin-6.8.2-2-arch-aarch64.so
+libkwin-6.8.3-2-arch-aarch64.so
 ```
 
 Record the distro package version, KWin source version, architecture and
