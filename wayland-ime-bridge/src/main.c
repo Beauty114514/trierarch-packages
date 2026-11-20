@@ -47,6 +47,12 @@ struct bridge {
     unsigned int queued_messages;
     bool saw_input_method, saw_input_method_v2, have_serial, sent;
     bool v2_active;
+    /* Text-input focus reported to the Android side through a small file. */
+    char *state_path;
+    int state_active;
+    int state_hint;
+    int state_purpose;
+    int state_seq;
 };
 
 static volatile sig_atomic_t running = 1;
@@ -79,6 +85,55 @@ static void clear_pending_messages(struct bridge *bridge, const char *reason) {
     bridge->tail = NULL;
     bridge->queued_messages = 0;
     if (discarded) trace("discarded %u stale IME event(s): %s\n", discarded, reason);
+}
+
+/** Whether a text-input object is currently focused in the guest. */
+static bool text_input_active(const struct bridge *bridge) {
+    return bridge->context != NULL || bridge->v2_active;
+}
+
+/** Replace the state file the Android side polls; a reader never sees a partial file. */
+static void write_text_input_state(struct bridge *bridge) {
+    if (!bridge->state_path) return;
+    size_t length = strlen(bridge->state_path) + 32;
+    char *temporary = malloc(length);
+    if (!temporary) return;
+    snprintf(temporary, length, "%s.%ld.tmp", bridge->state_path, (long)getpid());
+    FILE *file = fopen(temporary, "w");
+    if (!file) { free(temporary); return; }
+    bridge->state_seq++;
+    fprintf(file, "textInput=%d\nhint=%u\npurpose=%u\nseq=%d\n",
+            bridge->state_active ? 1 : 0, (unsigned)bridge->state_hint,
+            (unsigned)bridge->state_purpose, bridge->state_seq);
+    fflush(file);
+    fchmod(fileno(file), 0666);
+    fclose(file);
+    if (rename(temporary, bridge->state_path) != 0) unlink(temporary);
+    free(temporary);
+}
+
+static void update_text_input_state(struct bridge *bridge, bool active,
+        uint32_t hint, uint32_t purpose) {
+    int next_active = active ? 1 : 0;
+    if (bridge->state_active == next_active && bridge->state_hint == (int)hint &&
+            bridge->state_purpose == (int)purpose) return;
+    bridge->state_active = next_active;
+    bridge->state_hint = (int)hint;
+    bridge->state_purpose = (int)purpose;
+    write_text_input_state(bridge);
+}
+
+/** Derive the state file from the bridge socket so no extra argument is needed. */
+static char *text_input_state_path(const char *socket_path) {
+    const char *slash = strrchr(socket_path, '/');
+    size_t directory_length = slash ? (size_t)(slash - socket_path) : 0;
+    const char *file_name = "/trierarch-ime-state";
+    size_t length = directory_length + strlen(file_name) + 1;
+    char *path = malloc(length);
+    if (!path) return NULL;
+    if (slash) snprintf(path, length, "%.*s%s", (int)directory_length, socket_path, file_name);
+    else snprintf(path, length, "%s", file_name + 1);
+    return path;
 }
 
 static bool enqueue_text(struct bridge *bridge, char *text) {
@@ -219,7 +274,11 @@ static void context_reset(void *data, struct zwp_input_method_context_v1 *contex
     trace("text input reset\n");
 }
 static void context_content_type(void *data, struct zwp_input_method_context_v1 *context,
-        uint32_t hint, uint32_t purpose) { (void)data; (void)context; (void)hint; (void)purpose; }
+        uint32_t hint, uint32_t purpose) {
+    struct bridge *bridge = data;
+    if (bridge->context != context) return;
+    update_text_input_state(bridge, text_input_active(bridge), hint, purpose);
+}
 static void context_invoke_action(void *data, struct zwp_input_method_context_v1 *context,
         uint32_t button, uint32_t index) { (void)data; (void)context; (void)button; (void)index; }
 static void context_commit_state(void *data, struct zwp_input_method_context_v1 *context,
@@ -248,6 +307,7 @@ static void input_method_activate(void *data, struct zwp_input_method_v1 *input_
     }
     bridge->context = context; bridge->have_serial = false;
     zwp_input_method_context_v1_add_listener(context, &context_listener, bridge);
+    update_text_input_state(bridge, true, 0, 0);
     puts("text input activated; waiting for state serial"); fflush(stdout);
 }
 static void input_method_deactivate(void *data, struct zwp_input_method_v1 *input_method,
@@ -259,6 +319,7 @@ static void input_method_deactivate(void *data, struct zwp_input_method_v1 *inpu
         bridge->context = NULL;
         bridge->have_serial = false;
     }
+    update_text_input_state(bridge, text_input_active(bridge), 0, 0);
     printf("text input deactivated\n");
     fflush(stdout);
     zwp_input_method_context_v1_destroy(context);
@@ -273,6 +334,7 @@ static void input_method_v2_activate(void *data,
     if (bridge->input_method_v2 != input_method) return;
     bridge->v2_active = true;
     bridge->have_serial = false;
+    update_text_input_state(bridge, true, 0, 0);
     trace("v2 text input activated; waiting for state serial\n");
 }
 
@@ -283,6 +345,7 @@ static void input_method_v2_deactivate(void *data,
     bridge->v2_active = false;
     bridge->have_serial = false;
     clear_pending_messages(bridge, "v2 text input deactivated");
+    update_text_input_state(bridge, text_input_active(bridge), 0, 0);
     trace("v2 text input deactivated\n");
 }
 
@@ -300,7 +363,9 @@ static void input_method_v2_text_change_cause(void *data,
 static void input_method_v2_content_type(void *data,
         struct zwp_input_method_v2 *input_method, uint32_t hint,
         uint32_t purpose) {
-    (void)data; (void)input_method; (void)hint; (void)purpose;
+    struct bridge *bridge = data;
+    if (bridge->input_method_v2 != input_method) return;
+    update_text_input_state(bridge, text_input_active(bridge), hint, purpose);
 }
 
 static void input_method_v2_done(void *data,
@@ -322,6 +387,7 @@ static void input_method_v2_unavailable(void *data,
     bridge->v2_active = false;
     bridge->have_serial = false;
     clear_pending_messages(bridge, "v2 input method unavailable");
+    update_text_input_state(bridge, text_input_active(bridge), 0, 0);
     trace("v2 input method unavailable\n");
 }
 
@@ -481,6 +547,7 @@ int main(int argc, char **argv) {
     const char *log_path = getenv("TRIERARCH_IME_LOG");
     if (log_path && *log_path) diagnostic_log = fopen(log_path, "a");
     struct bridge bridge = {0};
+    bridge.state_active = -1;
     if (one_shot) {
         if (!argv[2][0]) { fputs("commit text may not be empty\n", stderr); return EXIT_FAILURE; }
         char *text = strdup(argv[2]);
@@ -519,6 +586,8 @@ int main(int argc, char **argv) {
         socket_path = argv[2]; listener = listen_socket(socket_path);
         if (listener < 0) { wl_display_disconnect(bridge.display); return EXIT_FAILURE; }
         printf("listening for framed UTF-8 commits at %s\n", socket_path);
+        bridge.state_path = text_input_state_path(socket_path);
+        update_text_input_state(&bridge, false, 0, 0);
     } else {
         puts("waiting for a focused text input");
     }
@@ -535,6 +604,9 @@ int main(int argc, char **argv) {
     if (client >= 0) close(client);
     if (listener >= 0) close(listener);
     if (socket_path) unlink(socket_path);
+    update_text_input_state(&bridge, false, 0, 0);
+    free(bridge.state_path);
+    bridge.state_path = NULL;
     if (bridge.context) zwp_input_method_context_v1_destroy(bridge.context);
     if (bridge.input_method_v2) zwp_input_method_v2_destroy(bridge.input_method_v2);
     if (bridge.input_method_manager_v2)
