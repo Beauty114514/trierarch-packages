@@ -1,3 +1,4 @@
 # patch-file
 0001-runtime-cursor-visibility.patch
 0002-cursor-use-actual-pointer-position.patch
+0003-cursor-use-core-pointer-position.patch

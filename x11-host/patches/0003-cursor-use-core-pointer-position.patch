@@ -1,0 +1,29 @@
+--- a/lorie/InitOutput.c
++++ b/lorie/InitOutput.c
+@@ -30,6 +30,7 @@
+ #include "glxutil.h"
+ #include "fbconfigs.h"
+ #include "inpututils.h"
++#include "inputstr.h"
+ #include "exa.h"
+ #include "drm_fourcc.h"
+ 
+@@ -460,10 +461,14 @@
+     pvfb->state->cursor.updated = true;
+     lorie_mutex_unlock(&pvfb->state->cursor.lock, &pvfb->state->cursor.lockingPid);
+ 
+-    /* SetCursor also runs when only the cursor image changes.  The x/y
+-     * arguments can then be stale; keep the sprite on the real X pointer. */
++    /* The renderer has one visible sprite: the core pointer's.  Other master
++     * pointers (the separate touch master) can receive cursor image updates
++     * as well; using their position moves the sprite away from the mouse.
++     * Prefer the core pointer, which also owns the clicks. */
+     int pointerX = x0;
+     int pointerY = y0;
+-    if (pDev) miPointerGetPosition(pDev, &pointerX, &pointerY);
++    DeviceIntPtr core = inputInfo.pointer;
++    if (core) miPointerGetPosition(core, &pointerX, &pointerY);
++    else if (pDev) miPointerGetPosition(pDev, &pointerX, &pointerY);
+     lorieMoveCursor(pDev, pScr, pointerX, pointerY);
+ }
+ 
