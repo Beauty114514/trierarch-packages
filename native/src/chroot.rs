@@ -352,11 +352,16 @@ fn guest_command(
                        [ -n \"$nested_socket\" ] || {{ sleep 0.05; ime_wait=$((ime_wait + 1)); }}; \\
                    done; \\
                    rm -f \"$ime_marker\"; [ -n \"$nested_socket\" ] || {{ printf '%s\\n' 'Timed out waiting for nested Wayland compositor socket.' >&2; exit 124; }}; \\
-                   exec /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY=\"$nested_socket\" TRIERARCH_IME_LOG={ime_log} {bridge} --socket {ime_socket} )",
+                   /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY=\"$nested_socket\" TRIERARCH_IME_LOG={ime_log} {bridge} --socket {ime_socket} & ime=$!; \
+                   /usr/bin/env XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY=\"$nested_socket\" TRIERARCH_CLIPBOARD_LOG={clip_log} {bridge} --clipboard --socket {clip_socket} >/dev/null 2>&1 & clipboard=$!; \
+                   trap 'kill $ime $clipboard >/dev/null 2>&1 || true' EXIT INT TERM; \
+                   wait $ime $clipboard )",
                 runtime = GUEST_WAYLAND_RUNTIME_DIRECTORY,
                 ime_log = GUEST_WAYLAND_IME_LOG,
                 bridge = GUEST_WAYLAND_IME_BRIDGE,
                 ime_socket = GUEST_WAYLAND_IME_SOCKET,
+                clip_socket = crate::wayland_ime_provider::GUEST_CLIPBOARD_SOCKET_PATH,
+                clip_log = crate::wayland_ime_provider::GUEST_CLIPBOARD_LOG_PATH,
             );
             format!(
                 "/system/bin/chroot {rootfs} /bin/sh -c {bridge_script} & trierarch_ime_bridge=$!; ",

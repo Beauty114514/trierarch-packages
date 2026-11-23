@@ -8,6 +8,10 @@ pub(crate) const GUEST_PROVIDER_BRIDGE_PATH: &str =
     "/opt/trierarch/wayland-ime/trierarch-wayland-ime-bridge";
 pub(crate) const GUEST_PROVIDER_SOCKET_PATH: &str =
     "/tmp/trierarch-wayland-host/ime/trierarch-ime.sock";
+pub(crate) const GUEST_CLIPBOARD_SOCKET_PATH: &str =
+    "/tmp/trierarch-wayland-host/ime/trierarch-clipboard.sock";
+pub(crate) const GUEST_CLIPBOARD_LOG_PATH: &str =
+    "/tmp/trierarch-wayland-host/ime/trierarch-clipboard.log";
 
 #[cfg(test)]
 mod tests {
