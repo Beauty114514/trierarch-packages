@@ -20,6 +20,7 @@
 
 #include "input-method-v1-client-protocol.h"
 #include "input-method-v2-client-protocol.h"
+#include "clipboard.h"
 
 #define MAX_COMMIT_BYTES 65536U
 #define MAX_QUEUED_MESSAGES 128U
@@ -538,9 +539,12 @@ static int dispatch_socket_mode(struct bridge *bridge, int listener, int *client
 }
 
 static void usage(const char *program) {
-    fprintf(stderr, "usage: %s --commit <UTF-8 text> | --socket <path>\n", program);
+    fprintf(stderr, "usage: %s --commit <UTF-8 text> | --socket <path> | --clipboard --socket <path>\n", program);
 }
 int main(int argc, char **argv) {
+    if (argc == 4 && !strcmp(argv[1], "--clipboard") && !strcmp(argv[2], "--socket")) {
+        return clipboard_main(argv[3]);
+    }
     bool socket_mode = argc == 3 && !strcmp(argv[1], "--socket");
     bool one_shot = argc == 3 && !strcmp(argv[1], "--commit");
     if (!socket_mode && !one_shot) { usage(argv[0]); return EXIT_FAILURE; }
