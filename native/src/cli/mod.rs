@@ -36,6 +36,10 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
             validate_profile_id(id)?;
             print_response(runtime_client::request(&files_directory, "status", &[id])?)
         }
+        [command, id] if command == "--logs" => {
+            validate_profile_id(id)?;
+            print_response(runtime_client::request(&files_directory, "logs.tail", &[id, "200"])?)
+        }
         [command, id] if command == "--create" => create_profile(&files_directory, id),
         [command, id] if command == "--config" => edit_profile(&files_directory, id),
         [command, id] if command == "--delete" => delete_profile(&files_directory, id),
@@ -84,7 +88,7 @@ fn print_response(response: Response) -> Result<()> {
 
 fn print_usage() -> Result<()> {
     println!(
-        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --gui\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --open ID\n  trierarch --stop [ID]\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
+        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --logs ID\n  trierarch --gui\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --open ID\n  trierarch --stop [ID]\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
     );
     Ok(())
 }
