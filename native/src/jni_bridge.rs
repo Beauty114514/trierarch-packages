@@ -8,10 +8,10 @@ use crate::{
     SessionResult,
 };
 use jni::objects::{GlobalRef, JByteArray, JObject, JObjectArray, JString, JValue};
-use jni::sys::{jboolean, jlong};
+use jni::sys::{jboolean, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 static SESSIONS: OnceLock<SessionManager> = OnceLock::new();
@@ -453,8 +453,70 @@ fn throw_illegal_argument(env: &mut JNIEnv, message: &str) {
     let _ = env.throw_new("java/lang/IllegalArgumentException", message);
 }
 
+fn throw_runtime(env: &mut JNIEnv, message: &str) {
+    let _ = env.throw_new("java/lang/RuntimeException", message);
+}
+
 fn clear_exception(env: &mut JNIEnv) {
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
+    }
+}
+
+/// Imports a `.tar.xz` rootfs archive under `files/rootfs/<name>` and returns
+/// the installed path. Android's SAF gives the app a cache copy, so the native
+/// importer only ever sees a real file.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_importRootfs(
+    mut env: JNIEnv,
+    _: JObject,
+    archive_path: JString,
+    files_directory: JString,
+    name: JString,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let archive = java_string(&mut env, archive_path)?;
+        let files = java_string(&mut env, files_directory)?;
+        let name = java_string(&mut env, name)?;
+        crate::rootfs::import_xz_tar(Path::new(&archive), Path::new(&files), &name)
+            .map(|path| path.display().to_string())
+            .map_err(|error| error.to_string())
+    })();
+    match result {
+        Ok(path) => env
+            .new_string(path)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            throw_runtime(&mut env, &message);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Removes an imported PRoot environment and returns the removed path.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_removeRootfs(
+    mut env: JNIEnv,
+    _: JObject,
+    files_directory: JString,
+    name: JString,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let files = java_string(&mut env, files_directory)?;
+        let name = java_string(&mut env, name)?;
+        crate::rootfs::remove_imported(Path::new(&files), &name)
+            .map(|path| path.display().to_string())
+            .map_err(|error| error.to_string())
+    })();
+    match result {
+        Ok(path) => env
+            .new_string(path)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            throw_runtime(&mut env, &message);
+            std::ptr::null_mut()
+        }
     }
 }

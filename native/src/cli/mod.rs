@@ -1,4 +1,3 @@
-use crate::rootfs;
 use anyhow::{bail, ensure, Context, Result};
 use std::env;
 use std::fs;
@@ -61,9 +60,11 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
         [command, archive, name_flag, name]
             if command == "--import" && name_flag == "--name" =>
         {
-            let installed = rootfs::import_xz_tar(Path::new(archive), &files_directory, name)?;
-            println!("Imported PRoot environment: {}", installed.display());
-            Ok(())
+            print_response(runtime_client::request(
+                &files_directory,
+                "documents.import",
+                &[archive, name],
+            )?)
         }
         [command, name] if command == "--remove" => remove_proot(&files_directory, name),
         _ => {
@@ -189,11 +190,12 @@ fn validate_profile_id(id: &str) -> Result<()> {
 }
 
 fn remove_proot(files_directory: &Path, name: &str) -> Result<()> {
-    rootfs::validate_name(name)?;
     confirm(&format!("Remove PRoot environment '{name}' and all of its data?"))?;
-    rootfs::remove_imported(files_directory, name)?;
-    println!("Removed PRoot environment: {name}");
-    Ok(())
+    print_response(runtime_client::request(
+        files_directory,
+        "documents.remove",
+        &[name],
+    )?)
 }
 
 fn confirm(question: &str) -> Result<()> {
