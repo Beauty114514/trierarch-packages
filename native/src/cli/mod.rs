@@ -26,6 +26,9 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
     match arguments.as_slice() {
         [command] if command == "--help" => print_usage(),
         [command] if command == "--list" => list_profiles(&files_directory),
+        [command] if command == "--ui" => {
+            runtime_client::request(&files_directory, "ui.open", None)
+        }
         [command] if command == "--status" => {
             runtime_client::request(&files_directory, "status", None)
         }
@@ -68,7 +71,7 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
 
 fn print_usage() -> Result<()> {
     println!(
-        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
+        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --ui\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
     );
     Ok(())
 }
