@@ -20,6 +20,7 @@ impl ControlError {
         match self.code.as_str() {
             "already_running" => 2,
             "display_busy" => 3,
+            "source_busy" => 4,
             "not_running" | "no_session" => 5,
             "invalid_document" => 6,
             "revision_mismatch" => 7,
