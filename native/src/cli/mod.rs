@@ -3,16 +3,16 @@ use anyhow::{bail, ensure, Context, Result};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 mod runtime_client;
 
-const PROFILES_DIRECTORY: &str = "config/profiles";
+use runtime_client::Response;
 
 pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
     let files_directory = env::var_os("TRIERARCH_FILES_DIR")
-        .map(PathBuf::from)
+        .map(std::path::PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("TRIERARCH_FILES_DIR is not set"))?;
     let arguments: Vec<String> = arguments
         .into_iter()
@@ -27,32 +27,32 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
         [command] if command == "--help" => print_usage(),
         [command] if command == "--list" => list_profiles(&files_directory),
         [command] if command == "--gui" => {
-            runtime_client::request(&files_directory, "gui.open", None)
+            print_response(runtime_client::request(&files_directory, "gui.open", &[])?)
         }
         [command] if command == "--status" => {
-            runtime_client::request(&files_directory, "status", None)
+            print_response(runtime_client::request(&files_directory, "status", &[])?)
         }
         [command, id] if command == "--status" => {
             validate_profile_id(id)?;
-            runtime_client::request(&files_directory, "status", Some(id))
+            print_response(runtime_client::request(&files_directory, "status", &[id])?)
         }
         [command, id] if command == "--create" => create_profile(&files_directory, id),
         [command, id] if command == "--config" => edit_profile(&files_directory, id),
         [command, id] if command == "--delete" => delete_profile(&files_directory, id),
         [command, id] if command == "--run" => {
             validate_profile_id(id)?;
-            runtime_client::request(&files_directory, "run", Some(id))
+            print_response(runtime_client::request(&files_directory, "run", &[id])?)
         }
         [command, id] if command == "--open" => {
             validate_profile_id(id)?;
-            runtime_client::request(&files_directory, "open", Some(id))
+            print_response(runtime_client::request(&files_directory, "open", &[id])?)
         }
         [command] if command == "--stop" => {
-            runtime_client::request(&files_directory, "stop", None)
+            print_response(runtime_client::request(&files_directory, "stop", &[])?)
         }
         [command, id] if command == "--stop" => {
             validate_profile_id(id)?;
-            runtime_client::request(&files_directory, "stop", Some(id))
+            print_response(runtime_client::request(&files_directory, "stop", &[id])?)
         }
         [command, archive, name_flag, name]
             if command == "--import" && name_flag == "--name" =>
@@ -69,6 +69,19 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
     }
 }
 
+/// Maps a typed core failure to the process exit code the CLI reports.
+pub fn exit_code(error: &anyhow::Error) -> i32 {
+    error
+        .downcast_ref::<runtime_client::ControlError>()
+        .map(runtime_client::ControlError::exit_code)
+        .unwrap_or(1)
+}
+
+fn print_response(response: Response) -> Result<()> {
+    println!("{}", response.message);
+    Ok(())
+}
+
 fn print_usage() -> Result<()> {
     println!(
         "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --gui\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --open ID\n  trierarch --stop [ID]\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
@@ -76,113 +89,36 @@ fn print_usage() -> Result<()> {
     Ok(())
 }
 
-fn profiles_directory(files_directory: &Path) -> PathBuf {
-    files_directory.join(PROFILES_DIRECTORY)
-}
-
-fn profile_path(files_directory: &Path, id: &str) -> Result<PathBuf> {
-    validate_profile_id(id)?;
-    Ok(profiles_directory(files_directory).join(format!("{id}.toml")))
-}
-
-fn existing_profile_path(files_directory: &Path, id: &str) -> Result<PathBuf> {
-    let profile = profile_path(files_directory, id)?;
-    let metadata = fs::symlink_metadata(&profile)
-        .with_context(|| format!("profile does not exist: {id}"))?;
-    ensure!(
-        metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
-        "profile is not a regular file: {id}"
-    );
-    Ok(profile)
+fn list_profiles(files_directory: &Path) -> Result<()> {
+    let response = runtime_client::request(files_directory, "documents.list", &[])?;
+    if response.message.is_empty() {
+        println!("No profiles.");
+    } else {
+        println!("{}", response.message);
+    }
+    Ok(())
 }
 
 fn create_profile(files_directory: &Path, id: &str) -> Result<()> {
-    let profile = profile_path(files_directory, id)?;
-    let directory = profiles_directory(files_directory);
-    fs::create_dir_all(&directory)
-        .with_context(|| format!("create profile directory {}", directory.display()))?;
-    ensure!(directory.is_dir(), "profile directory is not a directory");
-    ensure!(!profile.exists(), "profile already exists: {id}");
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&profile)
-        .with_context(|| format!("create profile {id}"))?;
-    write!(
-        file,
-        "# Complete this template before running the profile.\n\
-         # Supported runtimes: proot, chroot, droidspaces.\n\
-         id = \"{id}\"\n\
-         runtime = \"proot\"\n\
-         \n\
-         # PRoot and chroot require these absolute guest paths.\n\
-         rootfs = \"/absolute/path/to/rootfs\"\n\
-         shell = \"/bin/bash\"\n\
-         \n\
-         # DroidSpaces instead requires: container = \"container-name\"\n\
-         \n\
-         [display]\n\
-         type = \"none\"\n"
-    )
-    .with_context(|| format!("write profile {id}"))?;
-    println!("Created profile: {id}\nEdit it with: trierarch --config {id}");
-    Ok(())
-}
-
-fn validate_profile_id(id: &str) -> Result<()> {
-    let valid = !id.is_empty()
-        && id.len() <= 64
-        && id.as_bytes()[0].is_ascii_lowercase()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-    ensure!(
-        valid,
-        "profile id must use lowercase English letters, digits, '-' and start with a letter"
-    );
-    Ok(())
-}
-
-fn list_profiles(files_directory: &Path) -> Result<()> {
-    let directory = profiles_directory(files_directory);
-    if !directory.exists() {
-        println!("No profiles.");
-        return Ok(());
-    }
-    ensure!(directory.is_dir(), "profile directory is not a directory");
-
-    let mut profiles = fs::read_dir(&directory)
-        .with_context(|| format!("list profiles in {}", directory.display()))?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let path = entry.path();
-            (path.is_file() && path.extension().is_some_and(|extension| extension == "toml"))
-                .then(|| path.file_stem().map(|name| name.to_owned()))
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    profiles.sort();
-    if profiles.is_empty() {
-        println!("No profiles.");
-    } else {
-        for profile in profiles {
-            println!("{}", profile.to_string_lossy());
-        }
-    }
+    validate_profile_id(id)?;
+    let response = runtime_client::request(files_directory, "documents.create", &[id])?;
+    println!("{}", response.message);
+    println!("Edit it with: trierarch --config {id}");
     Ok(())
 }
 
 fn edit_profile(files_directory: &Path, id: &str) -> Result<()> {
-    let profile = existing_profile_path(files_directory, id)?;
-    let temporary = profiles_directory(files_directory).join(format!(".{id}.edit.tmp"));
-    ensure!(
-        !temporary.exists(),
-        "an unsaved edited copy already exists: {}; inspect or remove it before editing again",
-        temporary.display(),
-    );
-    fs::copy(&profile, &temporary)
-        .with_context(|| format!("create editable copy for profile {id}"))?;
+    validate_profile_id(id)?;
+    let document = runtime_client::request(files_directory, "documents.read", &[id])?;
+    let revision = document
+        .revision
+        .context("Trierarch returned no profile revision")?;
+    let original = document
+        .text
+        .context("Trierarch returned no profile text")?;
+    let temporary = env::temp_dir().join(format!("trierarch-{id}-{}.toml", std::process::id()));
+    fs::write(&temporary, original)
+        .with_context(|| format!("create editable copy {}", temporary.display()))?;
     let editor = env::var_os("EDITOR").unwrap_or_else(|| "vi".into());
     let status = Command::new(&editor)
         .arg(&temporary)
@@ -200,80 +136,51 @@ fn edit_profile(files_directory: &Path, id: &str) -> Result<()> {
         temporary.display(),
     );
 
-    let new_id = edited_profile_id(&temporary).map_err(|error| {
-        anyhow::anyhow!(
-            "Configuration was not saved: {error}\nEdited copy kept at: {}",
-            temporary.display(),
-        )
-    })?;
-    replace_profile_with_edited_copy(&profile, &temporary, id, &new_id)?;
-    println!("Saved profile: {new_id}");
-    Ok(())
-}
-
-/// Validates just the durable document identity. Runtime availability is checked
-/// later by the runtime selected in the profile, not while an editor is saving.
-fn edited_profile_id(temporary: &Path) -> Result<String> {
-    let text = fs::read_to_string(temporary)
+    let edited = fs::read_to_string(&temporary)
         .with_context(|| format!("read edited profile {}", temporary.display()))?;
-    let document: toml::Value = text.parse().context("invalid TOML")?;
-    let id = document
-        .get("id")
-        .and_then(toml::Value::as_str)
-        .context("top-level id must be a string")?
-        .to_owned();
-    validate_profile_id(&id)?;
-    Ok(id)
-}
-
-fn replace_profile_with_edited_copy(
-    original: &Path,
-    temporary: &Path,
-    original_id: &str,
-    new_id: &str,
-) -> Result<()> {
-    let destination = original.with_file_name(format!("{new_id}.toml"));
-    if destination == original {
-        fs::rename(temporary, original).with_context(|| format!("save profile {new_id}"))?;
-        return Ok(());
-    }
-    ensure!(
-        !destination.exists(),
-        "profile id '{new_id}' already exists"
-    );
-
-    let backup = original.with_file_name(format!(".{original_id}.rename-backup.tmp"));
-    ensure!(
-        !backup.exists(),
-        "a previous profile rename backup exists: {}; inspect or remove it before retrying",
-        backup.display(),
-    );
-    fs::rename(original, &backup)
-        .with_context(|| format!("prepare rename of profile {original_id}"))?;
-    if let Err(error) = fs::rename(temporary, &destination) {
-        let restored = fs::rename(&backup, original);
-        return match restored {
-            Ok(()) => Err(error).context("save edited profile; original profile was restored"),
-            Err(restore_error) => Err(anyhow::anyhow!(
-                "save edited profile failed: {error}; original profile backup remains at {}: {restore_error}",
-                backup.display(),
-            )),
-        };
-    }
-    if let Err(error) = fs::remove_file(&backup) {
-        eprintln!(
-            "Saved profile '{new_id}', but could not remove temporary backup {}: {error}",
-            backup.display(),
-        );
-    }
+    let saved = runtime_client::request(
+        files_directory,
+        "documents.save",
+        &[id, revision.as_str(), edited.as_str()],
+    )
+    .map_err(|error| {
+        error.context(format!(
+            "Configuration was not saved; edited copy kept at: {}",
+            temporary.display(),
+        ))
+    })?;
+    let _ = fs::remove_file(&temporary);
+    println!("{}", saved.message);
     Ok(())
 }
 
 fn delete_profile(files_directory: &Path, id: &str) -> Result<()> {
-    let profile = existing_profile_path(files_directory, id)?;
+    validate_profile_id(id)?;
+    let document = runtime_client::request(files_directory, "documents.read", &[id])?;
+    let revision = document
+        .revision
+        .context("Trierarch returned no profile revision")?;
     confirm(&format!("Delete profile '{id}'?"))?;
-    fs::remove_file(&profile).with_context(|| format!("delete profile {id}"))?;
-    println!("Deleted profile: {id}");
+    let response = runtime_client::request(
+        files_directory,
+        "documents.delete",
+        &[id, revision.as_str()],
+    )?;
+    println!("{}", response.message);
+    Ok(())
+}
+
+fn validate_profile_id(id: &str) -> Result<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id.as_bytes()[0].is_ascii_lowercase()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    ensure!(
+        valid,
+        "profile id must use lowercase English letters, digits, '-' and start with a letter"
+    );
     Ok(())
 }
 
