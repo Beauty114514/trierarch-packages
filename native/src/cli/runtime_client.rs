@@ -93,7 +93,7 @@ fn send(socket_name: &str, request: &[u8], acknowledge: bool) -> Result<String> 
 }
 
 fn needs_acknowledgement(operation: &str) -> bool {
-    matches!(operation, "run" | "stop" | "rerun")
+    matches!(operation, "run" | "stop" | "open")
 }
 
 fn unix_socket_path_capacity() -> usize {

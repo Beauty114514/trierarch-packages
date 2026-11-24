@@ -43,16 +43,16 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
             validate_profile_id(id)?;
             runtime_client::request(&files_directory, "run", Some(id))
         }
+        [command, id] if command == "--open" => {
+            validate_profile_id(id)?;
+            runtime_client::request(&files_directory, "open", Some(id))
+        }
         [command] if command == "--stop" => {
             runtime_client::request(&files_directory, "stop", None)
         }
         [command, id] if command == "--stop" => {
             validate_profile_id(id)?;
             runtime_client::request(&files_directory, "stop", Some(id))
-        }
-        [command, id] if command == "--rerun" => {
-            validate_profile_id(id)?;
-            runtime_client::request(&files_directory, "rerun", Some(id))
         }
         [command, archive, name_flag, name]
             if command == "--import" && name_flag == "--name" =>
@@ -71,7 +71,7 @@ pub fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
 
 fn print_usage() -> Result<()> {
     println!(
-        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --gui\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --stop [ID]\n  trierarch --rerun ID\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
+        "usage:\n  trierarch --list\n  trierarch --status [ID]\n  trierarch --gui\n  trierarch --create ID\n  trierarch --config ID\n  trierarch --delete ID\n  trierarch --run ID\n  trierarch --open ID\n  trierarch --stop [ID]\n  trierarch --import ARCHIVE.tar.xz --name NAME\n  trierarch --remove NAME"
     );
     Ok(())
 }
