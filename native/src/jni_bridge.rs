@@ -494,6 +494,44 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_importRoo
     }
 }
 
+/// Lists existing DroidSpaces containers by scanning the backend workspace as root.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_listDroidspacesContainers(
+    mut env: JNIEnv,
+    _: JObject,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        // DroidSpaces' Android workspace. A container is a directory with a
+        // container.config; stock image files without one are not containers.
+        let command = "for d in /data/local/Droidspaces/Containers/*/; do \
+            [ -f \"$d/container.config\" ] || continue; \
+            d=${d%/}; printf '%s\\n' \"${d##*/}\"; \
+            done";
+        let output = crate::privileged::run_as_root_output(command.to_owned())
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(format!("list DroidSpaces containers exited with {}", output.status));
+        }
+        let names = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && !name.contains('/') && !name.contains('\\'))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        Ok(names.join("\n"))
+    })();
+    match result {
+        Ok(names) => env
+            .new_string(names)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            throw_runtime(&mut env, &message);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Removes an imported PRoot environment and returns the removed path.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_removeRootfs(
