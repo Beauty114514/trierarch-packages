@@ -60,6 +60,35 @@ pub struct ChrootSpec {
 }
 
 impl ChrootSpec {
+    /// Run a one-shot command inside the chroot as root and capture output.
+    pub(crate) fn run_captured(rootfs: &Path, argv: &[String]) -> io::Result<(i32, String)> {
+        if !rootfs.is_absolute() || !rootfs.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("chroot rootfs is not accessible: {}", rootfs.display()),
+            ));
+        }
+        if argv.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "chroot command is empty"));
+        }
+        let su = find_su().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "no supported su executable was found")
+        })?;
+        let command = format!(
+            "exec chroot {} {}",
+            shell_quote(&rootfs.display().to_string()),
+            argv.iter().map(|value| shell_quote(value)).collect::<Vec<_>>().join(" "),
+        );
+        let arguments = su_arguments(&su, command);
+        let mut process = std::process::Command::new(&su);
+        process.args(arguments);
+        process.env("PATH", "/product/bin:/system/bin:/system/xbin");
+        let output = process.output()?;
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        Ok((output.status.code().unwrap_or(-1), text))
+    }
+
     pub(crate) fn launch_spec(&self) -> io::Result<LaunchSpec> {
         validate_guest_path(&self.rootfs, "rootfs")?;
         validate_guest_path(&self.shell, "shell")?;

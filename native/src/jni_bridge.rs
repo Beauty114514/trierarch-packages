@@ -557,6 +557,33 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_runProotC
     }
 }
 
+/// Runs one command inside a chroot rootfs as root; returns "<exit>\n<output>".
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_runChrootCommand(
+    mut env: JNIEnv,
+    _: JObject,
+    config: JObjectArray,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let mut config = java_config(&mut env, config)?;
+        let rootfs = PathBuf::from(config_value(&mut config, "rootfs")?);
+        let argv = config_list(&mut config, "launch_argv")?;
+        let (exit_code, output) = crate::chroot::ChrootSpec::run_captured(&rootfs, &argv)
+            .map_err(|error| error.to_string())?;
+        Ok(format!("{exit_code}\n{output}"))
+    })();
+    match result {
+        Ok(value) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            throw_runtime(&mut env, &message);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Lists existing DroidSpaces containers by scanning the backend workspace as root.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_listDroidspacesContainers(
