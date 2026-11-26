@@ -516,6 +516,47 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_extractCo
     }
 }
 
+/// Runs one command inside a PRoot rootfs and returns "<exit>\n<output>".
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_runProotCommand(
+    mut env: JNIEnv,
+    _: JObject,
+    config: JObjectArray,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let mut config = java_config(&mut env, config)?;
+        let spec = ProotSpec {
+            rootfs: PathBuf::from(config_value(&mut config, "rootfs")?),
+            shell: PathBuf::from(config_value(&mut config, "shell")?),
+            native_library_dir: PathBuf::from(config_value(
+                &mut config,
+                "native_library_directory",
+            )?),
+            cache_dir: PathBuf::from(config_value(&mut config, "cache_directory")?),
+            x11_socket_directory: PathBuf::new(),
+            wayland_runtime_directory: PathBuf::new(),
+            wayland_ime_bridge: PathBuf::new(),
+            virgl_runtime_directory: PathBuf::new(),
+            pipewire_runtime_directory: PathBuf::new(),
+            udev_compatibility_library: PathBuf::new(),
+            launch_argv: config_list(&mut config, "launch_argv")?,
+            graphics_environment: Vec::new(),
+        };
+        let (exit_code, output) = spec.run_captured().map_err(|error| error.to_string())?;
+        Ok(format!("{exit_code}\n{output}"))
+    })();
+    match result {
+        Ok(value) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            throw_runtime(&mut env, &message);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Lists existing DroidSpaces containers by scanning the backend workspace as root.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_listDroidspacesContainers(
