@@ -21,6 +21,7 @@ nix = { version = "0.30", features = ["term", "fs", "process", "signal"] }
 tar = "0.4"
 toml = "0.8"
 xz2 = "0.1"
+zstd = "0.13"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

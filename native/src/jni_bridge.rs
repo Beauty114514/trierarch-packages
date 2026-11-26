@@ -494,6 +494,28 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_importRoo
     }
 }
 
+/// Extracts a file component archive into an app-private staging directory.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_extractComponentArchive(
+    mut env: JNIEnv,
+    _: JObject,
+    archive_path: JString,
+    destination_path: JString,
+) {
+    let result = (|| -> Result<(), String> {
+        let archive = java_string(&mut env, archive_path)?;
+        let destination = java_string(&mut env, destination_path)?;
+        crate::component_archive::extract(
+            std::path::Path::new(&archive),
+            std::path::Path::new(&destination),
+        )
+        .map_err(|error| error.to_string())
+    })();
+    if let Err(message) = result {
+        throw_runtime(&mut env, &message);
+    }
+}
+
 /// Lists existing DroidSpaces containers by scanning the backend workspace as root.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_listDroidspacesContainers(

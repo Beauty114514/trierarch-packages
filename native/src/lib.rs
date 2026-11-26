@@ -5,6 +5,7 @@
 //! and process exit through [`SessionEvents`].
 
 mod chroot;
+mod component_archive;
 mod droidspaces;
 mod privileged;
 mod proot;
