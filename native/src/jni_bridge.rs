@@ -584,6 +584,46 @@ pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_runChroot
     }
 }
 
+/// Runs one command inside a DroidSpaces container; returns "<exit>\n<output>".
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_runDroidspacesCommand(
+    mut env: JNIEnv,
+    _: JObject,
+    config: JObjectArray,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let mut config = java_config(&mut env, config)?;
+        let container = config_value(&mut config, "container")?;
+        let argv = config_list(&mut config, "launch_argv")?;
+        let bind_host = config_optional(&mut config, "bind_host");
+        let bind_guest = config_optional(&mut config, "bind_guest");
+        let bind = if bind_host.is_empty() || bind_guest.is_empty() {
+            None
+        } else {
+            Some((bind_host.as_str(), bind_guest.as_str()))
+        };
+        let stop_after = config_optional(&mut config, "stop_after") != "false";
+        let (exit_code, output) = DroidspacesSpec::run_captured(
+            &container,
+            &argv,
+            bind,
+            stop_after,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(format!("{exit_code}\n{output}"))
+    })();
+    match result {
+        Ok(value) => env
+            .new_string(value)
+            .map(|value| value.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(message) => {
+            throw_runtime(&mut env, &message);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Lists existing DroidSpaces containers by scanning the backend workspace as root.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_trierarch_nativebridge_NativePtyBridge_listDroidspacesContainers(
