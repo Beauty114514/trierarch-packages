@@ -49,33 +49,6 @@ impl Drop for ChildProcess {
 }
 
 impl ProotSpec {
-    /// Run a one-shot command without a PTY and capture its combined output.
-    pub(crate) fn run_captured(&self) -> Result<(i32, String)> {
-        let (argv, env) = args::build_exec_args(self)?;
-        let program = argv
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("PRoot argv is empty"))?
-            .to_string_lossy()
-            .into_owned();
-        let mut command = std::process::Command::new(program);
-        command.args(
-            argv.iter()
-                .skip(1)
-                .map(|value| value.to_string_lossy().into_owned()),
-        );
-        command.env_clear();
-        for value in &env {
-            let value = value.to_string_lossy();
-            if let Some((key, value)) = value.split_once('=') {
-                command.env(key, value);
-            }
-        }
-        let output = command.output().context("run PRoot command")?;
-        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
-        Ok((output.status.code().unwrap_or(-1), text))
-    }
-
     /// One interactive PRoot shell on a new PTY. The caller owns all session
     /// registration and reader/writer lifecycle.
     pub(crate) fn fork_pty_shell(

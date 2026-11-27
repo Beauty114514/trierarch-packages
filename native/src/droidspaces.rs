@@ -90,66 +90,6 @@ impl DroidspacesSpec {
         ))
     }
 
-    /// Run one command inside a DroidSpaces container as root.
-    ///
-    /// A stopped container is started for the command. A package bind can only
-    /// be added while starting, so installing with a bind against an already
-    /// running container is rejected instead of silently hiding the packages.
-    pub(crate) fn run_captured(
-        container: &str,
-        argv: &[String],
-        bind: Option<(&str, &str)>,
-        stop_after: bool,
-    ) -> io::Result<(i32, String)> {
-        validate_value(container, "container")?;
-        if argv.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "command is empty"));
-        }
-        let running = Self::is_container_running(container)?;
-        let mut started = false;
-        if !running {
-            let mut bind_argument = String::new();
-            if let Some((host, guest)) = bind {
-                bind_argument = format!(
-                    " --bind={}",
-                    privileged::shell_quote(format!("{host}:{guest}")),
-                );
-            }
-            let start = format!(
-                "{} --name={}{} start",
-                privileged::shell_quote(DROIDSPACES_BINARY),
-                privileged::shell_quote(container),
-                bind_argument,
-            );
-            let output = privileged::run_as_root_output(start)?;
-            if !output.status.success() {
-                return Err(io::Error::other(format!(
-                    "DroidSpaces start exited with {}: {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr)
-                )));
-            }
-            started = true;
-        } else if bind.is_some() {
-            return Err(io::Error::other(
-                "stop the DroidSpaces container before installing packages that need a bind",
-            ));
-        }
-        let command = format!(
-            "{} --name={} run {}",
-            privileged::shell_quote(DROIDSPACES_BINARY),
-            privileged::shell_quote(container),
-            argv.iter().map(|value| privileged::shell_quote(value)).collect::<Vec<_>>().join(" "),
-        );
-        let output = privileged::run_as_root_output(command)?;
-        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
-        if started && stop_after {
-            let _ = Self::stop_container(container);
-        }
-        Ok((output.status.code().unwrap_or(-1), text))
-    }
-
     pub(crate) fn launch_spec(&self) -> io::Result<LaunchSpec> {
         validate_value(&self.container, "container")?;
         validate_value(&self.user, "user")?;
